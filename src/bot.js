@@ -6,15 +6,28 @@ const { sanitizeSiteSlug } = require("./sites");
 const store = require("./store");
 const {
     renderStats,
+    renderSites,
     renderHelp,
     renderFileReport,
+    renderPing,
+    renderPreview,
     mainKeyboard,
+    confirmClearKeyboard,
+    afterCombineKeyboard,
+    emptyBatchKeyboard,
+    siteEmoji,
     B,
     I,
+    compact,
 } = require("./messages");
 
 // Telegram Bot API caps bot downloads at 20 MB.
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+
+// Cooldown between combine calls, per chat (anti double-tap spam).
+const COMBINE_COOLDOWN_MS = 3000;
+
+const STARTED_AT = Date.now();
 
 // Build the ampersand from its char code so this file can never be HTML-decoded
 // into broken escape sequences by the editor's auto-formatter.
@@ -65,30 +78,51 @@ function createBot(token, meta = {}) {
     const bot = new Telegraf(token, { handlerTimeout: 10 * 60 * 1000 });
 
     bot.start(async (ctx) => {
-        await ctx.reply(renderHelp(meta.botUsername), {
-            parse_mode: "HTML",
-            disable_web_page_preview: true,
-            ...mainKeyboard(),
-        });
+        const batch = store.getStats(ctx.chat.id);
+        await safeReply(ctx, renderHelp(meta.botUsername, batch), mainKeyboard());
     });
 
     bot.help(async (ctx) => {
-        await ctx.reply(renderHelp(meta.botUsername), {
-            parse_mode: "HTML",
-            disable_web_page_preview: true,
-            ...mainKeyboard(),
-        });
+        const batch = store.getStats(ctx.chat.id);
+        await safeReply(ctx, renderHelp(meta.botUsername, batch), mainKeyboard());
     });
 
     bot.command("stats", async (ctx) => {
         await safeReply(ctx, renderStats(store.getStats(ctx.chat.id)), mainKeyboard());
     });
 
+    bot.command("sites", async (ctx) => {
+        await safeReply(ctx, renderSites(store.getSiteCounts(ctx.chat.id)), mainKeyboard());
+    });
+
+    bot.command("preview", async (ctx) => {
+        await sendPreview(ctx);
+    });
+
+    bot.command("ping", async (ctx) => {
+        const t0 = Date.now();
+        await ctx.telegram.getMe();
+        const latencyMs = Date.now() - t0;
+        const uptimeSec = (Date.now() - STARTED_AT) / 1000;
+        await safeReply(ctx, renderPing({ latencyMs, uptimeSec }));
+    });
+
     bot.command("clear", async (ctx) => {
-        const existed = store.clear(ctx.chat.id);
+        const stats = store.getStats(ctx.chat.id);
+        if (!stats || stats.size === 0) {
+            await safeReply(ctx, "\uD83D\uDCED Nothing stored for this chat \u2014 all clean \u2728");
+            return;
+        }
+        // Two-step confirmation so a stray tap can't wipe the batch.
         await safeReply(
             ctx,
-            existed ? "🧹 Cleared this chat's batch." : "Nothing stored for this chat.",
+            [
+                `\uD83E\uDDF9  ${B("Clear this batch?")}`,
+                `\uD83D\uDCE6 It holds ${B(num(stats.size))} unique line${stats.size === 1 ? "" : "s"}`,
+                "",
+                `${I("This can't be undone \u26A0\uFE0F")}`,
+            ].join("\n"),
+            confirmClearKeyboard(),
         );
     });
 
@@ -99,13 +133,14 @@ function createBot(token, meta = {}) {
 
     // Inline button: Combine
     bot.action("combine", async (ctx) => {
-        await ctx.answerCbQuery("📦 Building file…").catch(() => { });
+        await ctx.answerCbQuery("\uD83D\uDCE6 Building file\u2026").catch(() => { });
+        await ctx.replyWithChatAction("upload_document").catch(() => { });
         await sendCombined(ctx);
     });
 
     // Inline button: Stats
     bot.action("stats", async (ctx) => {
-        await ctx.answerCbQuery().catch(() => { });
+        await ctx.answerCbQuery("\uD83D\uDCCA Loading stats\u2026").catch(() => { });
         try {
             await ctx.editMessageText(renderStats(store.getStats(ctx.chat.id)), {
                 parse_mode: "HTML",
@@ -117,13 +152,92 @@ function createBot(token, meta = {}) {
         }
     });
 
-    // Inline button: Clear
-    bot.action("clear", async (ctx) => {
-        const existed = store.clear(ctx.chat.id);
-        await ctx.answerCbQuery(existed ? "Batch cleared" : "Nothing to clear").catch(() => { });
+    // Inline button: Sites
+    bot.action("sites", async (ctx) => {
+        await ctx.answerCbQuery("\uD83D\uDCE1 Loading sites\u2026").catch(() => { });
+        try {
+            await ctx.editMessageText(renderSites(store.getSiteCounts(ctx.chat.id)), {
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+                ...mainKeyboard(),
+            });
+        } catch {
+            await safeReply(ctx, renderSites(store.getSiteCounts(ctx.chat.id)), mainKeyboard());
+        }
+    });
+
+    // Inline button: Preview
+    bot.action("preview", async (ctx) => {
+        await ctx.answerCbQuery("\uD83D\uDC41 Peeking\u2026").catch(() => { });
+        await sendPreview(ctx);
+    });
+
+    // Inline button: Help
+    bot.action("help", async (ctx) => {
+        await ctx.answerCbQuery("\u2753").catch(() => { });
+        const batch = store.getStats(ctx.chat.id);
+        try {
+            await ctx.editMessageText(renderHelp(meta.botUsername, batch), {
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+                ...mainKeyboard(),
+            });
+        } catch {
+            await safeReply(ctx, renderHelp(meta.botUsername, batch), mainKeyboard());
+        }
+    });
+
+    // Inline buttons: Clear (two-step)
+    bot.action("clear:ask", async (ctx) => {
+        const stats = store.getStats(ctx.chat.id);
+        if (!stats || stats.size === 0) {
+            await ctx.answerCbQuery("\uD83D\uDCED Nothing to clear!").catch(() => { });
+            try {
+                await ctx.editMessageText(
+                    "\uD83D\uDCED Nothing stored for this chat \u2014 all clean \u2728",
+                );
+            } catch {
+                // ignore
+            }
+            return;
+        }
+        await ctx.answerCbQuery().catch(() => { });
         try {
             await ctx.editMessageText(
-                existed ? "🧹 Cleared this chat's batch." : "Nothing stored for this chat.",
+                [
+                    `\uD83E\uDDF9  ${B("Clear this batch?")}`,
+                    `\uD83D\uDCE6 It holds ${B(num(stats.size))} unique line${stats.size === 1 ? "" : "s"}`,
+                    "",
+                    `${I("This can't be undone \u26A0\uFE0F")}`,
+                ].join("\n"),
+                { parse_mode: "HTML", ...confirmClearKeyboard() },
+            );
+        } catch {
+            // ignore
+        }
+    });
+
+    bot.action("clear:yes", async (ctx) => {
+        const existed = store.clear(ctx.chat.id);
+        await ctx.answerCbQuery(existed ? "\uD83E\uDDFA Poof! Gone." : "\uD83D\uDCED Nothing to clear").catch(() => { });
+        try {
+            await ctx.editMessageText(
+                existed
+                    ? "\uD83E\uDDFA Batch wiped \u2014 fresh start! \u2728\n\uD83D\uDCE4 Send me your next file whenever you're ready."
+                    : "\uD83D\uDCED Nothing stored for this chat.",
+                { parse_mode: "HTML", ...emptyBatchKeyboard() },
+            );
+        } catch {
+            // ignore
+        }
+    });
+
+    bot.action("clear:no", async (ctx) => {
+        await ctx.answerCbQuery("\uD83D\uDCCE Batch kept \u2728").catch(() => { });
+        try {
+            await ctx.editMessageText(
+                "\uD83D\uDCCE Phew \u2014 batch kept! Nothing was touched. \u2728",
+                { parse_mode: "HTML", ...mainKeyboard() },
             );
         } catch {
             // ignore
@@ -137,7 +251,11 @@ function createBot(token, meta = {}) {
             console.error("document handler error:", err);
             await safeReply(
                 ctx,
-                "❌ Something went wrong while processing that file. It may be corrupt or too large.",
+                [
+                    `\uD83D\uDCA5  ${B("Oops \u2014 something went wrong")}`,
+                    `That file couldn't be processed. It may be corrupt,`,
+                    `password-protected, or too large. Try re-sending it.`,
+                ].join("\n"),
             );
         }
     });
@@ -148,19 +266,31 @@ function createBot(token, meta = {}) {
         if (!msg) return;
         if (msg.text && msg.text.startsWith("/")) return;
         if (msg.document) return;
+        if (msg.photo || msg.video || msg.audio || msg.voice || msg.sticker) {
+            await safeReply(
+                ctx,
+                "\uD83D\uDCF8 Cute! \u2026but I only speak \uD83D\uDCE6 <b>.zip</b> and \uD83D\uDCC4 text files. Send one of those!",
+                mainKeyboard(),
+            );
+            return;
+        }
         await safeReply(
             ctx,
             [
-                "📎 Send me a <b>.zip</b> or plain text file (<b>.txt</b>, .csv, .log, …).",
+                `\uD83D\uDCCE  ${B("Send it as a file")}`,
                 "",
-                "If you forwarded a zip and it arrived as text, download it first, then send it as a file.",
+                `Forward or upload a ${B(".zip")} \u2014 or a text file`,
+                `(${B(".txt")}, .csv, .log, \u2026) and I'll clean it \uD83E\uDDFC`,
+                "",
+                `${I("Tip: if a forwarded zip arrived as text, download")}`,
+                `${I("it first, then send it as a document \uD83D\uDCC2")}`,
             ].join("\n"),
             mainKeyboard(),
         );
     });
 
     bot.catch((err, ctx) => {
-        console.error(`Bot error for update ${ctx.update.update_id}:`, err);
+        console.error(`Bot error for update ${ctx.update && ctx.update.update_id}:`, err);
     });
 
     return bot;
@@ -185,7 +315,27 @@ async function safeReply(ctx, text, extra = {}) {
 }
 
 /**
- * Handle a forwarded/uploaded document.
+ * Edit a progress message without throwing (e.g. "message not modified").
+ * @param {import('telegraf').Context} ctx
+ * @param {number} messageId
+ * @param {string} text
+ * @param {object} [extra]
+ */
+async function safeEdit(ctx, messageId, text, extra = {}) {
+    try {
+        await ctx.telegram.editMessageText(ctx.chat.id, messageId, undefined, text, {
+            parse_mode: "HTML",
+            disable_web_page_preview: true,
+            ...extra,
+        });
+    } catch {
+        // ignore
+    }
+}
+
+/**
+ * Handle a forwarded/uploaded document with staged, animated progress:
+ * 📥 download → 📦 extract → 🧼 clean → ✅ report.
  * @param {import('telegraf').Context} ctx
  */
 async function handleDocument(ctx) {
@@ -205,7 +355,11 @@ async function handleDocument(ctx) {
     if (!isZip && !isText) {
         await safeReply(
             ctx,
-            "⚠️ I only handle <b>.zip</b> and plain text files (<b>.txt</b>, .csv, .log, …).",
+            [
+                `\u26D4  ${B("Unsupported file type")}`,
+                `I only handle ${B(".zip")} archives and plain text files`,
+                `(${B(".txt")}, .csv, .tsv, .log, \u2026) \uD83D\uDCC2`,
+            ].join("\n"),
         );
         return;
     }
@@ -213,16 +367,23 @@ async function handleDocument(ctx) {
     if (doc.file_size && doc.file_size > MAX_DOWNLOAD_BYTES) {
         await safeReply(
             ctx,
-            `⚠️ That file is ${humanSize(doc.file_size)}, over Telegram's 20 MB bot limit. Split it into smaller zips.`,
+            [
+                `\uD83D\uDCA5  ${B("Too big for Telegram")}`,
+                `That file is ${humanSize(doc.file_size)} \u2014 over the`,
+                `${humanSize(MAX_DOWNLOAD_BYTES)} bot download limit \uD83D\uDCCF`,
+                "",
+                `${I("Split it into smaller zips and send them all \u2014")}`,
+                `${I("I merge everything into one batch \uD83E\uDDF2")}`,
+            ].join("\n"),
         );
         return;
     }
 
+    // Stage 1: downloading.
     const progress = await ctx.reply(
         [
-            `📥 ${B("Downloading")} ${escapeHtml(name)}`,
-            `┃  ${humanSize(doc.file_size || 0)}`,
-            "┗━━━━━━━━━━━━━━━━━",
+            `\uD83D\uDCE5  ${B("Downloading")} ${escapeHtml(name)}`,
+            `     \uD83D\uDCC2  ${humanSize(doc.file_size || 0)}  \u00B7  \u23F3 working\u2026`,
         ].join("\n"),
         { parse_mode: "HTML" },
     );
@@ -232,16 +393,31 @@ async function handleDocument(ctx) {
     if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
     const buffer = Buffer.from(await res.arrayBuffer());
 
-    await ctx.telegram
-        .editMessageText(ctx.chat.id, progress.message_id, undefined, "🧼 Cleaning…", {
-            parse_mode: "HTML",
-        })
-        .catch(() => { });
+    // Stage 2: extracting.
+    await safeEdit(
+        ctx,
+        progress.message_id,
+        [
+            `\uD83D\uDCE6  ${B("Extracting")} ${escapeHtml(name)}`,
+            `     \uD83E\uDDF0  unzipping nested archives\u2026`,
+        ].join("\n"),
+    );
+    await ctx.replyWithChatAction("typing").catch(() => { });
 
+    // Stage 3: cleaning.
     const result =
         isZip || isZipBuffer(buffer)
             ? extractAndCleanZip(buffer, { sourceName: name })
             : extractAndCleanText(buffer.toString("utf8"), { sourceName: name });
+
+    await safeEdit(
+        ctx,
+        progress.message_id,
+        [
+            `\uD83E\uDDFC  ${B("Cleaning")} ${escapeHtml(name)}`,
+            `     \u2702\uFE0F  filtering ${num(result.stats.total)} lines\u2026`,
+        ].join("\n"),
+    );
 
     // Figure out the site this dump belongs to — used when naming the combined
     // file (e.g. "netflix.com_combined_2026-09-19.txt").
@@ -251,43 +427,66 @@ async function handleDocument(ctx) {
     const added = store.addLines(ctx.chat.id, result.lines, site);
     const chatStats = store.getStats(ctx.chat.id);
 
-    await ctx.telegram
-        .editMessageText(
-            ctx.chat.id,
-            progress.message_id,
-            undefined,
-            renderFileReport(name, result.stats, added, chatStats, site),
-            { parse_mode: "HTML", disable_web_page_preview: true, ...mainKeyboard() },
-        )
-        .catch(() => { });
+    // Stage 4: done — full report.
+    await safeEdit(
+        ctx,
+        progress.message_id,
+        renderFileReport(name, result.stats, added, chatStats, site),
+        mainKeyboard(),
+    );
 
     // No auto-send: the batch keeps accumulating. Tap "Get combined file"
     // (or /combine) whenever you want to download it.
 }
 
 /**
- * Send the combined, deduped file for the current chat. This is the only file
- * the bot ever sends back. Named after the site when the whole batch belongs
- * to one site, otherwise "combolist".
+ * Peek at the first stored lines.
  * @param {import('telegraf').Context} ctx
  */
-async function sendCombined(ctx) {
+async function sendPreview(ctx) {
     const lines = store.getLines(ctx.chat.id);
+    const sample = lines.slice(0, 10);
+    await safeReply(ctx, renderPreview(sample, lines.length), mainKeyboard());
+}
+
+/**
+ * Send the combined, deduped file for the current chat. Named after the site
+ * when the whole batch belongs to one site, otherwise "combolist".
+ * @param {import('telegraf').Context} ctx
+ */
+const lastCombineAt = new Map(); // chatId -> timestamp
+
+async function sendCombined(ctx) {
+    const chatId = ctx.chat && ctx.chat.id;
+    const now = Date.now();
+    const last = lastCombineAt.get(chatId) || 0;
+    if (now - last < COMBINE_COOLDOWN_MS) {
+        await safeReply(ctx, "\u23F3 One sec \u2014 already building it! \uD83E\uDDFD");
+        return;
+    }
+    lastCombineAt.set(chatId, now);
+
+    const lines = store.getLines(chatId);
     if (lines.length === 0) {
         await safeReply(
             ctx,
-            "📭 Nothing to combine yet. Send me a .zip (or .txt) first.",
-            mainKeyboard(),
+            [
+                `\uD83D\uDCED  ${B("Nothing to combine yet")}`,
+                `Your batch is empty \u2014 send me a ${B(".zip")} or ${B(".txt")}`,
+                `first and I'll get cleaning \uD83E\uDDFC\u2728`,
+            ].join("\n"),
+            emptyBatchKeyboard(),
         );
         return;
     }
 
-    const sites = store.getSites(ctx.chat.id);
+    const sites = store.getSites(chatId);
     const base = sites.length === 1 ? sites[0] : "combolist";
+    const emoji = sites.length === 1 ? siteEmoji(base) : "\uD83C\uDF10";
     const siteLine =
         sites.length === 1
-            ? `🌐 ${B(escapeHtml(base))}`
-            : `🌐 ${B(num(sites.length))} sites mixed`;
+            ? `${emoji}  ${B(escapeHtml(base))}`
+            : `${emoji}  ${B(num(sites.length))} sites mixed`;
 
     const buffer = Buffer.from(buildOutput(lines), "utf8");
     const stamp = new Date().toISOString().slice(0, 10);
@@ -297,12 +496,19 @@ async function sendCombined(ctx) {
         { source: buffer, filename },
         {
             caption: [
-                `📦  ${B("COMBINED & DEDUPED")}`,
-                `${siteLine}  ·  ${I(`${num(lines.length)} unique lines`)}`,
+                `\uD83C\uDF81  ${B("COMBINED & DEDUPED")}`,
+                `${siteLine}  \u00B7  \uD83D\uDD10 ${B(compact(lines.length))} unique lines`,
+                "",
+                `${I("Served fresh \u2014 tap \uD83D\uDCE5 below to grab it again anytime.")}`,
             ].join("\n"),
             parse_mode: "HTML",
+            ...afterCombineKeyboard(),
         },
     );
 }
 
 module.exports = { createBot, buildOutput, humanSize, escapeHtml };
+
+
+
+

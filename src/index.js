@@ -48,10 +48,13 @@ if (ALLOWED_USER_ID) {
 async function registerCommands() {
     try {
         await bot.telegram.setMyCommands([
-            { command: "combine", description: "Download the combined, deduped file" },
-            { command: "stats", description: "Show batch statistics" },
-            { command: "clear", description: "Clear this chat's stored lines" },
-            { command: "help", description: "Show help" },
+            { command: "combine", description: "\uD83D\uDCE6 Download the combined file" },
+            { command: "stats", description: "\uD83D\uDCCA Batch dashboard" },
+            { command: "sites", description: "\uD83C\uDF10 Per-site breakdown" },
+            { command: "preview", description: "\uD83D\uDC41 Peek at sample lines" },
+            { command: "clear", description: "\uD83E\uDDF9 Start a fresh batch" },
+            { command: "ping", description: "\uD83C\uDFD3 Latency & uptime" },
+            { command: "help", description: "\u2753 How to use the bot" },
         ]);
     } catch (err) {
         console.error("setMyCommands failed:", err.message);

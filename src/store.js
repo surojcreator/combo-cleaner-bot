@@ -69,7 +69,8 @@ function addLines(chatId, lines, site) {
     chat.totalKept += added;
     chat.files += 1;
     if (site) {
-        chat.sites.set(site, (chat.sites.get(site) || 0) + 1);
+        // Track *lines* per site (not files) for the /sites breakdown.
+        chat.sites.set(site, (chat.sites.get(site) || 0) + added);
     }
     chat.updatedAt = Date.now();
 
@@ -113,6 +114,30 @@ function getSites(chatId) {
 }
 
 /**
+ * Per-site line counts for a chat, biggest first. Variants of the same site
+ * ("netflix.com" vs "netflix") collapse together, summing their counts.
+ * @param {number} chatId
+ * @returns {Array<{ site: string, count: number }>}
+ */
+function getSiteCounts(chatId) {
+    const chat = chats.get(chatId);
+    if (!chat || chat.sites.size === 0) return [];
+    // Collapse slug variants by first label, keep longest slug per group.
+    const groups = new Map(); // key -> { site, count }
+    for (const [slug, count] of chat.sites) {
+        const key = String(slug).split(".")[0].toLowerCase();
+        const g = groups.get(key);
+        if (!g) {
+            groups.set(key, { site: slug, count });
+        } else {
+            g.count += count;
+            if (slug.length > g.site.length) g.site = slug;
+        }
+    }
+    return [...groups.values()].sort((a, b) => b.count - a.count);
+}
+
+/**
  * Get all stored lines for a chat.
  * @param {number} chatId
  * @returns {string[]}
@@ -139,6 +164,7 @@ module.exports = {
     getStats,
     getLines,
     getSites,
+    getSiteCounts,
     clear,
     MAX_LINES_PER_CHAT,
 };

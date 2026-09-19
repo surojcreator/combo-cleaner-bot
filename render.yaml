@@ -1,0 +1,20 @@
+# Render Blueprint (https://render.com/docs/blueprint-spec)
+# Deploy: push this repo to GitHub, then in Render choose
+# "New +" -> "Blueprint" and select the repo. Render reads this file.
+services:
+  - type: web
+    name: combo-cleaner-bot
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false # you will paste the token in the Render dashboard
+      - key: ALLOWED_USER_ID
+        sync: false # optional
+      - key: PUBLIC_URL
+        sync: false # set to https://<your-service>.onrender.com (no trailing slash)
+      - key: PORT
+        value: 8080

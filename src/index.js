@@ -20,10 +20,13 @@ const ALLOWED_USER_ID = process.env.ALLOWED_USER_ID
     : null;
 
 const PORT = Number(process.env.PORT || 8080);
-const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.WEBHOOK_URL || "").replace(
-    /\/+$/,
-    "",
-);
+const PUBLIC_URL = (process.env.PUBLIC_URL ||
+    process.env.WEBHOOK_URL ||
+    // Render injects RENDER_EXTERNAL_URL into every web service — use it to
+    // switch to webhook mode automatically (avoids long-polling 409 conflicts
+    // when two instances briefly overlap during a deploy).
+    process.env.RENDER_EXTERNAL_URL ||
+    "").replace(/\/+$/, "");
 const WEBHOOK_PATH = `/telegraf/${encodeURIComponent(TOKEN)}`;
 
 const bot = createBot(TOKEN);

@@ -2167,9 +2167,10 @@ async function safeReply(ctx, text, extra = {}) {
                 });
             } catch (fallbackErr) {
                 console.error("safeReply fallback failed:", fallbackErr.message);
-                const plainText = fallbackText.replace(/<[^>]+>/g, "");
+                const plainText = fallbackText.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
                 const cleanExtra = { ...fallbackExtra };
                 delete cleanExtra.reply_markup;
+                delete cleanExtra.parse_mode;
                 return await ctx.reply(plainText, {
                     disable_web_page_preview: true,
                     ...cleanExtra,
@@ -2345,6 +2346,13 @@ async function ingestDocument(ctx, doc, options = {}) {
  * Safely send a document using context or telegram instance, with fallback.
  */
 async function safeSendDocument(ctx, chatId, payload, extra = {}) {
+    if (payload && typeof payload === "object") {
+        let fn = payload.filename;
+        if (!fn || typeof fn !== "string" || !fn.trim() || fn === "file" || fn === "telegram-undefined.bin" || fn === "undefined") {
+            fn = `combolist_combined_${new Date().toISOString().slice(0, 10)}.txt`;
+        }
+        payload.filename = userbot.safeDownloadName(fn);
+    }
     let sendExtra = extra;
     if (botApiCustomEmojiRejected) {
         sendExtra = stripButtonEmojis(extra);
@@ -2645,11 +2653,23 @@ async function sendHtml(ctx, text, extra = {}) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
             }
             const fallbackExtra = stripButtonEmojis(extra);
-            return await ctx.reply(fallbackText, {
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                ...fallbackExtra,
-            }).catch(() => null);
+            try {
+                return await ctx.reply(fallbackText, {
+                    parse_mode: "HTML",
+                    disable_web_page_preview: true,
+                    ...fallbackExtra,
+                });
+            } catch (fallbackErr) {
+                console.error("sendHtml fallback failed:", fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr);
+                const plainText = fallbackText.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
+                const cleanExtra = { ...fallbackExtra };
+                delete cleanExtra.reply_markup;
+                delete cleanExtra.parse_mode;
+                return await ctx.reply(plainText, {
+                    disable_web_page_preview: true,
+                    ...cleanExtra,
+                }).catch(() => null);
+            }
         }
         console.error("sendHtml failed:", err.message);
         return null;
@@ -2682,10 +2702,18 @@ async function sendHtmlTo(telegram, chatId, text) {
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
             }
-            return await telegram.sendMessage(chatId, fallbackText, {
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-            }).catch(() => null);
+            try {
+                return await telegram.sendMessage(chatId, fallbackText, {
+                    parse_mode: "HTML",
+                    disable_web_page_preview: true,
+                });
+            } catch (fallbackErr) {
+                console.error("sendHtmlTo fallback failed:", fallbackErr && fallbackErr.message ? fallbackErr.message : fallbackErr);
+                const plainText = fallbackText.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
+                return await telegram.sendMessage(chatId, plainText, {
+                    disable_web_page_preview: true,
+                }).catch(() => null);
+            }
         }
         console.error("sendHtmlTo failed:", err.message);
         return null;

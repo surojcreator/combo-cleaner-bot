@@ -159,8 +159,8 @@ function buildSteps(query, scope, template = DEFAULT_HIST_TEMPLATE) {
  */
 function classifySendError(err) {
     const description = String((err && (err.description || err.message)) || "");
-    if (/USER_BOT_TO_BOT_DISABLED/i.test(description)) return "bot_to_bot_disabled";
-    if (/can't send messages to bots/i.test(description)) return "bot_to_bot_disabled";
+    if (/USER_BOT_TO_BOT_DISABLED|BOT_TO_BOT_DISABLED|USER_IS_BOT/i.test(description)) return "bot_to_bot_disabled";
+    if (/can't send messages to bots|cannot send messages to bots/i.test(description)) return "bot_to_bot_disabled";
     if (/bot was blocked/i.test(description)) return "blocked";
     if (/can't initiate conversation/i.test(description)) return "not_started";
     if (/chat not found|user not found/i.test(description)) return "not_found";

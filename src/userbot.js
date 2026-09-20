@@ -111,8 +111,12 @@ function withTimeout(promise, ms, label) {
  * @param {string} raw
  */
 function safeDownloadName(raw) {
+    if (!raw || raw === "undefined" || raw === "null" || raw === "file" || raw === "telegram-undefined.bin") {
+        return "telegram-file.bin";
+    }
     const base = path.basename(String(raw || "telegram-file.bin"));
     const safe = base
+        .replace(/\0/g, "")
         .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
         .replace(/\s+/g, " ")
         .replace(/^\.+/, "")

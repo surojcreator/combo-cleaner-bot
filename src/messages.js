@@ -116,16 +116,19 @@ const RULE = "\u2501".repeat(22); // ━━━━━━━━━━━━━━�
 function mainKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("\uD83D\uDCE6 Get combined file", "combine"),
-            Markup.button.callback("\uD83D\uDCCA Stats", "stats"),
+            Markup.button.callback("📦 Get combined file", "combine"),
+            Markup.button.callback("📊 Stats", "stats"),
         ],
         [
-            Markup.button.callback("\uD83D\uDCE1 Sites", "sites"),
-            Markup.button.callback("\uD83D\uDC41 Preview", "preview"),
+            Markup.button.callback("📡 Sites", "sites"),
+            Markup.button.callback("👁 Preview", "preview"),
         ],
         [
-            Markup.button.callback("\uD83E\uDDF9 Clear batch", "clear:ask"),
-            Markup.button.callback("\u2753 Help", "help"),
+            Markup.button.callback("📂 Server files", "server_files"),
+            Markup.button.callback("🧹 Clear batch", "clear:ask"),
+        ],
+        [
+            Markup.button.callback("❓ Help", "help"),
         ],
     ]);
 }
@@ -136,10 +139,29 @@ function mainKeyboard() {
 function afterCombineKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("\uD83D\uDCE5 Send again", "combine"),
-            Markup.button.callback("\uD83D\uDCCA Stats", "stats"),
+            Markup.button.callback("📦 Send again", "combine"),
+            Markup.button.callback("📊 Stats", "stats"),
         ],
-        [Markup.button.callback("\uD83E\uDDF9 Clear batch", "clear:ask")],
+        [
+            Markup.button.callback("📂 Server files", "server_files"),
+            Markup.button.callback("🧹 Clear batch", "clear:ask"),
+        ],
+    ]);
+}
+
+/**
+ * Keyboard shown under the server files vault.
+ */
+function serverFilesKeyboard() {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback("🔄 Refresh files", "files:refresh"),
+            Markup.button.callback("📊 Stats", "stats"),
+        ],
+        [
+            Markup.button.callback("📦 Get combined file", "combine"),
+            Markup.button.callback("❓ Help", "help"),
+        ],
     ]);
 }
 
@@ -148,8 +170,8 @@ function afterCombineKeyboard() {
  */
 function emptyBatchKeyboard() {
     return Markup.inlineKeyboard([
-        [Markup.button.callback("\u2753 How do I use this?", "help")],
-        [Markup.button.callback("\uD83D\uDCCA Stats", "stats")],
+        [Markup.button.callback("❓ How do I use this?", "help")],
+        [Markup.button.callback("📂 Server files", "server_files"), Markup.button.callback("📊 Stats", "stats")],
     ]);
 }
 
@@ -159,8 +181,8 @@ function emptyBatchKeyboard() {
 function confirmClearKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("\u26A0\uFE0F Yes, wipe it", "clear:yes"),
-            Markup.button.callback("\u274C Keep it", "clear:no"),
+            Markup.button.callback("⚠️ Yes, wipe it", "clear:yes"),
+            Markup.button.callback("❌ Keep it", "clear:no"),
         ],
     ]);
 }
@@ -174,57 +196,52 @@ function confirmClearKeyboard() {
 function renderHelp(botUsername, batch = null, searcherBot = null) {
     const mention = botUsername ? `@${escapeHtml(botUsername)}` : "this bot";
     const lines = [
-        `\uD83E\uDDFC  ${B("COMBO CLEANER")}`,
-        `\u2728  ${I("Drop messy dumps in. Get one clean file out.")}`,
+        `⚡️  ${B("COMBO CLEANER PRO")}  ⚡️`,
+        `🚀  ${I("Raw Dumps In • Crystal Clean Batches Out • Ultra-Fast")}`,
         RULE,
         "",
-        `\uD83C\uDFAF  ${B("Why you'll love it")}`,
-        `  \u26A1 \uFE0FInstant cleaning \u2014 no waiting around`,
-        `  \uD83E\uDDF9 Dedupes everything, automatically`,
-        `  \uD83C\uDF10 Smarts out the ${B("site")} from the dump`,
-        `  \uD83D\uDCE6 One tidy file, named for you`,
+        `💎  ${B("Core Superpowers")}`,
+        `  ⚡️ ${B("Instant RAM Pipeline")} \u2014 zero wait streaming`,
+        `  🧹 ${B("Auto-Deduplication")} \u2014 drops duplicates on the fly`,
+        `  🌐 ${B("Smart Site Detection")} \u2014 identifies domain source`,
+        `  📦 ${B("Tidy Auto-Named Outputs")} \u2014 ready to use`,
         "",
-        `\uD83D\uDCE5  ${B("How it works")}`,
-        `  1\uFE0F\u20E3 Send a ${B(".zip")} or ${B(".txt")} (forwarded is fine!)`,
-        `  2\uFE0F\u20E3 I keep emails, cards & numbers \u2014 drop URLs \u274C`,
-        `  3\uFE0F\u20E3 Everything piles into your batch, deduped`,
-        `  4\uFE0F\u20E3 Tap ${B("\uD83D\uDCE6 Get combined file")} when ready`,
-        "",
-        `\u26A1  ${B("Commands")}`,
-        `  /combine \u2014 \uD83D\uDCE6 download the combined file`,
-        `  /stats \u2014 \uD83D\uDCCA batch dashboard`,
-        `  /sites \u2014 \uD83D\uDCE1 per-site breakdown`,
-        `  /preview \u2014 \uD83D\uDC41 peek at sample lines`,
-        `  /search \u2014 \uD83D\uDD0E search your batch`,
-        `  /lsearch \u2014 \uD83D\uDCBE search the newest full disk output`,
-        `  /save \u2014 \uD83D\uDCE5 reply to a group file: save to /var/data + process`,
-        `  /ulp \u2014 \uD83D\uDD0E relay a ULP search (query + hist:full)`,
-        `  /process \u2014 \uD83D\uDCC2 clean a file already on the server (e.g. /var/data/...)`,
-        `  /clear \u2014 \uD83E\uDDF9 fresh batch`,
-        `  /ping \u2014 \uD83C\uDFD3 latency & uptime`,
-        `  /help \u2014 \u2753 this message`,
+        `🛠  ${B("Command Arsenal")}`,
+        `  🚀 /ulp \u2014 Auto-relay dump search (@${escapeHtml(searcherBot || "DumpNews14Bot")})`,
+        `  📂 /files \u2014 Browse & search server files & dumps`,
+        `  📦 /combine \u2014 Download your deduped combined batch`,
+        `  📊 /stats \u2014 Real-time batch metrics & capacity gauge`,
+        `  📡 /sites \u2014 Site distribution reconnaissance`,
+        `  👁 /preview \u2014 Peek at sample cleaned lines`,
+        `  🔎 /search \u2014 Query your active RAM batch`,
+        `  ⚡ /lsearch \u2014 Fast-scan huge disk output files`,
+        `  📥 /save \u2014 Save replied group document directly to disk`,
+        `  🛠 /process \u2014 Stream-clean large local file from disk`,
+        `  🧹 /clear \u2014 Wipe current batch for a fresh run`,
+        `  🏓 /ping \u2014 Latency and system uptime check`,
+        `  ❓ /help \u2014 Show this manual`,
         "",
     ];
 
     if (batch && batch.size > 0) {
         lines.push(
-            `\uD83D\uDCE3  ${B("Welcome back!")} You have ${B(num(batch.size))}` +
-                ` unique line${batch.size === 1 ? "" : "s"} waiting \uD83C\uDF81`,
+            `💎  ${B("Active Batch:")} ${B(num(batch.size))}` +
+                ` unique line${batch.size === 1 ? "" : "s"} waiting 🎁`,
             "",
         );
     }
 
     if (searcherBot) {
         lines.push(
-            `\uD83E\uDD16  ${B("ULP search relay")}`,
-            `  /ulp htzone.co.il ${I("[day|month|year]")}`,
-            `  \u21B3 sends ${B("query")} + ${B("hist:full")} to ${B(`@${escapeHtml(searcherBot)}`)}`,
-            `  \u21B3 waits ${B("7s")} before every try, forwards results here`,
+            `🤖  ${B("ULP Search Relay")}`,
+            `  /ulp <query> [start_date]`,
+            `  ↳ Auto-detects latest batch date & steps down day-by-day`,
+            `  ↳ Relays & ingests dumps with automatic pacing ⏳`,
             "",
         );
     }
 
-    lines.push(RULE, `\uD83D\uDD17 ${mention}`);
+    lines.push(RULE, `🛡️ ${mention} \u00B7 Pro Edition`);
     return lines.join("\n");
 }
 
@@ -235,9 +252,9 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
 function renderWelcomeBack(batch) {
     if (!batch || batch.size === 0) return null;
     return (
-        `\uD83D\uDCE3 ${B("Welcome back!")} Your batch is holding ` +
+        `💎 ${B("Welcome back!")} Your batch holds ` +
         `${B(num(batch.size))} unique line${batch.size === 1 ? "" : "s"} ` +
-        `from ${num(batch.files)} file${batch.files === 1 ? "" : "s"} \uD83C\uDF81`
+        `from ${num(batch.files)} file${batch.files === 1 ? "" : "s"} 🎁`
     );
 }
 
@@ -248,26 +265,26 @@ function renderWelcomeBack(batch) {
 function renderStats(stats) {
     if (!stats || stats.size === 0) {
         return [
-            `\uD83D\uDCCA  ${B("BATCH DASHBOARD")}`,
+            `📊  ${B("BATCH METRICS DASHBOARD")}  ⚡️`,
             RULE,
-            "\uD83D\uDCED Empty batch \u2014 nothing stored yet.",
+            "📭 Empty batch \u2014 nothing stored yet.",
             "",
-            `${I("Send me a .zip or .txt and watch it fill up \uD83C\uDF31")}`,
+            `${I("Send me a .zip or .txt dump to get started 🚀")}`,
         ].join("\n");
     }
-    const cap = 2_000_000; // store.MAX_LINES_PER_CHAT, mirrored for the gauge
+    const cap = 2_000_000;
     const pct = Math.min(100, Math.round((stats.size / cap) * 100));
     return [
-        `\uD83D\uDCCA  ${B("BATCH DASHBOARD")}`,
+        `📊  ${B("BATCH METRICS DASHBOARD")}  ⚡️`,
         RULE,
-        `\uD83D\uDD10  ${B("Unique credentials")}   ${B(compact(stats.size))}`,
-        `\uD83D\uDCC2  Files processed         ${num(stats.files)}`,
-        `\uD83E\uDDFE  Lines accepted          ${num(stats.totalKept)}`,
-        stats.sites ? `\uD83C\uDF10  Sites detected          ${B(num(stats.sites))}` : null,
+        `💎  ${B("Unique Credentials")}   ${B(compact(stats.size))}`,
+        `📂  Files Processed         ${num(stats.files)}`,
+        `✂️  Lines Accepted          ${num(stats.totalKept)}`,
+        stats.sites ? `🌐  Sites Detected          ${B(num(stats.sites))}` : null,
         "",
-        `\uD83D\uDCE6  Capacity  ${bar(stats.size, cap, 14)}  ${pct}%`,
+        `📦  Capacity  ${bar(stats.size, cap, 14)}  ${pct}%`,
         RULE,
-        `${I("Tap \uD83D\uDCE6 below to grab the combined file \u2B07\uFE0F")}`,
+        `${I("Tap 📦 Get combined file below to download ⬇️")}`,
     ]
         .filter((l) => l !== null)
         .join("\n");
@@ -280,14 +297,14 @@ function renderStats(stats) {
 function renderSites(siteCounts) {
     if (!siteCounts || siteCounts.length === 0) {
         return [
-            `\uD83D\uDCE1  ${B("SITES")}`,
+            `📡  ${B("SITE RECONNAISSANCE")}  ⚡️`,
             RULE,
-            "\uD83C\uDFED No sites yet \u2014 send a file first \uD83D\uDCE4",
+            "🌐 No sites detected yet \u2014 send a dump file first 📤",
         ].join("\n");
     }
     const max = Math.max(...siteCounts.map((s) => s.count));
     const lines = [
-        `\uD83D\uDCE1  ${B("SITES")} \u00B7 ${B(num(siteCounts.length))} detected`,
+        `📡  ${B("SITE RECONNAISSANCE")} \u00B7 ${B(num(siteCounts.length))} detected 🌐`,
         RULE,
     ];
     for (const { site, count } of siteCounts) {
@@ -297,7 +314,7 @@ function renderSites(siteCounts) {
             `   ${bar(count, max, 14)} ${B(compact(count))}`,
         );
     }
-    lines.push("", RULE, `${I("Batch total \u00B7 tap \uD83D\uDCE6 to download \u2B07\uFE0F")}`);
+    lines.push("", RULE, `${I("Tap 📦 Get combined file below to download ⬇️")}`);
     return lines.join("\n");
 }
 
@@ -312,13 +329,13 @@ function renderPing(info) {
     const s = Math.floor(up % 60);
     const uptime = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
     const speed =
-        info.latencyMs < 100 ? "\uD83D\uDE80 Blazing" : info.latencyMs < 300 ? "\u2705 Good" : "\uD83D\uDC27 Slow-ish";
+        info.latencyMs < 100 ? "🚀 Blazing Fast" : info.latencyMs < 300 ? "⚡ Optimal" : "⏳ Normal";
     return [
-        `\uD83C\uDFD3  ${B("PONG")}`,
+        `🏓  ${B("SYSTEM STATUS: PONG")}  ⚡️`,
         RULE,
-        `\uD83D\uDCE1  Telegram latency   ${B(`${info.latencyMs} ms`)}  ${speed}`,
-        `\u23F1\uFE0F  Uptime             ${B(uptime)}`,
-        `\uD83D\uDFE2  Status             ${B("Online & polling")}`,
+        `📡  Telegram Latency   ${B(`${info.latencyMs} ms`)} \u00B7 ${speed}`,
+        `⏱  Uptime             ${B(uptime)}`,
+        `🟢  Core Engine        ${B("Online & Polling")}`,
     ].join("\n");
 }
 
@@ -332,55 +349,55 @@ function renderPing(info) {
  */
 function renderFileReport(name, stats, added, chatStats, site) {
     const ratio = stats.total > 0 ? Math.round((stats.kept / stats.total) * 100) : 0;
-    const siteEmojiOut = site ? siteEmoji(site) : "\uD83C\uDF10";
+    const siteEmojiOut = site ? siteEmoji(site) : "🌐";
     const lines = [
-        `\u2705  ${B("CLEAN REPORT")}`,
+        `✨  ${B("CLEAN REPORT")}  ⚡️`,
         RULE,
-        `\uD83D\uDCC4  ${escapeHtml(name)}`,
+        `📄  ${escapeHtml(name)}`,
     ];
     if (site) {
-        lines.push(`${siteEmojiOut}  Site detected       ${B(escapeHtml(site))}`);
+        lines.push(`${siteEmojiOut}  Site Detected       ${B(escapeHtml(site))}`);
     }
     lines.push(
         RULE,
-        `\uD83D\uDCE6  Files read          ${num(stats.files)}`,
-        `\uD83E\uDDFE  Lines seen          ${num(stats.total)}`,
-        `\u2705  Kept                ${B(num(stats.kept))}  ${bar(stats.kept, stats.total)} ${ratio}%`,
-        `\uD83D\uDDD1\uFE0F  Dropped             ${num(stats.dropped)}`,
-        `\u267B\uFE0F  Duplicates          ${num(stats.duplicates)}`,
+        `📂  Files Read          ${num(stats.files)}`,
+        `📑  Lines Seen          ${num(stats.total)}`,
+        `💎  Kept                ${B(num(stats.kept))}  ${bar(stats.kept, stats.total)} ${ratio}%`,
+        `🗑  Dropped             ${num(stats.dropped)}`,
+        `🔄  Duplicates          ${num(stats.duplicates)}`,
         RULE,
-        `\u2795  Added to batch      ${B(num(added.added))}`,
-        `\u21A9\uFE0F  Already had         ${num(added.duplicates)}`,
+        `➕  Added to batch      ${B(num(added.added))}`,
+        `↩️  Already Had         ${num(added.duplicates)}`,
     );
 
     if (chatStats) {
         lines.push(
             "",
-            `\uD83D\uDCE6  ${B("Batch total")} \u00B7 ${B(compact(chatStats.size))} unique from ${num(chatStats.files)} file(s)`,
+            `📦  ${B("Batch Total")} \u00B7 ${B(compact(chatStats.size))} unique from ${num(chatStats.files)} file(s)`,
         );
     }
 
     if (stats.truncated) {
         lines.push(
             "",
-            `\u26A0\uFE0F  ${B("Truncated")} \u2014 huge archive; stopped early to stay safe.`,
+            `⚠️  ${B("Truncated")} \u2014 huge archive; stopped early to stay safe.`,
         );
     }
     if (stats.skippedLarge) {
         lines.push(
-            `\u26A0\uFE0F  Skipped ${num(stats.skippedLarge)} oversized entr${stats.skippedLarge === 1 ? "y" : "ies"}.`,
+            `⚠️  Skipped ${num(stats.skippedLarge)} oversized entr${stats.skippedLarge === 1 ? "y" : "ies"}.`,
         );
     }
     if (added.capped) {
         lines.push(
             "",
-            `\u26A0\uFE0F  ${B("Storage cap reached")} \u2014 grab the file, then \uD83E\uDDF9 /clear.`,
+            `⚠️  ${B("Storage cap reached")} \u2014 grab the file, then 🧹 /clear.`,
         );
     }
 
     lines.push(
         "",
-        `\uD83C\uDF81 Added to your batch \u2014 tap \uD83D\uDCE6 below to download it all.`,
+        `🎉 Successfully ingested \u2014 tap 📦 below to download it all!`,
     );
     return lines.join("\n");
 }
@@ -393,19 +410,19 @@ function renderFileReport(name, stats, added, chatStats, site) {
 function renderPreview(sample, total) {
     if (total === 0) {
         return [
-            `\uD83D\uDC41  ${B("PREVIEW")}`,
+            `👁  ${B("PREVIEW")}  ⚡️`,
             RULE,
-            "\uD83D\uDCED Batch is empty \u2014 nothing to preview.",
+            "📭 Batch is empty \u2014 nothing to preview.",
             "",
-            `${I("Send a .zip or .txt first \uD83D\uDCE4")}`,
+            `${I("Send a .zip or .txt first 📤")}`,
         ].join("\n");
     }
     return [
-        `\uD83D\uDC41  ${B("PREVIEW")} \u00B7 first ${num(sample.length)} of ${B(compact(total))}`,
+        `👁  ${B("PREVIEW")} \u00B7 first ${num(sample.length)} of ${B(compact(total))}  💎`,
         RULE,
         ...sample.map((line) => `${CODE(escapeHtml(line))}`),
         "",
-        `${I("Credentials are sensitive \u2014 delete this message when done \uD83D\uDDD1\uFE0F")}`,
+        `${I("Credentials are sensitive \u2014 delete this message when done 🗑")}`,
     ].join("\n");
 }
 
@@ -418,13 +435,13 @@ function renderSearch(query, result) {
     const shown = result.matches.length;
     if (result.total === 0) {
         return [
-            "\uD83D\uDD0E  " + B("SEARCH"),
+            `🔎  ${B("SEARCH RESULTS")}  ⚡️`,
             RULE,
             "No matches for " + CODE(escapeHtml(query)) + " \u2014 try another term \uD83D\uDD0D",
         ].join("\n");
     }
     const out = [
-        "\uD83D\uDD0E  " + B("SEARCH") + " \u00B7 " + B(num(result.total)) + " hit" + (result.total === 1 ? "" : "s") + " for " + CODE(escapeHtml(query)),
+        `🔎  ${B("SEARCH RESULTS")} \u00B7 ${B(num(result.total))} hit${result.total === 1 ? "" : "s"} for ${CODE(escapeHtml(query))}`,
         RULE,
     ];
     for (const line of result.matches) out.push(CODE(escapeHtml(line)));
@@ -489,14 +506,14 @@ function ulpResultKeyboard(hasDocument = false) {
  */
 function renderUlpHint(info) {
     return [
-        `\uD83D\uDD0E  ${B("ULP SEARCH RELAY")}`,
+        `🚀  ${B("ULP SEARCH RELAY")}  ⚡️`,
         RULE,
         `${I("Usage:")} ${CODE("/ulp <query> [start_date]")}`,
         "",
-        `  1\uFE0F\u20E3 ${B("query")} \u2014 sent to ${B(mentionOf(info.searcherBot))}`,
-        `  2\uFE0F\u20E3 ${B("day-by-day")} \u2014 starts from current date and steps down one by one`,
-        `  3\uFE0F\u20E3 ${B("auto-forward")} \u2014 every result message is forwarded here`,
-        `  4\uFE0F\u20E3 ${B("combined output")} \u2014 when done or stopped, gives combined file and cleans batch \u2728`,
+        `  1️⃣ ${B("Target")} \u2014 Sent to ${B(mentionOf(info.searcherBot))}`,
+        `  2️⃣ ${B("Smart Batch")} \u2014 Auto-detects latest batch date & steps down day-by-day`,
+        `  3️⃣ ${B("Live Forward")} \u2014 All dump results are forwarded & auto-cleaned into batch`,
+        `  4️⃣ ${B("Auto-Delivery")} \u2014 Delivers combined file and resets batch when finished 💎`,
     ].join("\n");
 }
 
@@ -508,20 +525,20 @@ function renderUlpStart(info) {
     const whoRow =
         info.transport === "userbot"
             ? [
-                `\uD83D\uDC64  Sender    ${B("your account")} ${I("(MTProto bypass)")}`,
-                `\uD83E\uDD16  Via       ${B(mentionOf(info.searcherBot))}`,
+                `👤  Sender    ${B("your account")} ${I("(MTProto bypass)")} ⚡️`,
+                `🤖  Searcher  ${B(mentionOf(info.searcherBot))}`,
             ]
-            : [`\uD83E\uDD16  Searcher  ${B(mentionOf(info.searcherBot))}`];
+            : [`🤖  Searcher  ${B(mentionOf(info.searcherBot))}`];
     return [
-        `\uD83D\uDD0E  ${B("ULP SEARCH")}`,
+        `🚀  ${B("ULP SEARCH INITIALIZED")}  ⚡️`,
         RULE,
-        `\uD83C\uDFAF  Query     ${B(escapeHtml(info.query))}`,
-        `\uD83D\uDDD3\uFE0F  Search    ${B("Day-by-day (starting from current date)")}`,
+        `🎯  Query     ${B(escapeHtml(info.query))}`,
+        `📅  Mode      ${B("Day-by-Day (Auto-detecting latest batch)")}`,
         ...whoRow,
-        `\u23F1\uFE0F  Pacing    ${B(pacingLabel(info.stepDelayMs))} before every try`,
+        `⏳  Pacing    ${B(pacingLabel(info.stepDelayMs))} anti-flood delay`,
         "",
-        `${I("Results are forwarded and auto-cleaned into batch \u2B07\uFE0F")}`,
-        `${I("When done or stopped, the combined file is delivered automatically \u2728")}`,
+        `${I("Incoming dump files will be auto-downloaded & cleaned into batch ⬇️")}`,
+        `${I("When done or stopped, the combined file is delivered automatically ✨")}`,
     ].join("\n");
 }
 
@@ -531,10 +548,10 @@ function renderUlpStart(info) {
  */
 function renderUlpProgress(info) {
     return [
-        `\uD83D\uDCE1  ${B("SENT")} \u00B7 try ${B(`${info.attempt}/${info.maxTries}`)}`,
+        `📡  ${B("SEARCH IN PROGRESS")} \u00B7 ${B(`${info.attempt}/${info.maxTries}`)}  ⏳`,
         RULE,
-        `\uD83E\uDD16  ${B(mentionOf(info.searcherBot))} \u00B7 ${num(info.sends)} message${info.sends === 1 ? "" : "s"} sent`,
-        `\u23F3  ${I(`Waiting up to ${pacingLabel(info.stepDelayMs)} for an answer\u2026`)}`,
+        `🤖  ${B(mentionOf(info.searcherBot))} \u00B7 ${num(info.sends)} step(s) sent`,
+        `⏳  ${I(`Pacing ${pacingLabel(info.stepDelayMs)} for safe anti-flood execution…`)}`,
     ].join("\n");
 }
 
@@ -544,12 +561,12 @@ function renderUlpProgress(info) {
  */
 function renderUlpResults(info) {
     return [
-        `\uD83D\uDCE5  ${B("RESULTS INCOMING")}`,
+        `📥  ${B("RESULTS INCOMING")}  ⚡️`,
         RULE,
-        `\uD83E\uDD16  ${B(mentionOf(info.searcherBot))} answered \u2014 forwarding ${B(num(info.count))} message${info.count === 1 ? "" : "s"} \u2B07\uFE0F`,
-        `\uD83D\uDD0E  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        `🤖  ${B(mentionOf(info.searcherBot))} answered \u2014 forwarding ${B(num(info.count))} message${info.count === 1 ? "" : "s"} ⬇️`,
+        `🎯  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
         "",
-        `${I("Documents get a \uD83E\uDDFC Clean into batch button \u2728")}`,
+        `${I("Documents are automatically ingested and deduped into your batch 💎")}`,
     ].join("\n");
 }
 
@@ -559,12 +576,28 @@ function renderUlpResults(info) {
  */
 function renderUlpEmpty(info) {
     return [
-        `\uD83D\uDD73\uFE0F  ${B("NO RESULTS")}`,
+        `🕳  ${B("NO RESULTS")}  🕳`,
         RULE,
-        `Tried ${B(`${info.attempts}\u00D7`)} with ${B(pacingLabel(info.stepDelayMs))} pacing \u2014 ${B(mentionOf(info.searcherBot))} stayed quiet \uD83D\uDE36`,
-        `\uD83D\uDD0E  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        `Tried ${B(`${info.attempts}×`)} with ${B(pacingLabel(info.stepDelayMs))} pacing \u2014 ${B(mentionOf(info.searcherBot))} returned no dumps.`,
+        `🎯  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
         "",
-        `${I("Tap another scope \u2B07\uFE0F or run /ulp with a new query")}`,
+        `${I("Try another query with /ulp <query> 🔄")}`,
+    ].join("\n");
+}
+
+/**
+ * Run completed successfully.
+ * @param {{ query: string, scope?: string, count: number }} info
+ */
+function renderUlpDone(info) {
+    return [
+        `✨  ${B("ULP SEARCH COMPLETED")}  🚀`,
+        RULE,
+        `🎯  Target      ${B(escapeHtml(info.query))}`,
+        `📊  Relayed     ${B(num(info.count))} message${info.count === 1 ? "" : "s"}`,
+        `📦  Status      ${B("Combined file generated & batch reset")} 💎`,
+        "",
+        `${I("Start another one anytime with /ulp ⚡️")}`,
     ].join("\n");
 }
 
@@ -574,13 +607,66 @@ function renderUlpEmpty(info) {
  */
 function renderUlpStopped(info) {
     return [
-        `\uD83D\uDED1  ${B("SEARCH STOPPED")}`,
+        `🛑  ${B("SEARCH HALTED")}  🛑`,
         RULE,
-        `\uD83D\uDD0E  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
-        `${num(info.count)} result message${info.count === 1 ? "" : "s"} relayed this run`,
+        `🎯  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        `📊  ${num(info.count)} result message${info.count === 1 ? "" : "s"} captured this run`,
         "",
-        `${I("Start another one with /ulp \uD83D\uDD01")}`,
+        `${I("Ready for your next search with /ulp 🚀")}`,
     ].join("\n");
+}
+
+/**
+ * Server files vault list (/files).
+ * @param {{
+ *   rawFiles: Array<{ name: string, size: number, mtime: Date }>,
+ *   processedFiles: Array<{ name: string, size: number, mtime: Date }>,
+ *   rawRoot: string,
+ *   processedRoot: string,
+ *   humanSize: (n: number) => string
+ * }} info
+ */
+function renderServerFiles(info) {
+    const { rawFiles = [], processedFiles = [], rawRoot, processedRoot, humanSize } = info;
+    const lines = [
+        `📂  ${B("SERVER FILES VAULT")}  ⚡️`,
+        RULE,
+    ];
+
+    lines.push(`📥  ${B("Raw Incoming Dumps")} \u00B7 ${CODE(escapeHtml(rawRoot))}`);
+    if (rawFiles.length === 0) {
+        lines.push(`  ${I("No raw files found on disk \u2014 forward a file and reply with /save")}`);
+    } else {
+        for (const f of rawFiles.slice(0, 10)) {
+            const isZip = f.name.toLowerCase().endsWith(".zip");
+            const icon = isZip ? "📦" : "📄";
+            lines.push(`  ${icon} ${B(escapeHtml(f.name))} \u00B7 ${CODE(humanSize(f.size))}`);
+        }
+        if (rawFiles.length > 10) {
+            lines.push(`  ${I(`…and ${rawFiles.length - 10} more raw file(s)`)}`);
+        }
+    }
+
+    lines.push("");
+    lines.push(`💎  ${B("Cleaned Output Files")} \u00B7 ${CODE(escapeHtml(processedRoot))}`);
+    if (processedFiles.length === 0) {
+        lines.push(`  ${I("No processed outputs yet \u2014 clean a dump with /process")}`);
+    } else {
+        for (const f of processedFiles.slice(0, 10)) {
+            lines.push(`  ⚡ ${B(escapeHtml(f.name))} \u00B7 ${CODE(humanSize(f.size))}`);
+        }
+        if (processedFiles.length > 10) {
+            lines.push(`  ${I(`…and ${processedFiles.length - 10} more output(s)`)}`);
+        }
+    }
+
+    lines.push(
+        "",
+        RULE,
+        `💡 ${I("Clean any raw file:")} ${CODE("/process /var/data/filename.zip")}`,
+        `🔍 ${I("Fast-search cleaned output:")} ${CODE("/lsearch <query>")}`,
+    );
+    return lines.join("\n");
 }
 
 /**
@@ -702,14 +788,14 @@ function renderUlpBlocked(info) {
  */
 function renderUlpSharedResult(info) {
     return [
-        `\uD83D\uDCE5  ${B("RESULT IN")} \u00B7 ${B(mentionOf(info.searcherBot))}`,
+        `📥  ${B("RESULT IN")} \u00B7 ${B(mentionOf(info.searcherBot))}  💎`,
         RULE,
-        `\uD83D\uDD0E  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
-        `\uD83D\uDCE6  ${num(info.count)} result message${info.count === 1 ? "" : "s"} in this run \u2014 more may follow \u2B07\uFE0F`,
+        `🎯  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        `📦  ${num(info.count)} message${info.count === 1 ? "" : "s"} relayed in this run ⬇️`,
         "",
         info.hasDocument
-            ? `${I("Auto-processing into batch now \u2728")}`
-            : `${I("Long text results: save them as a .txt and I'll take it from there \uD83D\uDCC2")}`,
+            ? `${I("⚡ Auto-processing dump file into batch now…")}`
+            : `${I("📄 Text dump relayed \u2014 send files for deep cleaning")}`,
     ].join("\n");
 }
 
@@ -726,10 +812,13 @@ module.exports = {
     renderUlpStart,
     renderUlpProgress,
     renderUlpResults,
+    renderUlpDone,
     renderUlpEmpty,
     renderUlpStopped,
     renderUlpBlocked,
     renderUlpSharedResult,
+    renderServerFiles,
+    serverFilesKeyboard,
     escapeHtml,
     mainKeyboard,
     confirmClearKeyboard,

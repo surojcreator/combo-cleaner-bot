@@ -172,6 +172,31 @@ function parseDmyDate(str) {
     return d;
 }
 
+/**
+ * Extract the newest batch date from the DumpNews14Bot menu message.
+ * Inspects all buttons and returns the first date matching "DD.MM.YYYY".
+ * @param {any} menuMsg
+ * @returns {Date|null}
+ */
+function detectLatestBatchDate(menuMsg) {
+    if (!menuMsg || !menuMsg.replyMarkup || !Array.isArray(menuMsg.replyMarkup.rows)) {
+        return null;
+    }
+    for (const row of menuMsg.replyMarkup.rows) {
+        if (!Array.isArray(row.buttons)) continue;
+        for (const btn of row.buttons) {
+            const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
+            const textStr = String(btn.text || "");
+            const m = dataStr.match(/folder:(\d{1,2}\.\d{1,2}\.\d{4}):/) || textStr.match(/(\d{1,2}\.\d{1,2}\.\d{4})/);
+            if (m) {
+                const parsed = parseDmyDate(m[1]);
+                if (parsed) return parsed;
+            }
+        }
+    }
+    return null;
+}
+
 module.exports = {
     ULP_MARKER,
     CALL_TIMEOUT_MS,
@@ -186,6 +211,7 @@ module.exports = {
     formatDateDmy,
     previousDate,
     parseDmyDate,
+    detectLatestBatchDate,
     createUserbot,
 };
 
@@ -572,7 +598,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             const {
                 query,
                 daysCount = 5,
-                startDate = new Date(),
+                startDate = null,
                 chatId = null,
                 stepDelayMs = 7000,
                 shouldStop = () => false,
@@ -584,7 +610,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
             // Step 0: Ensure the query is active in the searcher bot
             if (shouldStop()) return { status: "stopped", daysProcessed: 0 };
-            onStatus({ day: formatDateDmy(startDate), attempt: 1, totalDays: daysCount, step: `Setting query "${query}"` });
+            onStatus({
+                day: startDate ? formatDateDmy(startDate) : "latest",
+                attempt: 1,
+                totalDays: daysCount,
+                step: `Setting query "${query}"`,
+            });
             await withTimeout(
                 client.sendMessage(searchTarget, { message: query }),
                 timeoutMs,
@@ -592,7 +623,40 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             );
             await sleep(Math.min(stepDelayMs, 3000));
 
-            let currentDate = new Date(startDate.getTime());
+            let currentDate = startDate ? new Date(startDate.getTime()) : null;
+
+            // Step 1: Auto-discover the latest batch date if no explicit startDate was given
+            if (!currentDate) {
+                onStatus({
+                    day: "latest",
+                    attempt: 1,
+                    totalDays: daysCount,
+                    step: "Detecting latest batch date…",
+                });
+                const sentStart = await withTimeout(
+                    client.sendMessage(searchTarget, { message: "/start" }),
+                    timeoutMs,
+                    "userbot send /start for latest batch",
+                );
+                await sleep(2000);
+                const recentMsgs = await withTimeout(
+                    client.getMessages(searchTarget, { limit: 5 }),
+                    timeoutMs,
+                    "userbot getMessages for latest batch",
+                );
+                const initialMenu =
+                    recentMsgs.find((m) => !m.out && m.id > (sentStart.id || 0) && m.replyMarkup && m.replyMarkup.rows) ||
+                    recentMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows);
+                const detected = detectLatestBatchDate(initialMenu);
+                if (detected) {
+                    currentDate = detected;
+                    log.log(`userbot detected latest batch date: ${formatDateDmy(currentDate)}`);
+                } else {
+                    currentDate = new Date();
+                    log.log(`userbot could not detect batch date from menu, falling back to ${formatDateDmy(currentDate)}`);
+                }
+            }
+
             let daysProcessed = 0;
             let consecutiveMisses = 0;
 
@@ -607,8 +671,8 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     step: `Opening folder for ${dateStr}`,
                 });
 
-                // Send /start to get the date folder menu
-                await withTimeout(
+                // Send /start to get the fresh date folder menu
+                const sentStart = await withTimeout(
                     client.sendMessage(searchTarget, { message: "/start" }),
                     timeoutMs,
                     "userbot send /start",
@@ -622,13 +686,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 let folderBtn = null;
                 let pageAttempts = 0;
 
-                while (pageAttempts < 4 && !folderBtn) {
+                while (pageAttempts < 5 && !folderBtn) {
                     const recentMsgs = await withTimeout(
                         client.getMessages(searchTarget, { limit: 5 }),
                         timeoutMs,
                         "userbot getMessages menu",
                     );
-                    menuMsg = recentMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows);
+                    menuMsg =
+                        recentMsgs.find((m) => !m.out && m.id > (sentStart.id || 0) && m.replyMarkup && m.replyMarkup.rows) ||
+                        recentMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows);
                     if (!menuMsg) break;
 
                     // Search for folder button with dateStr
@@ -667,6 +733,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                 "userbot nextPage",
                             );
                             await sleep(2000);
+                            // Refresh menuMsg by ID to inspect updated buttons on edited message
+                            try {
+                                const updated = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
+                                if (updated && updated[0] && updated[0].replyMarkup) {
+                                    menuMsg = updated[0];
+                                }
+                            } catch {
+                                // ignore
+                            }
                             pageAttempts++;
                         } else {
                             break;
@@ -707,14 +782,25 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 if (shouldStop()) return { status: "stopped", daysProcessed };
 
                 // Get the updated folder view and find hist button
-                const folderMsgs = await withTimeout(
-                    client.getMessages(searchTarget, { limit: 5 }),
-                    timeoutMs,
-                    "userbot getMessages folder",
-                );
-                const folderView = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuMsg;
-                let histBtn = null;
+                let folderView = null;
+                try {
+                    const byId = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
+                    if (byId && byId[0] && byId[0].replyMarkup && byId[0].replyMarkup.rows) {
+                        folderView = byId[0];
+                    }
+                } catch {
+                    // ignore
+                }
+                if (!folderView) {
+                    const folderMsgs = await withTimeout(
+                        client.getMessages(searchTarget, { limit: 5 }),
+                        timeoutMs,
+                        "userbot getMessages folder",
+                    );
+                    folderView = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuMsg;
+                }
 
+                let histBtn = null;
                 if (folderView && folderView.replyMarkup && folderView.replyMarkup.rows) {
                     for (const row of folderView.replyMarkup.rows) {
                         for (const btn of row.buttons) {
@@ -774,7 +860,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         day: dateStr,
                         attempt: dayIdx + 1,
                         totalDays: daysCount,
-                        step: `Waiting before next day…`,
+                        step: `Pacing before next day…`,
                     });
                     await sleep(Math.max(2000, stepDelayMs - 3500));
                 }

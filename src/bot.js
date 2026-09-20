@@ -23,10 +23,13 @@ const {
     renderUlpStart,
     renderUlpProgress,
     renderUlpResults,
+    renderUlpDone,
     renderUlpEmpty,
     renderUlpStopped,
     renderUlpBlocked,
     renderUlpSharedResult,
+    renderServerFiles,
+    serverFilesKeyboard,
     mainKeyboard,
     confirmClearKeyboard,
     afterCombineKeyboard,
@@ -217,29 +220,91 @@ function createBot(token, meta = {}) {
         await safeReply(ctx, renderSearch(query, result), mainKeyboard());
     });
 
+    const showServerFiles = async (ctx, editMessageId = null) => {
+        const rawRoot = localProcessRoot();
+        const processedRoot = localProcessedRoot();
+        const rawFiles = scanDirFiles(rawRoot);
+        const processedFiles = scanDirFiles(processedRoot);
+        const text = renderServerFiles({
+            rawFiles,
+            processedFiles,
+            rawRoot,
+            processedRoot,
+            humanSize,
+        });
+        if (editMessageId) {
+            await safeEdit(ctx, editMessageId, text, serverFilesKeyboard());
+        } else {
+            await safeReply(ctx, text, serverFilesKeyboard());
+        }
+    };
+
+    bot.command("files", async (ctx) => {
+        await showServerFiles(ctx);
+    });
+
+    bot.command("serverfiles", async (ctx) => {
+        await showServerFiles(ctx);
+    });
+
+    bot.command("list", async (ctx) => {
+        await showServerFiles(ctx);
+    });
+
+    bot.action("server_files", async (ctx) => {
+        await ctx.answerCbQuery("📂 Opening server vault…").catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showServerFiles(ctx, msg ? msg.message_id : null);
+    });
+
+    bot.action("files:refresh", async (ctx) => {
+        await ctx.answerCbQuery("🔄 Files refreshed").catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showServerFiles(ctx, msg ? msg.message_id : null);
+    });
+
     bot.command("lsearch", async (ctx) => {
-        const query = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const raw = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const parts = raw.split(/\s+/);
+        const query = parts[0] || "";
+        const specifiedName = parts[1] || "";
+
         if (query.length < 2) {
             await safeReply(
                 ctx,
-                `${I("Usage:")} ${CODE("/lsearch example.com")}\nSearches the newest cleaned file under ${CODE(localProcessedRoot())}.`,
+                `${I("Usage:")} ${CODE("/lsearch example.com [filename]")}\nSearches cleaned files under ${CODE(localProcessedRoot())} or raw dumps in ${CODE(localProcessRoot())}.`,
             );
             return;
         }
-        const file = latestFileIn(localProcessedRoot());
+
+        let file = null;
+        if (specifiedName) {
+            const p1 = path.join(localProcessedRoot(), specifiedName);
+            const p2 = path.join(localProcessRoot(), specifiedName);
+            if (fs.existsSync(p1)) file = p1;
+            else if (fs.existsSync(p2)) file = p2;
+            else {
+                const allProcessed = scanDirFiles(localProcessedRoot());
+                const match = allProcessed.find((f) => f.name.toLowerCase().includes(specifiedName.toLowerCase()));
+                if (match) file = match.path;
+            }
+        }
+        if (!file) {
+            file = latestFileIn(localProcessedRoot()) || latestFileIn(localProcessRoot());
+        }
         if (!file) {
             await safeReply(ctx, `\u26A0\uFE0F  No processed output found under ${CODE(localProcessedRoot())}. Run ${CODE("/process /var/data/file.txt")} first.`);
             return;
         }
         const status = await ctx.reply(
-            `\uD83D\uDD0E  ${B("LOCAL SEARCH")}\n${CODE(escapeHtml(query))}\n${I(escapeHtml(path.basename(file)))}`,
+            `🔎  ${B("LOCAL SEARCH")}  ⚡️\n${CODE(escapeHtml(query))}\n📂 ${I(escapeHtml(path.basename(file)))}`,
             { parse_mode: "HTML" },
         );
         try {
             const result = await searchTextFile(file, query, 20);
             await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
         } catch (err) {
-            await safeEdit(ctx, status.message_id, `\uD83D\uDCA5  ${B("Local search failed")}\n${I(escapeHtml(err.message))}`);
+            await safeEdit(ctx, status.message_id, `💥  ${B("Local search failed")}\n${I(escapeHtml(err.message))}`);
         }
     });
 
@@ -1353,14 +1418,14 @@ async function beginUlpRun(ctx, params) {
         const finalStatus = dayRes.status === "stopped" ? "stopped" : "done";
         searchbot.finishRun(chatId, finalStatus);
         if (card) {
+            const resultCount = (searchbot.getRun(chatId) || {}).results?.length || 0;
+            const text = finalStatus === "done"
+                ? renderUlpDone({ query, scope, count: resultCount })
+                : renderUlpStopped({ query, scope, count: resultCount });
             await safeEdit(
                 ctx,
                 card.message_id,
-                renderUlpStopped({
-                    query,
-                    scope,
-                    count: (searchbot.getRun(chatId) || {}).results?.length || 0,
-                }),
+                text,
                 ulpKeyboard(finalStatus),
             );
         }
@@ -1587,6 +1652,38 @@ function latestFileIn(dir) {
         }
     }
     return newest;
+}
+
+/**
+ * Scan a directory for files, returning metadata sorted newest first.
+ * @param {string} dir
+ * @returns {Array<{ name: string, path: string, size: number, mtime: Date }>}
+ */
+function scanDirFiles(dir) {
+    let entries;
+    try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return [];
+    }
+    const files = [];
+    for (const e of entries) {
+        if (!e.isFile()) continue;
+        const p = path.join(dir, e.name);
+        try {
+            const st = fs.statSync(p);
+            files.push({
+                name: e.name,
+                path: p,
+                size: st.size,
+                mtime: st.mtime,
+            });
+        } catch {
+            continue;
+        }
+    }
+    files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    return files;
 }
 
 /** Root directory from which /process is allowed to read. */
@@ -1921,6 +2018,7 @@ module.exports = {
     searchTextFile,
     processedOutputPath,
     renderSaveError,
+    scanDirFiles,
 };
 
 

@@ -132,4 +132,65 @@ test("isSearcherForward handles @ in username and chat/channel forwards", () => 
     assert.equal(isSearcherForward(chanForward, meta, searchOptions), true);
 });
 
+test("detectLatestBatchDate extracts the latest batch date from menu buttons", () => {
+    const mockMenu = {
+        replyMarkup: {
+            rows: [
+                {
+                    buttons: [
+                        { text: "📅 19.09.2026", data: Buffer.from("folder:19.09.2026:0") },
+                        { text: "📅 18.09.2026", data: Buffer.from("folder:18.09.2026:0") },
+                    ],
+                },
+                {
+                    buttons: [
+                        { text: "⬅️", data: Buffer.from("menu:page:0") },
+                        { text: "➡️", data: Buffer.from("menu:page:1") },
+                    ],
+                },
+            ],
+        },
+    };
+    const detected = userbot.detectLatestBatchDate(mockMenu);
+    assert.ok(detected instanceof Date);
+    assert.equal(userbot.formatDateDmy(detected), "19.09.2026");
+
+    assert.equal(userbot.detectLatestBatchDate(null), null);
+    assert.equal(userbot.detectLatestBatchDate({}), null);
+});
+
+test("renderServerFiles and scanDirFiles formats file vault with animated emojis", () => {
+    const { scanDirFiles } = require("../src/bot");
+    const { renderServerFiles, serverFilesKeyboard } = require("../src/messages");
+
+    const out = renderServerFiles({
+        rawFiles: [
+            { name: "dump-2026-09-20.zip", size: 104857600, mtime: new Date() },
+            { name: "group-file.txt", size: 5242880, mtime: new Date() },
+        ],
+        processedFiles: [
+            { name: "cleaned_dump.txt", size: 20971520, mtime: new Date() },
+        ],
+        rawRoot: "/var/data",
+        processedRoot: "/var/data/processed",
+        humanSize: (n) => `${Math.round(n / (1024 * 1024))} MB`,
+    });
+
+    assert.match(out, /SERVER FILES VAULT/);
+    assert.match(out, /dump-2026-09-20\.zip/);
+    assert.match(out, /cleaned_dump\.txt/);
+    assert.match(out, /\/var\/data/);
+
+    const kb = serverFilesKeyboard();
+    assert.ok(kb.reply_markup.inline_keyboard.length >= 2);
+});
+
+test("renderUlpDone renders completed status card with query and count", () => {
+    const { renderUlpDone } = require("../src/messages");
+    const out = renderUlpDone({ query: "example.com", count: 7 });
+    assert.match(out, /ULP SEARCH COMPLETED/);
+    assert.match(out, /example\.com/);
+    assert.match(out, /<b>7<\/b> message/);
+});
+
 

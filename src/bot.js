@@ -51,9 +51,9 @@ const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 // Extraction is still memory-bound by adm-zip, so these caps apply only to the
 // in-memory zip path — plain-text files stream line-by-line and never hit them.
 const DEFAULT_PROCESS_MAX_ZIP_BYTES = 4 * 1024 * 1024 * 1024; // 4 GB
-const PROCESS_BATCH_SIZE = 5000; // cleaned lines per store.addLines call
+const PROCESS_BATCH_SIZE = 25000; // cleaned lines per store.addLines call
 const PROCESS_SAMPLE_BYTES = 1024 * 1024; // 1 MB of raw text kept for site detection
-const PROCESS_PROGRESS_EVERY = 250_000; // progress edit every N source lines
+const PROCESS_PROGRESS_EVERY = 500_000; // progress edit every N source lines
 
 // Cooldown between combine calls, per chat (anti double-tap spam).
 const COMBINE_COOLDOWN_MS = 3000;
@@ -936,16 +936,16 @@ async function ingestDocument(ctx, doc) {
     if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
     const buffer = Buffer.from(await res.arrayBuffer());
 
-    // Stage 2: extracting.
-    await safeEdit(
+    // Stage 2: extracting (async notification without blocking processing)
+    void safeEdit(
         ctx,
         progress.message_id,
         [
-            `\uD83D\uDCE6  ${B("Extracting")} ${escapeHtml(name)}`,
-            `     \uD83E\uDDF0  unzipping nested archives\u2026`,
+            `📦  ${B("Extracting")} ${escapeHtml(name)}`,
+            `     🧵  unzipping nested archives…`,
         ].join("\n"),
     );
-    await ctx.replyWithChatAction("typing").catch(() => { });
+    void ctx.replyWithChatAction("typing").catch(() => { });
 
     // Stage 3: cleaning.
     const keepUrl = true;
@@ -954,12 +954,12 @@ async function ingestDocument(ctx, doc) {
             ? extractAndCleanZip(buffer, { sourceName: name, keepUrl })
             : extractAndCleanText(buffer.toString("utf8"), { sourceName: name, keepUrl });
 
-    await safeEdit(
+    void safeEdit(
         ctx,
         progress.message_id,
         [
-            `\uD83E\uDDFC  ${B("Cleaning")} ${escapeHtml(name)}`,
-            `     \u2702\uFE0F  filtering ${num(result.stats.total)} lines\u2026`,
+            `🧼  ${B("Cleaning")} ${escapeHtml(name)}`,
+            `     ✂️  filtering ${num(result.stats.total)} lines…`,
         ].join("\n"),
     );
 
@@ -1730,16 +1730,18 @@ function localProcessedRoot() {
  * @param {number} limit
  */
 async function searchTextFile(filePath, query, limit = 20) {
-    const q = String(query || "").toLowerCase();
+    const q = String(query || "").trim();
     if (!q) return { total: 0, matches: [] };
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escaped, "i");
     let total = 0;
     const matches = [];
     const rl = readline.createInterface({
-        input: fs.createReadStream(filePath, { encoding: "utf8" }),
+        input: fs.createReadStream(filePath, { encoding: "utf8", highWaterMark: 1024 * 1024 }),
         crlfDelay: Infinity,
     });
     for await (const line of rl) {
-        if (!line.toLowerCase().includes(q)) continue;
+        if (!re.test(line)) continue;
         total += 1;
         if (matches.length < limit) matches.push(line);
     }
@@ -1872,12 +1874,12 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
     let countedFile = false;
     const outputPath = processedOutputPath(name, chatId);
     const partialPath = `${outputPath}.partial`;
-    const output = fs.createWriteStream(partialPath, { encoding: "utf8" });
+    const output = fs.createWriteStream(partialPath, { encoding: "utf8", highWaterMark: 1024 * 1024 });
     let writtenLines = 0;
     const seen = new Set();
 
     const rl = readline.createInterface({
-        input: fs.createReadStream(fullPath, { encoding: "utf8" }),
+        input: fs.createReadStream(fullPath, { encoding: "utf8", highWaterMark: 1024 * 1024 }),
         crlfDelay: Infinity,
     });
 

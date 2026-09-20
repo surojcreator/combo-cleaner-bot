@@ -396,10 +396,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             try {
                 const result = await client.downloadMedia(message, {
                     outputFile: partialPath,
+                    partSizeKb: 512,
                     progressCallback: (done, total) => {
                         if (options.onProgress) options.onProgress(Number(done), Number(total));
                     },
-                    requestTimeout: 60_000,
+                    requestTimeout: 120_000,
                 });
                 if (!result || !fs.existsSync(partialPath)) {
                     throw new Error("TELEGRAM_MEDIA_DOWNLOAD_FAILED");
@@ -621,7 +622,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 timeoutMs,
                 "userbot send query",
             );
-            await sleep(Math.min(stepDelayMs, 3000));
+            await sleep(Math.min(stepDelayMs, 1000));
 
             let currentDate = startDate ? new Date(startDate.getTime()) : null;
 
@@ -638,7 +639,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     timeoutMs,
                     "userbot send /start for latest batch",
                 );
-                await sleep(2000);
+                await sleep(1000);
                 const recentMsgs = await withTimeout(
                     client.getMessages(searchTarget, { limit: 5 }),
                     timeoutMs,
@@ -677,7 +678,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     timeoutMs,
                     "userbot send /start",
                 );
-                await sleep(2000);
+                await sleep(1000);
 
                 if (shouldStop()) return { status: "stopped", daysProcessed };
 
@@ -732,7 +733,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                 timeoutMs,
                                 "userbot nextPage",
                             );
-                            await sleep(2000);
+                            await sleep(1000);
                             // Refresh menuMsg by ID to inspect updated buttons on edited message
                             try {
                                 const updated = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
@@ -777,7 +778,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     timeoutMs,
                     "userbot click folder",
                 );
-                await sleep(2500);
+                await sleep(1200);
 
                 if (shouldStop()) return { status: "stopped", daysProcessed };
 
@@ -833,7 +834,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     daysProcessed++;
 
                     // Wait for result message from DumpNews14Bot and forward
-                    await sleep(3500);
+                    await sleep(1800);
                     if (chatId) {
                         try {
                             const latest = await client.getMessages(searchTarget, { limit: 4 });
@@ -862,7 +863,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         totalDays: daysCount,
                         step: `Pacing before next day…`,
                     });
-                    await sleep(Math.max(2000, stepDelayMs - 3500));
+                    await sleep(Math.max(1200, Math.min(stepDelayMs, 3000) - 1800));
                 }
 
                 // Go down one day at a time

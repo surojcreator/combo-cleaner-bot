@@ -156,12 +156,14 @@ function getRawChat(chatId) {
  */
 function searchLines(chatId, query, limit = 20) {
     const chat = chats.get(chatId);
-    const q = String(query || "").toLowerCase();
+    const q = String(query || "").trim();
     if (!chat || !q) return { total: 0, matches: [] };
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(escaped, "i");
     const matches = [];
     let total = 0;
     for (const line of chat.lines) {
-        if (line.toLowerCase().includes(q)) {
+        if (re.test(line)) {
             total += 1;
             if (matches.length < limit) matches.push(line);
         }

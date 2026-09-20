@@ -223,6 +223,28 @@ function cleanLine(rawLine, options = {}) {
     const line = normalizeLine(rawLine);
     if (!line) return null;
 
+    // Fast reject lines with no candidate separator
+    const hasColon = line.includes(":");
+    const hasPipe = line.includes("|");
+    if (!hasColon && !hasPipe) return null;
+
+    // Fast path: standard email:password or phone:password lines with no URL/pipe
+    if (!hasPipe) {
+        const firstSep = line.indexOf(":");
+        if (firstSep > 0) {
+            const firstToken = line.slice(0, firstSep).trim();
+            const rest = line.slice(firstSep + 1).trim();
+            if (rest && !rest.startsWith("//")) {
+                if (firstToken.includes("@") && isEmail(firstToken)) {
+                    return keepUrl ? line : `${firstToken}:${rest}`;
+                }
+                if (isPhone(firstToken)) {
+                    return keepUrl ? line : `${firstToken}:${rest}`;
+                }
+            }
+        }
+    }
+
     // Pass 0: card dumps like `number|mm|yy|cvv|...extras` strip down to
     // just the first four fields, normalized to `number|mm|yy|cvv`.
     const cc = cleanCcLine(line);

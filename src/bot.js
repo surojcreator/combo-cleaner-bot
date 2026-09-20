@@ -1284,7 +1284,10 @@ function createBot(token, meta = {}) {
         }
 
         sourceMessageId = replied.message_id;
-        originalName = (replied.document && replied.document.file_name) || originalName || `telegram-${sourceMessageId}.bin`;
+        originalName = userbot.resolveSafeFileName(
+            replied.document || originalName,
+            `dump_${sourceMessageId}`,
+        );
         const status = await safeReply(
             ctx,
             [
@@ -1406,7 +1409,10 @@ function createBot(token, meta = {}) {
         try {
             for (let i = 0; i < docs.length; i++) {
                 const doc = docs[i];
-                const currentName = doc.fileName || `telegram-${doc.messageId}.bin`;
+                const currentName = userbot.resolveSafeFileName(
+                    doc.fileName || doc.message || doc.document,
+                    `dump_${doc.messageId}`,
+                );
                 const beforeStats = store.getStats(ctx.chat.id);
                 const beforeSize = beforeStats ? beforeStats.size : 0;
 
@@ -2236,13 +2242,10 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
  * @param {import('telegraf').Types.Document} doc
  */
 async function ingestDocument(ctx, doc, options = {}) {
-    let name = doc && (doc.file_name || doc.fileName);
-    if (!name || typeof name !== "string" || !name.trim()) {
-        const mime = (doc && (doc.mime_type || doc.mimeType)) || "";
-        const defExt = mime.includes("zip") ? ".zip" : mime.includes("csv") ? ".csv" : ".txt";
-        name = `dump_${(doc && (doc.file_unique_id || doc.file_id)) || Date.now()}${defExt}`;
-    }
-    name = userbot.safeDownloadName(name);
+    let name = userbot.resolveSafeFileName(
+        doc,
+        `dump_${(doc && (doc.file_unique_id || doc.file_id)) || Date.now()}`,
+    );
     const lower = name.toLowerCase();
     const isZip = lower.endsWith(".zip");
     const isText =
@@ -2347,11 +2350,12 @@ async function ingestDocument(ctx, doc, options = {}) {
  */
 async function safeSendDocument(ctx, chatId, payload, extra = {}) {
     if (payload && typeof payload === "object") {
-        let fn = payload.filename;
-        if (!fn || typeof fn !== "string" || !fn.trim() || fn === "file" || fn === "telegram-undefined.bin" || fn === "undefined") {
-            fn = `combolist_combined_${new Date().toISOString().slice(0, 10)}.txt`;
-        }
-        payload.filename = userbot.safeDownloadName(fn);
+        const isZip = payload.filename && String(payload.filename).toLowerCase().endsWith(".zip");
+        payload.filename = userbot.resolveSafeFileName(
+            payload.filename,
+            "combolist_combined",
+            isZip ? ".zip" : ".txt",
+        );
     }
     let sendExtra = extra;
     if (botApiCustomEmojiRejected) {
@@ -2459,10 +2463,11 @@ async function sendCombined(ctx, force = false) {
         const cached = store.getLastCombined(chatId);
         if (cached && cached.buffer) {
             try {
+                const cachedFilename = userbot.resolveSafeFileName(cached.filename, "combolist_combined");
                 await safeSendDocument(
                     ctx,
                     chatId,
-                    { source: cached.buffer, filename: cached.filename },
+                    { source: cached.buffer, filename: cachedFilename },
                     {
                         caption: [
                             `🎁  ${B("COMBINED & DEDUPED (Latest Batch)")}`,
@@ -2485,10 +2490,11 @@ async function sendCombined(ctx, force = false) {
         if (procFiles.length > 0) {
             const newest = procFiles[0];
             try {
+                const resolvedName = userbot.resolveSafeFileName(newest.name, "combolist_combined");
                 await safeSendDocument(
                     ctx,
                     chatId,
-                    { source: fs.createReadStream(newest.path), filename: newest.name },
+                    { source: fs.createReadStream(newest.path), filename: resolvedName },
                     {
                         caption: [
                             `🎁  ${B("COMBINED & DEDUPED (From Server Vault)")}`,
@@ -2543,6 +2549,10 @@ async function sendCombined(ctx, force = false) {
                 : `${emoji}  ${B(num(sites.length))} sites mixed`;
     }
 
+    if (!base || typeof base !== "string" || !base.trim() || base === "_" || base === "undefined" || base === "null" || base === "file") {
+        base = "combolist";
+    }
+    base = sanitizeSiteSlug(base) || "combolist";
     const stamp = new Date().toISOString().slice(0, 10);
     const filename = `${base}_combined_${stamp}.txt`;
     const outputPath = path.join(localProcessedRoot(), filename);

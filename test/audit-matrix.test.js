@@ -92,6 +92,47 @@ describe("Mega Prompt 2: Exhaustive Audit & System Verification Matrix", () => {
             assert.ok(zipped.length < credSample.length, "ZIP compression must substantially reduce credential size");
             assert.ok(isZipBuffer(zipped), "Compressed buffer must have valid ZIP magic bytes");
         });
+
+        test("resolveSafeFileName resolves GramJS attributes, MIME types, and guarantees valid non-empty names", () => {
+            // 1. Doc with explicit file_name
+            const doc1 = { file_name: "custom_dump.txt" };
+            assert.equal(userbot.resolveSafeFileName(doc1), "custom_dump.txt");
+
+            // 2. GramJS message with attributes
+            const gramDoc = {
+                media: {
+                    document: {
+                        mimeType: "text/plain",
+                        attributes: [{ fileName: "gram_archive.txt" }],
+                    },
+                },
+            };
+            assert.equal(userbot.resolveSafeFileName(gramDoc), "gram_archive.txt");
+
+            // 3. GramJS message lacking attribute but having MIME application/zip
+            const zipGramDoc = {
+                media: {
+                    document: {
+                        mimeType: "application/zip",
+                        attributes: [],
+                    },
+                },
+            };
+            const resolvedZip = userbot.resolveSafeFileName(zipGramDoc, "dump_123");
+            assert.ok(resolvedZip.startsWith("dump_123_"));
+            assert.ok(resolvedZip.endsWith(".zip"));
+
+            // 4. Undefined, null, bare 'file'
+            const resolvedEmpty = userbot.resolveSafeFileName(null, "combolist");
+            assert.ok(resolvedEmpty.startsWith("combolist_"));
+            assert.ok(resolvedEmpty.endsWith(".txt"));
+
+            const resolvedBareFile = userbot.resolveSafeFileName({ file_name: "file" }, "combolist");
+            assert.ok(resolvedBareFile.startsWith("combolist_"));
+
+            // 5. Bare string input
+            assert.equal(userbot.resolveSafeFileName("clean_name.txt"), "clean_name.txt");
+        });
     });
 
     describe("Category B: Telegram Bot API & Error Boundaries", () => {

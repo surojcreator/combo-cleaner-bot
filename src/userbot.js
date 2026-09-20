@@ -124,6 +124,59 @@ function safeDownloadName(raw) {
     return safe || "telegram-file.bin";
 }
 
+/**
+ * Bulletproof filename resolution helper:
+ * Extracts filename from GramJS message attributes, Telegraf document objects,
+ * or inspects MIME types before falling back to a structured timestamped name.
+ *
+ * @param {any} doc
+ * @param {string} [defaultBase]
+ * @param {string} [ext]
+ * @returns {string}
+ */
+function resolveSafeFileName(doc, defaultBase = "combolist", ext = ".txt") {
+    let name = "";
+    if (typeof doc === "string" && doc.trim()) {
+        name = doc.trim();
+    } else if (doc && typeof doc === "object") {
+        name = doc.file_name || doc.fileName || doc.filename || "";
+
+        if (!name && doc.media && doc.media.document && Array.isArray(doc.media.document.attributes)) {
+            const attr = doc.media.document.attributes.find((a) => a && (a.fileName || a.file_name));
+            if (attr) name = attr.fileName || attr.file_name || "";
+        }
+
+        if (!name && doc.document && Array.isArray(doc.document.attributes)) {
+            const attr = doc.document.attributes.find((a) => a && (a.fileName || a.file_name));
+            if (attr) name = attr.fileName || attr.file_name || "";
+        }
+
+        const mime = doc.mime_type || doc.mimeType ||
+            (doc.media && doc.media.document && doc.media.document.mimeType) ||
+            (doc.document && (doc.document.mime_type || doc.document.mimeType)) || "";
+        if (mime) {
+            if (mime.includes("zip")) ext = ".zip";
+            else if (mime.includes("csv")) ext = ".csv";
+            else if (mime.includes("json")) ext = ".json";
+            else if (mime.includes("text") || mime.includes("plain")) ext = ".txt";
+        }
+    }
+
+    if (name === "file" || name === "undefined" || name === "null" || name.startsWith("telegram-undefined") || !name.trim()) {
+        name = "";
+    }
+
+    if (!name) {
+        const stamp = new Date().toISOString().slice(0, 10);
+        const safeBase = (defaultBase && typeof defaultBase === "string" && defaultBase.trim() && defaultBase !== "file" && defaultBase !== "undefined")
+            ? defaultBase.trim()
+            : "combolist";
+        name = `${safeBase}_${stamp}${ext}`;
+    }
+
+    return safeDownloadName(name);
+}
+
 /** Build a collision-resistant destination path under the configured root. */
 function downloadPath(root, rawName, messageId) {
     const name = safeDownloadName(rawName);
@@ -244,6 +297,7 @@ module.exports = {
     loadLibs,
     withTimeout,
     safeDownloadName,
+    resolveSafeFileName,
     downloadPath,
     markedPeerId,
     formatDateDmy,
@@ -462,10 +516,10 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 throw new Error(`REPLIED_MESSAGE_HAS_NO_MEDIA:${messageId}`);
             }
 
-            const actualName =
-                (message.file && message.file.name) ||
-                options.fileName ||
-                `telegram-${messageId}.bin`;
+            const actualName = resolveSafeFileName(
+                message,
+                options.fileName || `dump_${messageId}`,
+            );
             const finalPath = downloadPath(root, actualName, messageId);
             const partialPath = `${finalPath}.partial`;
 
@@ -623,18 +677,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     );
                     const msg = messages && messages[0];
                     if (msg && msg.media) {
-                        const attr = msg.media.document && msg.media.document.attributes &&
-                            msg.media.document.attributes.find((a) => a && (a.fileName || a.file_name));
-                        const mime = (msg.media.document && msg.media.document.mimeType) || "";
-                        const defExt = mime.includes("zip") ? ".zip" : mime.includes("csv") ? ".csv" : ".txt";
-                        const fileName =
-                            (msg.file && msg.file.name) ||
-                            (attr && (attr.fileName || attr.file_name)) ||
-                            `dump_${targetReplyId}${defExt}`;
+                        const fileName = resolveSafeFileName(msg, `dump_${targetReplyId}`);
                         const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
                         return {
                             messageId: targetReplyId,
-                            fileName: safeDownloadName(fileName),
+                            fileName,
                             size,
                             document: msg.media.document || msg.file,
                             message: msg,
@@ -655,18 +702,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 for (const msg of recent || []) {
                     if (msg.id === Number(commandMessageId)) continue;
                     if (msg.media && (msg.media.document || msg.file)) {
-                        const attr = msg.media.document && msg.media.document.attributes &&
-                            msg.media.document.attributes.find((a) => a && (a.fileName || a.file_name));
-                        const mime = (msg.media.document && msg.media.document.mimeType) || "";
-                        const defExt = mime.includes("zip") ? ".zip" : mime.includes("csv") ? ".csv" : ".txt";
-                        const fileName =
-                            (msg.file && msg.file.name) ||
-                            (attr && (attr.fileName || attr.file_name)) ||
-                            `dump_${msg.id}${defExt}`;
+                        const fileName = resolveSafeFileName(msg, `dump_${msg.id}`);
                         const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
                         return {
                             messageId: msg.id,
-                            fileName: safeDownloadName(fileName),
+                            fileName,
                             size,
                             document: msg.media.document || msg.file,
                             message: msg,
@@ -707,18 +747,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     if (commandMessageId && msg.id === Number(commandMessageId)) continue;
                     if (found.length >= limit) break;
                     if (msg.media && (msg.media.document || msg.file)) {
-                        const attr = msg.media.document && msg.media.document.attributes &&
-                            msg.media.document.attributes.find((a) => a && (a.fileName || a.file_name));
-                        const mime = (msg.media.document && msg.media.document.mimeType) || "";
-                        const defExt = mime.includes("zip") ? ".zip" : mime.includes("csv") ? ".csv" : ".txt";
-                        const fileName =
-                            (msg.file && msg.file.name) ||
-                            (attr && (attr.fileName || attr.file_name)) ||
-                            `dump_${msg.id}${defExt}`;
+                        const fileName = resolveSafeFileName(msg, `dump_${msg.id}`);
                         const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
                         found.push({
                             messageId: msg.id,
-                            fileName: safeDownloadName(fileName),
+                            fileName,
                             size,
                             document: msg.media.document || msg.file,
                             message: msg,

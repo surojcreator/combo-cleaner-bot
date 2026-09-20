@@ -320,18 +320,24 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}) {
     const rows = [];
     const pageSize = options.pageSize || 3;
     const page = options.page || 0;
+    const tab = options.tab || "overview";
 
-    const rawStart = page * pageSize;
-    const rawSlice = Array.isArray(rawFiles) ? rawFiles.slice(rawStart, rawStart + pageSize) : [];
-    const totalRawPages = Math.ceil((rawFiles ? rawFiles.length : 0) / pageSize) || 1;
+    const rawCount = Array.isArray(rawFiles) ? rawFiles.length : 0;
+    const procCount = Array.isArray(processedFiles) ? processedFiles.length : 0;
 
-    const procStart = page * pageSize;
-    const procSlice = Array.isArray(processedFiles) ? processedFiles.slice(procStart, procStart + pageSize) : [];
-    const totalProcPages = Math.ceil((processedFiles ? processedFiles.length : 0) / pageSize) || 1;
-    const maxPages = Math.max(totalRawPages, totalProcPages);
+    if (tab === "raw") {
+        // Tab switcher
+        rows.push([
+            Markup.button.callback(`📥 Raw Dumps (${rawCount}) ✅`, "files:tab:raw"),
+            Markup.button.callback(`💎 Cleaned Vault (${procCount})`, "files:tab:proc"),
+            Markup.button.callback("⚙️ Tools", "files:tab:tools"),
+        ]);
 
-    // 1. Raw Files Actions (Clean, Search, Delete)
-    if (rawSlice.length > 0) {
+        const rawStart = page * pageSize;
+        const rawSlice = Array.isArray(rawFiles) ? rawFiles.slice(rawStart, rawStart + pageSize) : [];
+        const totalPages = Math.ceil(rawCount / pageSize) || 1;
+
+        // Individual file actions
         for (let i = 0; i < rawSlice.length; i++) {
             const actualIdx = rawStart + i;
             rows.push([
@@ -340,10 +346,50 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}) {
                 Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:raw:ask:${actualIdx}`),
             ]);
         }
-    }
 
-    // 2. Processed Outputs Actions (Download, Search, Delete)
-    if (procSlice.length > 0) {
+        // Pagination
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 0) {
+                navRow.push(Markup.button.callback("◀️ Prev", `files:page:raw:${page - 1}`));
+            }
+            navRow.push(Markup.button.callback(`📄 ${page + 1}/${totalPages}`, "files:tab:raw"));
+            if (page + 1 < totalPages) {
+                navRow.push(Markup.button.callback("Next ▶️", `files:page:raw:${page + 1}`));
+            }
+            rows.push(navRow);
+        }
+
+        // Bulk operations
+        const bulkRow = [];
+        if (rawCount > 1) {
+            bulkRow.push(Markup.button.callback(`⚡️ Clean All Raw (${rawCount})`, "files:clean:all"));
+        }
+        if (rawCount > 0) {
+            bulkRow.push(Markup.button.callback(`🧹 Wipe All Raw`, "files:wipe:raw:ask"));
+        }
+        if (bulkRow.length > 0) rows.push(bulkRow);
+
+        rows.push([
+            Markup.button.callback("🏠 Vault Overview", "files:tab:overview"),
+            Markup.button.callback("🔄 Refresh", "files:refresh"),
+        ]);
+        rows.push([
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ]);
+    } else if (tab === "proc") {
+        // Tab switcher
+        rows.push([
+            Markup.button.callback(`📥 Raw Dumps (${rawCount})`, "files:tab:raw"),
+            Markup.button.callback(`💎 Cleaned Vault (${procCount}) ✅`, "files:tab:proc"),
+            Markup.button.callback("⚙️ Tools", "files:tab:tools"),
+        ]);
+
+        const procStart = page * pageSize;
+        const procSlice = Array.isArray(processedFiles) ? processedFiles.slice(procStart, procStart + pageSize) : [];
+        const totalPages = Math.ceil(procCount / pageSize) || 1;
+
+        // Individual file actions
         for (let i = 0; i < procSlice.length; i++) {
             const actualIdx = procStart + i;
             rows.push([
@@ -352,46 +398,108 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}) {
                 Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:proc:ask:${actualIdx}`),
             ]);
         }
-    }
 
-    // 3. Pagination Controls (if more than pageSize items exist)
-    if (maxPages > 1) {
-        const navRow = [];
-        if (page > 0) {
-            navRow.push(Markup.button.callback("◀️ Prev Page", `files:page:${page - 1}`));
+        // Pagination
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 0) {
+                navRow.push(Markup.button.callback("◀️ Prev", `files:page:proc:${page - 1}`));
+            }
+            navRow.push(Markup.button.callback(`📄 ${page + 1}/${totalPages}`, "files:tab:proc"));
+            if (page + 1 < totalPages) {
+                navRow.push(Markup.button.callback("Next ▶️", `files:page:proc:${page + 1}`));
+            }
+            rows.push(navRow);
         }
-        navRow.push(Markup.button.callback(`📄 ${page + 1}/${maxPages}`, "files:refresh"));
-        if (page + 1 < maxPages) {
-            navRow.push(Markup.button.callback("Next Page ▶️", `files:page:${page + 1}`));
-        }
-        rows.push(navRow);
-    }
 
-    // 4. Batch & Bulk Operations
-    const bulkRow = [];
-    if (Array.isArray(rawFiles) && rawFiles.length > 1) {
-        bulkRow.push(Markup.button.callback(`⚡️ Clean All Raw (${rawFiles.length})`, "files:clean:all"));
-    }
-    if (Array.isArray(rawFiles) && rawFiles.length > 0) {
-        bulkRow.push(Markup.button.callback(`🧹 Wipe All Raw`, "files:wipe:raw:ask"));
-    }
-    if (Array.isArray(processedFiles) && processedFiles.length > 0) {
-        bulkRow.push(Markup.button.callback(`🧹 Wipe All Outputs`, "files:wipe:proc:ask"));
-    }
-    if (bulkRow.length > 0) {
+        // Bulk operations
+        const bulkRow = [];
+        bulkRow.push(Markup.button.callback("📦 Get Combined File", "combine"));
+        if (procCount > 0) {
+            bulkRow.push(Markup.button.callback(`🧹 Wipe All Outputs`, "files:wipe:proc:ask"));
+        }
         rows.push(bulkRow);
+
+        rows.push([
+            Markup.button.callback("🏠 Vault Overview", "files:tab:overview"),
+            Markup.button.callback("🔄 Refresh", "files:refresh"),
+        ]);
+        rows.push([
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ]);
+    } else if (tab === "tools") {
+        rows.push([
+            Markup.button.callback(`🧹 Wipe All Raw (${rawCount})`, "files:wipe:raw:ask"),
+            Markup.button.callback(`🧹 Wipe All Outputs (${procCount})`, "files:wipe:proc:ask"),
+        ]);
+        rows.push([
+            Markup.button.callback("💥 Purge All Storage (Full Reset)", "files:wipe:all:ask"),
+        ]);
+        rows.push([
+            Markup.button.callback("🏠 Back to Vault Overview", "files:tab:overview"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ]);
+    } else {
+        // "overview" (default) - includes tabs at top, followed by file actions and global buttons
+        rows.push([
+            Markup.button.callback(`📥 Browse Raw Dumps (${rawCount})`, "files:tab:raw"),
+            Markup.button.callback(`💎 Cleaned Vault (${procCount})`, "files:tab:proc"),
+        ]);
+
+        const rawStart = page * pageSize;
+        const rawSlice = Array.isArray(rawFiles) ? rawFiles.slice(rawStart, rawStart + pageSize) : [];
+        const procStart = page * pageSize;
+        const procSlice = Array.isArray(processedFiles) ? processedFiles.slice(procStart, procStart + pageSize) : [];
+
+        // Raw files actions
+        if (rawSlice.length > 0) {
+            for (let i = 0; i < rawSlice.length; i++) {
+                const actualIdx = rawStart + i;
+                rows.push([
+                    Markup.button.callback(`🧼 Clean Raw #${actualIdx + 1}`, `file:clean:${actualIdx}`),
+                    Markup.button.callback(`🔎 Search Raw #${actualIdx + 1}`, `file:search:${actualIdx}`),
+                    Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:raw:ask:${actualIdx}`),
+                ]);
+            }
+        }
+
+        // Processed outputs actions
+        if (procSlice.length > 0) {
+            for (let i = 0; i < procSlice.length; i++) {
+                const actualIdx = procStart + i;
+                rows.push([
+                    Markup.button.callback(`📥 Download Output #${actualIdx + 1}`, `file:dl:proc:${actualIdx}`),
+                    Markup.button.callback(`🔎 Search Output #${actualIdx + 1}`, `file:search:proc:${actualIdx}`),
+                    Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:proc:ask:${actualIdx}`),
+                ]);
+            }
+        }
+
+        // Bulk operations
+        const bulkRow = [];
+        if (rawCount > 1) {
+            bulkRow.push(Markup.button.callback(`⚡️ Clean All Raw (${rawCount})`, "files:clean:all"));
+        }
+        if (rawCount > 0) {
+            bulkRow.push(Markup.button.callback(`🧹 Wipe All Raw`, "files:wipe:raw:ask"));
+        }
+        if (procCount > 0) {
+            bulkRow.push(Markup.button.callback(`🧹 Wipe All Outputs`, "files:wipe:proc:ask"));
+        }
+        if (bulkRow.length > 0) rows.push(bulkRow);
+
+        // Management & Global Actions
+        rows.push([
+            Markup.button.callback("🔄 Refresh Vault", "files:refresh"),
+            Markup.button.callback("📊 System Stats", "stats"),
+            Markup.button.callback("💥 Purge All", "files:wipe:all:ask"),
+        ]);
+        rows.push([
+            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ]);
     }
 
-    // 5. Global Actions
-    rows.push([
-        Markup.button.callback("🔄 Refresh Vault", "files:refresh"),
-        Markup.button.callback("📊 System Stats", "stats"),
-        Markup.button.callback("💥 Purge All", "files:wipe:all:ask"),
-    ]);
-    rows.push([
-        Markup.button.callback("📦 Get Combined File", "combine"),
-        Markup.button.callback("🔙 Main Menu", "help"),
-    ]);
     return Markup.inlineKeyboard(rows);
 }
 
@@ -889,11 +997,21 @@ function ulpKeyboard(status = true) {
     const isFinished = status === false || status === "stopped" || status === "done" || status === "exhausted";
     if (isFinished) {
         return Markup.inlineKeyboard([
-            [Markup.button.callback("🔁 Run again", "ulp:again")],
+            [
+                Markup.button.callback("📦 Get Combined File", "combine"),
+                Markup.button.callback("🔁 Run again", "ulp:again"),
+            ],
+            [
+                Markup.button.callback("📂 Server Vault", "server_files"),
+                Markup.button.callback("🔙 Main Menu", "help"),
+            ],
         ]);
     }
     return Markup.inlineKeyboard([
-        [Markup.button.callback("🛑 Stop", "ulp:stop")],
+        [
+            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback("🛑 Stop Search", "ulp:stop"),
+        ],
     ]);
 }
 
@@ -1079,7 +1197,19 @@ function formatFileDate(d) {
  * }} info
  */
 function renderServerFiles(info) {
-    const { rawFiles = [], processedFiles = [], rawRoot, processedRoot, humanSize, diskStats = null, batchStats = null } = info;
+    const {
+        rawFiles = [],
+        processedFiles = [],
+        rawRoot = "",
+        processedRoot = "",
+        humanSize = (n) => `${n} B`,
+        diskStats = null,
+        batchStats = null,
+        tab = "overview",
+        page = 0,
+        pageSize = 3,
+    } = info;
+
     const totalRawBytes = rawFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
     const totalProcBytes = processedFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
 
@@ -1100,58 +1230,118 @@ function renderServerFiles(info) {
         );
     }
 
-    lines.push(
-        `${tgEmoji("📊")}  ${B("Vault Breakdown:")}`,
-        `  ${tgEmoji("📥")}  ${B("Raw Incoming:")} ${num(rawFiles.length)} file${rawFiles.length === 1 ? "" : "s"} (${humanSize(totalRawBytes)})`,
-        `  ${tgEmoji("💎")}  ${B("Cleaned Outputs:")} ${num(processedFiles.length)} file${processedFiles.length === 1 ? "" : "s"} (${humanSize(totalProcBytes)})`,
-    );
-
-    if (batchStats) {
-        lines.push(`  ${tgEmoji("📦")}  ${B("Active In-Memory Batch:")} ${num(batchStats.size || 0)} credentials`);
-    }
-    lines.push(RULE);
-
-    lines.push(`${tgEmoji("📥")}  ${B("Raw Incoming Dumps")} · ${CODE(escapeHtml(rawRoot))}`);
-    if (rawFiles.length === 0) {
-        lines.push(`  ${I("No raw files on disk — reply to any file with /save")}`);
+    if (tab === "raw") {
+        lines.push(
+            `${tgEmoji("📥")}  ${B("RAW INCOMING DUMPS BROWSER")}  ${tgEmoji("📂")}`,
+            `Directory: ${CODE(escapeHtml(rawRoot))}`,
+            `Total: ${B(num(rawFiles.length))} files (${humanSize(totalRawBytes)})`,
+            RULE,
+        );
+        const rawStart = page * pageSize;
+        const rawSlice = rawFiles.slice(rawStart, rawStart + pageSize);
+        const totalPages = Math.ceil(rawFiles.length / pageSize) || 1;
+        if (rawFiles.length === 0) {
+            lines.push(`  ${I("No raw files on disk — reply to any document with /save to ingest.")}`);
+        } else {
+            lines.push(`📑  ${B(`Page ${page + 1} of ${totalPages}`)}:`);
+            rawSlice.forEach((f, i) => {
+                const idx = rawStart + i + 1;
+                const isZip = f.name.toLowerCase().endsWith(".zip");
+                const icon = isZip ? tgEmoji("📦") : tgEmoji("📄");
+                lines.push(
+                    `  ${B(`[${idx}]`)} ${icon} ${B(escapeHtml(f.name))}`,
+                    `       ├ ${tgEmoji("📁")} ${CODE(humanSize(f.size))} · ${tgEmoji("📅")} ${CODE(formatFileDate(f.mtime))}`,
+                    `       └ 💡 Ready for multi-core cleaning or indexed search`,
+                );
+            });
+        }
+    } else if (tab === "proc") {
+        lines.push(
+            `${tgEmoji("💎")}  ${B("CLEANED OUTPUTS VAULT")}  ${tgEmoji("✨")}`,
+            `Directory: ${CODE(escapeHtml(processedRoot))}`,
+            `Total: ${B(num(processedFiles.length))} outputs (${humanSize(totalProcBytes)})`,
+            RULE,
+        );
+        const procStart = page * pageSize;
+        const procSlice = processedFiles.slice(procStart, procStart + pageSize);
+        const totalPages = Math.ceil(processedFiles.length / pageSize) || 1;
+        if (processedFiles.length === 0) {
+            lines.push(`  ${I("No cleaned outputs yet — run a ULP search or clean a raw file.")}`);
+        } else {
+            lines.push(`📑  ${B(`Page ${page + 1} of ${totalPages}`)}:`);
+            procSlice.forEach((f, i) => {
+                const idx = procStart + i + 1;
+                lines.push(
+                    `  ${B(`[${idx}]`)} ${tgEmoji("⚡️")} ${B(escapeHtml(f.name))}`,
+                    `       ├ ${tgEmoji("📁")} ${CODE(humanSize(f.size))} · ${tgEmoji("📅")} ${CODE(formatFileDate(f.mtime))}`,
+                    `       └ 📥 Instant download or batch lookup`,
+                );
+            });
+        }
+    } else if (tab === "tools") {
+        lines.push(
+            `${tgEmoji("⚙️")}  ${B("STORAGE & PURGE MANAGER")}  ${tgEmoji("🧹")}`,
+            RULE,
+            `  ${tgEmoji("📥")}  Raw Dumps: ${B(num(rawFiles.length))} files (${humanSize(totalRawBytes)})`,
+            `  ${tgEmoji("💎")}  Cleaned Vault: ${B(num(processedFiles.length))} files (${humanSize(totalProcBytes)})`,
+            batchStats ? `  ${tgEmoji("📦")}  Active Batch: ${B(num(batchStats.size || 0))} credentials` : "",
+            "",
+            `⚠️  ${I("Use the actions below to selectively wipe raw uploads, delete generated outputs, or perform a total storage purge.")}`,
+        );
     } else {
-        for (let i = 0; i < Math.min(rawFiles.length, 10); i++) {
-            const f = rawFiles[i];
-            const isZip = f.name.toLowerCase().endsWith(".zip");
-            const icon = isZip ? tgEmoji("📦") : tgEmoji("📄");
-            lines.push(
-                `  ${B(`[${i + 1}]`)} ${icon} ${B(escapeHtml(f.name))}`,
-                `       └ ${tgEmoji("📁")} ${CODE(humanSize(f.size))} · ${tgEmoji("📅")} ${CODE(formatFileDate(f.mtime))}`,
-            );
+        // "overview" (default)
+        lines.push(
+            `${tgEmoji("📊")}  ${B("Vault Inventory:")}`,
+            `  ${tgEmoji("📥")}  ${B("Raw Incoming:")} ${num(rawFiles.length)} file(s) (${humanSize(totalRawBytes)}) · ${CODE(escapeHtml(rawRoot))}`,
+            `  ${tgEmoji("💎")}  ${B("Cleaned Outputs:")} ${num(processedFiles.length)} file(s) (${humanSize(totalProcBytes)}) · ${CODE(escapeHtml(processedRoot))}`,
+        );
+        if (batchStats) {
+            lines.push(`  ${tgEmoji("📦")}  ${B("Active In-Memory Batch:")} ${num(batchStats.size || 0)} credentials`);
         }
-        if (rawFiles.length > 10) {
-            lines.push(`  ${I(`…and ${rawFiles.length - 10} more raw file(s)`)}`);
-        }
-    }
+        lines.push(RULE);
 
-    lines.push("");
-    lines.push(`${tgEmoji("💎")}  ${B("Cleaned Output Files")} · ${CODE(escapeHtml(processedRoot))}`);
-    if (processedFiles.length === 0) {
-        lines.push(`  ${I("No processed outputs yet — tap a Clean button below")}`);
-    } else {
-        for (let i = 0; i < Math.min(processedFiles.length, 10); i++) {
-            const f = processedFiles[i];
-            lines.push(
-                `  ${B(`[${i + 1}]`)} ${tgEmoji("⚡️")} ${B(escapeHtml(f.name))}`,
-                `       └ ${tgEmoji("📁")} ${CODE(humanSize(f.size))} · ${tgEmoji("📅")} ${CODE(formatFileDate(f.mtime))}`,
-            );
+        lines.push(`${tgEmoji("📥")}  ${B("Raw Incoming Dumps")} · ${CODE(escapeHtml(rawRoot))}`);
+        if (rawFiles.length === 0) {
+            lines.push(`  ${I("No raw files on disk — reply to any file with /save")}`);
+        } else {
+            for (let i = 0; i < Math.min(rawFiles.length, 5); i++) {
+                const f = rawFiles[i];
+                const isZip = f.name.toLowerCase().endsWith(".zip");
+                const icon = isZip ? tgEmoji("📦") : tgEmoji("📄");
+                lines.push(
+                    `  ${B(`[${i + 1}]`)} ${icon} ${B(escapeHtml(f.name))}`,
+                    `       └ ${tgEmoji("📁")} ${CODE(humanSize(f.size))} · ${tgEmoji("📅")} ${CODE(formatFileDate(f.mtime))}`,
+                );
+            }
+            if (rawFiles.length > 5) {
+                lines.push(`  ${I(`…and ${rawFiles.length - 5} more raw file(s) (tap Raw Dumps below)`)}`);
+            }
         }
-        if (processedFiles.length > 10) {
-            lines.push(`  ${I(`…and ${processedFiles.length - 10} more output(s)`)}`);
+
+        lines.push("");
+        lines.push(`${tgEmoji("💎")}  ${B("Cleaned Output Files")} · ${CODE(escapeHtml(processedRoot))}`);
+        if (processedFiles.length === 0) {
+            lines.push(`  ${I("No processed outputs yet — tap a Clean button below")}`);
+        } else {
+            for (let i = 0; i < Math.min(processedFiles.length, 5); i++) {
+                const f = processedFiles[i];
+                lines.push(
+                    `  ${B(`[${i + 1}]`)} ${tgEmoji("⚡️")} ${B(escapeHtml(f.name))}`,
+                    `       └ ${tgEmoji("📁")} ${CODE(humanSize(f.size))} · ${tgEmoji("📅")} ${CODE(formatFileDate(f.mtime))}`,
+                );
+            }
+            if (processedFiles.length > 5) {
+                lines.push(`  ${I(`…and ${processedFiles.length - 5} more output(s) (tap Cleaned Vault below)`)}`);
+            }
         }
     }
 
     lines.push(
         "",
         RULE,
-        `👇 ${I("Tap any button below to Clean, Search, or Download files directly (or Delete as you wish):")}`,
+        `👇 ${I("Tap any button below to Clean, Search, or Download files directly (or use tabs to browse):")}`,
     );
-    return lines.join("\n");
+    return lines.filter(Boolean).join("\n");
 }
 
 /**

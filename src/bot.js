@@ -306,7 +306,7 @@ function createBot(token, meta = {}) {
         await safeReply(ctx, renderSearch(query, result), searchResultKeyboard(query, result.total));
     });
 
-    const showServerFiles = async (ctx, editMessageId = null, page = 0) => {
+    const showServerFiles = async (ctx, editMessageId = null, page = 0, tab = "overview") => {
         userPromptState.delete(ctx.chat.id);
         const rawRoot = localProcessRoot();
         const processedRoot = localProcessedRoot();
@@ -322,8 +322,11 @@ function createBot(token, meta = {}) {
             humanSize,
             diskStats,
             batchStats,
+            tab,
+            page,
+            pageSize: 3,
         });
-        const keyboard = serverFilesKeyboard(rawFiles, processedFiles, { page, pageSize: 3 });
+        const keyboard = serverFilesKeyboard(rawFiles, processedFiles, { page, pageSize: 3, tab });
         if (editMessageId) {
             await safeEdit(ctx, editMessageId, text, keyboard);
         } else {
@@ -358,20 +361,35 @@ function createBot(token, meta = {}) {
     bot.action("server_files", async (ctx) => {
         await ctx.answerCbQuery("📂 Opening server vault…").catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
-        await showServerFiles(ctx, msg ? msg.message_id : null, 0);
+        await showServerFiles(ctx, msg ? msg.message_id : null, 0, "overview");
+    });
+
+    bot.action(/^files:tab:(overview|raw|proc|tools)$/, async (ctx) => {
+        const tab = ctx.match[1];
+        await ctx.answerCbQuery().catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showServerFiles(ctx, msg ? msg.message_id : null, 0, tab);
+    });
+
+    bot.action(/^files:page:(raw|proc):(\d+)$/, async (ctx) => {
+        const tab = ctx.match[1];
+        const page = parseInt(ctx.match[2], 10) || 0;
+        await ctx.answerCbQuery(`Page ${page + 1}`).catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showServerFiles(ctx, msg ? msg.message_id : null, page, tab);
     });
 
     bot.action("files:refresh", async (ctx) => {
         await ctx.answerCbQuery("🔄 Files refreshed").catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
-        await showServerFiles(ctx, msg ? msg.message_id : null, 0);
+        await showServerFiles(ctx, msg ? msg.message_id : null, 0, "overview");
     });
 
     bot.action(/^files:page:(\d+)$/, async (ctx) => {
         const page = parseInt(ctx.match[1], 10) || 0;
         await ctx.answerCbQuery(`Page ${page + 1}`).catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
-        await showServerFiles(ctx, msg ? msg.message_id : null, page);
+        await showServerFiles(ctx, msg ? msg.message_id : null, page, "raw");
     });
 
     // Delete confirmation prompt for single raw file
@@ -436,7 +454,7 @@ function createBot(token, meta = {}) {
         if (!file) {
             await ctx.answerCbQuery("⚠️ File already removed").catch(() => { });
             const msg = ctx.callbackQuery && ctx.callbackQuery.message;
-            await showServerFiles(ctx, msg ? msg.message_id : null, 0);
+            await showServerFiles(ctx, msg ? msg.message_id : null, 0, type === "raw" ? "raw" : "proc");
             return;
         }
         try {
@@ -446,7 +464,7 @@ function createBot(token, meta = {}) {
             await ctx.answerCbQuery(`💥 Deletion error: ${err.message}`).catch(() => { });
         }
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
-        await showServerFiles(ctx, msg ? msg.message_id : null, 0);
+        await showServerFiles(ctx, msg ? msg.message_id : null, 0, type === "raw" ? "raw" : "proc");
     });
 
     // Wipe all raw files prompt
@@ -2169,13 +2187,22 @@ async function ingestDocument(ctx, doc, options = {}) {
 }
 
 /**
- * Peek at the first stored lines.
- * @param {import('telegraf').Context} ctx
+ * Safely send a document using context or telegram instance, with fallback.
  */
-async function sendPreview(ctx) {
-    const lines = store.getLines(ctx.chat.id);
-    const sample = lines.slice(0, 10);
-    await safeReply(ctx, renderPreview(sample, lines.length), mainKeyboard());
+async function safeSendDocument(ctx, chatId, payload, extra = {}) {
+    if (typeof ctx.replyWithDocument === "function") {
+        try {
+            return await ctx.replyWithDocument(payload, extra);
+        } catch (err) {
+            if (ctx.telegram && typeof ctx.telegram.sendDocument === "function" && chatId) {
+                return await ctx.telegram.sendDocument(chatId, payload, extra);
+            }
+            throw err;
+        }
+    } else if (ctx.telegram && typeof ctx.telegram.sendDocument === "function" && chatId) {
+        return await ctx.telegram.sendDocument(chatId, payload, extra);
+    }
+    throw new Error("No document delivery method available on context");
 }
 
 /**
@@ -2187,6 +2214,8 @@ const lastCombineAt = new Map(); // chatId -> timestamp
 
 async function sendCombined(ctx, force = false) {
     const chatId = ctx.chat && ctx.chat.id;
+    if (!chatId) return;
+
     const now = Date.now();
     const last = lastCombineAt.get(chatId) || 0;
     if (!force && now - last < COMBINE_COOLDOWN_MS) {
@@ -2199,33 +2228,90 @@ async function sendCombined(ctx, force = false) {
         lastCombineAt.delete(oldest);
     }
 
+    // Wait for any active in-flight MTProto / download ingestions to resolve
+    await waitForIngestions(chatId);
+
     const chat = store.getRawChat(chatId);
     const customName = chat && chat.customName ? chat.customName : null;
+    const activeRun = searchbot.getRun(chatId);
+    const isSearching = Boolean(activeRun && activeRun.status === "running");
 
     const lines = store.getLines(chatId);
     if (lines.length === 0) {
-        const cached = store.getLastCombined(chatId);
-        if (cached && cached.buffer) {
-            await ctx.replyWithDocument(
-                { source: cached.buffer, filename: cached.filename },
-                {
-                    caption: [
-                        `🎁  ${B("COMBINED & DEDUPED (Latest Batch)")}`,
-                        `📁  ${B(escapeHtml(cached.filename))}  ·  🔑 ${B(compact(cached.linesCount))} credentials`,
-                        "",
-                        `${I("Delivering your recent search results fresh from cache! ⚡️")}`,
-                    ].join("\n"),
-                    parse_mode: "HTML",
-                    ...afterCombineKeyboard(),
-                },
+        // If ULP search is actively in flight and no files have finished yet
+        if (isSearching) {
+            await safeReply(
+                ctx,
+                [
+                    `${tgEmoji("⏳")}  ${B("ULP SEARCH IN PROGRESS")}  ${tgEmoji("🚀")}`,
+                    RULE,
+                    `${tgEmoji("🎯")}  Target: ${B(escapeHtml(activeRun.query || "target"))}`,
+                    `${tgEmoji("📡")}  Search dumps are currently being queried and downloaded from ${B("@DumpNews14Bot")}.`,
+                    `${tgEmoji("💎")}  As soon as dumps arrive, credentials will be automatically cleaned into your batch.`,
+                    "",
+                    `${I("Tap 📦 Get Combined File again in a few seconds, or wait for automatic delivery when the search completes! ⚡️")}`,
+                ].join("\n"),
+                ulpKeyboard("running"),
             );
             return;
         }
+
+        const cached = store.getLastCombined(chatId);
+        if (cached && cached.buffer) {
+            try {
+                await safeSendDocument(
+                    ctx,
+                    chatId,
+                    { source: cached.buffer, filename: cached.filename },
+                    {
+                        caption: [
+                            `🎁  ${B("COMBINED & DEDUPED (Latest Batch)")}`,
+                            `📁  ${B(escapeHtml(cached.filename))}  ·  🔑 ${B(compact(cached.linesCount))} credentials`,
+                            "",
+                            `${I("Delivering your recent search results fresh from cache! ⚡️")}`,
+                        ].join("\n"),
+                        parse_mode: "HTML",
+                        ...afterCombineKeyboard(),
+                    },
+                );
+                return;
+            } catch (cachedErr) {
+                console.error("sendCombined cached delivery failed:", cachedErr && cachedErr.message ? cachedErr.message : cachedErr);
+            }
+        }
+
+        // Check if there is any processed output on disk in the vault
+        const procFiles = scanDirFiles(localProcessedRoot());
+        if (procFiles.length > 0) {
+            const newest = procFiles[0];
+            try {
+                await safeSendDocument(
+                    ctx,
+                    chatId,
+                    { source: fs.createReadStream(newest.path), filename: newest.name },
+                    {
+                        caption: [
+                            `🎁  ${B("COMBINED & DEDUPED (From Server Vault)")}`,
+                            `📁  ${B(escapeHtml(newest.name))}  ·  💾 ${humanSize(newest.size)}`,
+                            `📅  Created: ${formatFileDate(newest.mtime)}`,
+                            "",
+                            `${I("Delivered fresh from your server storage vault! ⚡️")}`,
+                        ].join("\n"),
+                        parse_mode: "HTML",
+                        ...afterCombineKeyboard(),
+                    },
+                );
+                return;
+            } catch (diskErr) {
+                console.error("sendCombined disk fallback failed:", diskErr && diskErr.message ? diskErr.message : diskErr);
+            }
+        }
+
         await safeReply(
             ctx,
             [
                 `📬  ${B("Nothing to combine yet")}`,
-                `Your batch is empty \u2014 send me a ${B(".zip")} or ${B(".txt")}`,
+                `Your batch is empty \u2014 start a ${B("/ulp")} search or send me a ${B(".zip")} or ${B(".txt")}`,
                 `first and I'll get cleaning \uD83E\uDDFC\u2728`,
             ].join("\n"),
             emptyBatchKeyboard(),
@@ -2295,8 +2381,14 @@ async function sendCombined(ctx, force = false) {
         }
     }
 
+    const statusNote = isSearching
+        ? `${tgEmoji("⏳")}  ${I("ULP search is actively running — delivering credentials gathered so far! Final combined file will also be delivered upon completion.")}`
+        : `${I("Served fresh — tap 📥 below to grab it again anytime.")}`;
+
     try {
-        await ctx.replyWithDocument(
+        await safeSendDocument(
+            ctx,
+            chatId,
             sendPayload,
             {
                 caption: [
@@ -2305,14 +2397,14 @@ async function sendCombined(ctx, force = false) {
                     isZipped ? `📦  ${I("Compressed to .zip to fit Telegram upload limits")}` : "",
                     `💾  Saved to server vault: ${CODE(escapeHtml(filename))}`,
                     "",
-                    `${I("Served fresh — tap 📥 below to grab it again anytime.")}`,
+                    statusNote,
                 ].filter(Boolean).join("\n"),
                 parse_mode: "HTML",
                 ...afterCombineKeyboard(),
             },
         );
     } catch (uploadErr) {
-        console.error("replyWithDocument failed:", uploadErr);
+        console.error("sendCombined document upload failed:", uploadErr);
         // Fallback: Notify user with server path and vault keyboard
         await safeReply(
             ctx,
@@ -3554,6 +3646,7 @@ module.exports = {
     processedOutputPath,
     renderSaveError,
     scanDirFiles,
+    sendCombined,
     deliverCombinedAndResetBatch,
     ingestUserbotMessage,
     trackIngestion,

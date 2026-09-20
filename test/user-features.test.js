@@ -212,4 +212,136 @@ describe("User Requested Features & Optimizations", () => {
             server.close();
         }
     });
+
+    test("8. sendCombined and ulpKeyboard provide seamless Get Combined File during active ULP search", async () => {
+        const { sendCombined } = require("../src/bot");
+        const searchbot = require("../src/searchbot");
+        const store = require("../src/store");
+        const messages = require("../src/messages");
+
+        // 1. Check ulpKeyboard has combine button in all states
+        const runningKb = messages.ulpKeyboard("running");
+        const runningBtns = runningKb.reply_markup.inline_keyboard.flat();
+        assert.ok(runningBtns.some((b) => b.callback_data === "combine" && b.text.includes("Combined")));
+
+        const doneKb = messages.ulpKeyboard("done");
+        const doneBtns = doneKb.reply_markup.inline_keyboard.flat();
+        assert.ok(doneBtns.some((b) => b.callback_data === "combine" && b.text.includes("Combined")));
+
+        // 2. sendCombined while ULP search is running but 0 lines yet
+        const chatId = 99991;
+        store.clear(chatId);
+        searchbot.startRun(chatId, { query: "targetsite.com", scope: "day" });
+
+        const replies = [];
+        const mockCtxSearchingEmpty = {
+            chat: { id: chatId },
+            reply: async (text, extra) => {
+                replies.push({ text, extra });
+            },
+        };
+
+        await sendCombined(mockCtxSearchingEmpty, true);
+        assert.ok(replies.some((r) => r.text && r.text.includes("ULP SEARCH IN PROGRESS") && r.text.includes("targetsite.com")));
+
+        // 3. sendCombined while ULP search is running and lines have arrived
+        store.addLines(chatId, ["alice@targetsite.com:secret123", "bob@targetsite.com:pass456"], "targetsite.com");
+        const docSends = [];
+        const mockCtxSearchingWithLines = {
+            chat: { id: chatId },
+            replyWithDocument: async (payload, extra) => {
+                docSends.push({ payload, extra });
+            },
+        };
+
+        await sendCombined(mockCtxSearchingWithLines, true);
+        assert.equal(docSends.length, 1, "Should deliver document while search is running");
+        assert.ok(docSends[0].extra.caption.includes("ULP search is actively running"), "Caption notes active search");
+        assert.equal(store.getLines(chatId).length, 2, "Batch is retained while search continues");
+
+        searchbot.finishRun(chatId, "done");
+        store.clear(chatId);
+    });
+
+    test("9. serverFilesKeyboard and renderServerFiles provide modular tabbed server vault architecture", () => {
+        const messages = require("../src/messages");
+
+        const rawFiles = [
+            { name: "dump1.zip", size: 5000000, mtime: new Date() },
+            { name: "dump2.txt", size: 2000000, mtime: new Date() },
+        ];
+        const processedFiles = [
+            { name: "output1_combined.txt", size: 1500000, mtime: new Date() },
+        ];
+
+        // Overview tab
+        const overviewText = messages.renderServerFiles({
+            rawFiles,
+            processedFiles,
+            rawRoot: "/var/data",
+            processedRoot: "/var/data/processed",
+            humanSize: (n) => `${n} B`,
+            tab: "overview",
+        });
+        assert.match(overviewText, /SERVER STORAGE & FILES VAULT/);
+        assert.match(overviewText, /dump1\.zip/);
+        assert.match(overviewText, /output1_combined\.txt/);
+
+        const overviewKb = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "overview" });
+        const overviewBtns = overviewKb.reply_markup.inline_keyboard.flat();
+        assert.ok(overviewBtns.some((b) => b.callback_data === "files:tab:raw"));
+        assert.ok(overviewBtns.some((b) => b.callback_data === "files:tab:proc"));
+        assert.ok(overviewBtns.some((b) => b.callback_data === "combine"));
+
+        // Raw tab
+        const rawText = messages.renderServerFiles({
+            rawFiles,
+            processedFiles,
+            rawRoot: "/var/data",
+            processedRoot: "/var/data/processed",
+            humanSize: (n) => `${n} B`,
+            tab: "raw",
+        });
+        assert.match(rawText, /RAW INCOMING DUMPS BROWSER/);
+
+        const rawKb = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "raw" });
+        const rawBtns = rawKb.reply_markup.inline_keyboard.flat();
+        assert.ok(rawBtns.some((b) => b.callback_data === "file:clean:0"));
+        assert.ok(rawBtns.some((b) => b.callback_data === "file:search:0"));
+        assert.ok(rawBtns.some((b) => b.callback_data === "file:del:raw:ask:0"));
+        assert.ok(rawBtns.some((b) => b.callback_data === "files:wipe:raw:ask"));
+
+        // Proc tab
+        const procText = messages.renderServerFiles({
+            rawFiles,
+            processedFiles,
+            rawRoot: "/var/data",
+            processedRoot: "/var/data/processed",
+            humanSize: (n) => `${n} B`,
+            tab: "proc",
+        });
+        assert.match(procText, /CLEANED OUTPUTS VAULT/);
+
+        const procKb = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "proc" });
+        const procBtns = procKb.reply_markup.inline_keyboard.flat();
+        assert.ok(procBtns.some((b) => b.callback_data === "file:dl:proc:0"));
+        assert.ok(procBtns.some((b) => b.callback_data === "file:search:proc:0"));
+        assert.ok(procBtns.some((b) => b.callback_data === "file:del:proc:ask:0"));
+        assert.ok(procBtns.some((b) => b.callback_data === "files:wipe:proc:ask"));
+
+        // Tools tab
+        const toolsText = messages.renderServerFiles({
+            rawFiles,
+            processedFiles,
+            rawRoot: "/var/data",
+            processedRoot: "/var/data/processed",
+            humanSize: (n) => `${n} B`,
+            tab: "tools",
+        });
+        assert.match(toolsText, /STORAGE & PURGE MANAGER/);
+
+        const toolsKb = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "tools" });
+        const toolsBtns = toolsKb.reply_markup.inline_keyboard.flat();
+        assert.ok(toolsBtns.some((b) => b.callback_data === "files:wipe:all:ask"));
+    });
 });

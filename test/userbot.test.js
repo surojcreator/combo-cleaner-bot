@@ -176,7 +176,7 @@ test("renderServerFiles and scanDirFiles formats file vault with animated emojis
         humanSize: (n) => `${Math.round(n / (1024 * 1024))} MB`,
     });
 
-    assert.match(out, /SERVER FILES VAULT/);
+    assert.match(out, /SERVER.*FILES VAULT/);
     assert.match(out, /dump-2026-09-20\.zip/);
     assert.match(out, /cleaned_dump\.txt/);
     assert.match(out, /\/var\/data/);

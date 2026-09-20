@@ -748,7 +748,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 daysCount = 5,
                 startDate = null,
                 chatId = null,
-                stepDelayMs = 7000,
+                stepDelayMs = 12000,
                 shouldStop = () => false,
                 onStatus = () => {},
                 sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -981,22 +981,26 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     daysProcessed++;
 
                     // Wait for result message from DumpNews14Bot and forward
-                    await sleep(1800);
-                    if (chatId) {
-                        try {
-                            const latest = await client.getMessages(searchTarget, { limit: 4 });
-                            for (const m of latest) {
-                                if (!m.out && (m.id > (folderView.id || 0) || m.media || m.document)) {
-                                    if (resultSink) {
-                                        await resultSink(m);
-                                    } else {
+                    let foundNewResult = false;
+                    for (let waitAttempt = 0; waitAttempt < 4; waitAttempt++) {
+                        await sleep(waitAttempt === 0 ? 1800 : 1500);
+                        if (chatId) {
+                            try {
+                                const latest = await client.getMessages(searchTarget, { limit: 5 });
+                                for (const m of latest) {
+                                    if (!m.out && (m.id > (folderView.id || 0) || m.media || m.document)) {
+                                        foundNewResult = true;
+                                        if (resultSink) {
+                                            await resultSink(m);
+                                        }
                                         await forwardResult(chatId, m);
                                     }
                                 }
+                            } catch (err) {
+                                log.log(`userbot post-hist message fetch error: ${err && err.message ? err.message : err}`);
                             }
-                        } catch (err) {
-                            log.log(`userbot post-hist message fetch error: ${err && err.message ? err.message : err}`);
                         }
+                        if (foundNewResult) break;
                     }
                 } else {
                     log.log(`userbot could not find hist button in folder for ${dateStr}`);
@@ -1010,7 +1014,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         totalDays: daysCount,
                         step: `Pacing before next day…`,
                     });
-                    await sleep(Math.max(1200, Math.min(stepDelayMs, 3000) - 1800));
+                    await sleep(stepDelayMs);
                 }
 
                 // Go down one day at a time

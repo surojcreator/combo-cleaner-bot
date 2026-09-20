@@ -1979,7 +1979,8 @@ async function deliverCombinedAndResetBatch(ctx) {
     deliveringCombined.add(chatId);
     try {
         await waitForIngestions(chatId);
-        await new Promise((r) => setTimeout(r, 1200));
+        await new Promise((r) => setTimeout(r, 1500));
+        await waitForIngestions(chatId);
         const lines = store.getLines(chatId);
         if (lines.length > 0) {
             await sendCombined(ctx, true);
@@ -2124,6 +2125,20 @@ function isSearcherForward(ctx, meta, searchOptions, marker = "#ulp") {
         if (metaId && Number(origin.chat.id) === Number(metaId)) return true;
     }
 
+    if (msg.forward_from) {
+        const username = String(msg.forward_from.username || "").toLowerCase();
+        const metaId = meta && meta.searcherBotId;
+        if (expected && username === expected) return true;
+        if (metaId && Number(msg.forward_from.id) === Number(metaId)) return true;
+    }
+
+    if (msg.forward_from_chat) {
+        const chatUsername = String(msg.forward_from_chat.username || "").toLowerCase();
+        const metaId = meta && meta.searcherBotId;
+        if (expected && chatUsername === expected) return true;
+        if (metaId && Number(msg.forward_from_chat.id) === Number(metaId)) return true;
+    }
+
     if (typeof msg.text === "string" && msg.text.startsWith(marker + " ")) return true;
     if (typeof msg.caption === "string" && msg.caption.startsWith(marker + " ")) return true;
     return false;
@@ -2215,18 +2230,23 @@ async function beginUlpRun(ctx, params) {
 
     // Hard stop for the result window, so a run can never linger forever.
     clearUlpWindow(ulpWindows, chatId);
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
         const live = searchbot.getRun(chatId);
         if (!live || live.status !== "running") return;
-        searchbot.finishRun(chatId, "expired");
+        searchbot.finishRun(chatId, "done");
         if (card) {
-            safeEdit(
+            const count = live.results ? live.results.length : 0;
+            const text = count > 0
+                ? renderUlpDone({ query: live.query, scope: live.scope, count })
+                : renderUlpStopped({ query: live.query, scope: live.scope, count: 0 });
+            await safeEdit(
                 ctx,
                 card.message_id,
-                renderUlpStopped({ query: live.query, scope: live.scope, count: live.results.length }),
-                ulpKeyboard(live.scope),
+                text,
+                ulpKeyboard("done"),
             );
         }
+        await deliverCombinedAndResetBatch(ctx);
     }, searchOptions.windowMs);
     if (timer && typeof timer.unref === "function") timer.unref();
     ulpWindows.set(chatId, timer);
@@ -2312,8 +2332,19 @@ async function beginUlpRun(ctx, params) {
         });
     }
 
-    // Results keep landing in the open window — nothing else to do here.
-    if (result.status === "results") return;
+    // Results keep landing in the open window — deliver when finished.
+    if (result.status === "results") {
+        await waitForIngestions(chatId);
+        clearUlpWindow(ulpWindows, chatId);
+        searchbot.finishRun(chatId, "done");
+        if (card) {
+            const resultCount = (searchbot.getRun(chatId) || {}).results?.length || 0;
+            const text = renderUlpDone({ query, scope, count: resultCount });
+            await safeEdit(ctx, card.message_id, text, ulpKeyboard("done"));
+        }
+        await deliverCombinedAndResetBatch(ctx);
+        return;
+    }
 
     if (result.status === "stopped") {
         clearUlpWindow(ulpWindows, chatId);
@@ -2347,6 +2378,10 @@ async function beginUlpRun(ctx, params) {
 
     if (card) await safeEdit(ctx, card.message_id, text, ulpKeyboard(scope));
     else await safeReply(ctx, text, ulpKeyboard(scope));
+
+    if (store.getLines(chatId).length > 0) {
+        await deliverCombinedAndResetBatch(ctx);
+    }
 }
 
 /**
@@ -2384,6 +2419,20 @@ async function relaySearcherMessage(ctx, params) {
             if (res.lines.length > 0) {
                 const site = sanitizeSiteSlug(run.query) || "cleaned";
                 store.addLines(chatId, res.lines, site);
+            }
+        }
+        if (msg.document) {
+            const doc = msg.document;
+            const size = doc.file_size || 0;
+            if (size <= MAX_DOWNLOAD_BYTES) {
+                const p = ingestDocument({
+                    telegram: ctx.telegram,
+                    chat: { id: chatId },
+                    reply: (text, extra) => ctx.telegram.sendMessage(chatId, text, extra),
+                }, doc).catch((err) => {
+                    console.error("auto ingestDocument in relay failed:", err && err.message ? err.message : err);
+                });
+                trackIngestion(chatId, p);
             }
         }
         try {

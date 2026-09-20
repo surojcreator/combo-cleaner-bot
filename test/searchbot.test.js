@@ -48,11 +48,11 @@ test("normalizeScope understands day|month|year and aliases", () => {
     assert.equal(searchbot.normalizeScope("nonsense", null), null);
 });
 
-test("loadOptions defaults to @DumpNews14Bot with 7s pacing", () => {
+test("loadOptions defaults to @DumpNews14Bot with 12s pacing", () => {
     const defaults = searchbot.loadOptions({});
     assert.equal(defaults.botUsername, searchbot.DEFAULT_SEARCH_BOT);
     assert.equal(defaults.botUsername, "DumpNews14Bot");
-    assert.equal(defaults.stepDelayMs, 7000);
+    assert.equal(defaults.stepDelayMs, 12000);
     assert.equal(defaults.histTemplate, "hist:full:{scope}");
     assert.equal(defaults.maxTries, 3);
 
@@ -70,7 +70,7 @@ test("loadOptions defaults to @DumpNews14Bot with 7s pacing", () => {
     assert.equal(custom.windowMs, 60000);
 
     // Garbage values fall back to the defaults instead of breaking pacing.
-    assert.equal(searchbot.loadOptions({ SEARCH_STEP_DELAY_MS: "-5" }).stepDelayMs, 7000);
+    assert.equal(searchbot.loadOptions({ SEARCH_STEP_DELAY_MS: "-5" }).stepDelayMs, 12000);
     assert.equal(searchbot.loadOptions({ SEARCH_MAX_TRIES: "abc" }).maxTries, 3);
 });
 
@@ -135,7 +135,7 @@ test("runSearch sends hist after a quick answer, then stops retrying", async () 
     assert.deepEqual(sent, ["htzone.co.il", "hist:full:day"]);
     // ...and because an answer is in, the pair is not repeated.
     assert.equal(result.attempts, 1);
-    assert.deepEqual(clock.delays, [7000, 7000]);
+    assert.deepEqual(clock.delays, [12000, 12000]);
 });
 
 test("runSearch retries the whole pair up to maxTries, still 7s apart", async () => {
@@ -170,7 +170,7 @@ test("runSearch stops immediately when Telegram blocks the bot-to-bot send", asy
     assert.equal(result.status, "blocked");
     assert.equal(result.kind, "bot_to_bot_disabled");
     assert.deepEqual(result.sends, []);
-    assert.deepEqual(clock.delays, [7000]); // only the first try was attempted
+    assert.deepEqual(clock.delays, [12000]); // only the first try was attempted
 });
 
 test("runSearch honours shouldStop()", async () => {

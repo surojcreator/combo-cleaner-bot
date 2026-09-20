@@ -165,7 +165,7 @@ Exactly what happens, in order — all of it paced:
 | --- | --- | --- |
 | 1 | **write the query** | `htzone.co.il` is sent to the searcher bot exactly as you typed it |
 | 2 | **history request** | right after, `hist:full:<scope>` goes out (`hist:full:day`, `:month`, `:year`) |
-| 3 | **wait 7 s before every try** | every message — and every retry — waits `SEARCH_STEP_DELAY_MS` (default `7000`) first |
+| 3 | **wait 12 s before every try** | every message — and every retry — waits `SEARCH_STEP_DELAY_MS` (default `12000`) first |
 | 4 | **forward the results** | every answer the searcher sends back is forwarded into the chat that asked; files arrive with a **🧼 Clean into batch** button |
 
 The launch card carries scope buttons (**🗓 Day / 🗓 Month / 🗓 Year**, re-run the
@@ -227,7 +227,7 @@ a marked `#ulp` copy instead.
 | Env var | Default | Meaning |
 | --- | --- | --- |
 | `SEARCH_BOT_USERNAME` | `DumpNews14Bot` | searcher bot that receives the query |
-| `SEARCH_STEP_DELAY_MS` | `7000` | wait before **every** try — the 7 s rule |
+| `SEARCH_STEP_DELAY_MS` | `12000` | wait before **every** try — the 12 s rule |
 | `SEARCH_RESULT_WAIT_MS` | `20000` | how long to wait for an answer before retrying |
 | `SEARCH_MAX_TRIES` | `3` | how often the query + history pair may repeat |
 | `SEARCH_HIST_TEMPLATE` | `hist:full:{scope}` | history request; `{scope}` = `day`/`month`/`year` |

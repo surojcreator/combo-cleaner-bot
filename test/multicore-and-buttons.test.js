@@ -406,8 +406,8 @@ test("emojis command and emojis:view action render installed account emoji packs
             },
         });
 
-        const emojiMsg = api.calls.find((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("INSTALLED ACCOUNT EMOJI PACKS"));
-        assert.ok(emojiMsg, "expected editMessageText with installed emoji packs");
+        const emojiMsg = api.calls.find((c) => (c.method === "sendMessage" || c.method === "editMessageText") && c.payload.text && c.payload.text.includes("EMOJI"));
+        assert.ok(emojiMsg, "expected reply with bot emoji dashboard");
         assert.ok(emojiMsg.payload.text.includes("Alpha Pack"), "expected Alpha Pack in list");
 
         // Test callback emojis:view
@@ -421,8 +421,8 @@ test("emojis command and emojis:view action render installed account emoji packs
             },
         });
 
-        const cbEdit = api.calls.filter((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("INSTALLED ACCOUNT EMOJI PACKS"));
-        assert.ok(cbEdit.length >= 2, "expected callback editMessageText with emoji packs");
+        const cbEdit = api.calls.find((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("EMOJI"));
+        assert.ok(cbEdit, "expected callback editMessageText with bot emoji dashboard");
     } finally {
         await api.close();
     }
@@ -550,4 +550,10 @@ test("bot storage manager handles interactive file deletion and bulk wipe", asyn
         await api.close();
     }
 });
+
+test.after(() => {
+    const { getSharedPool } = require("../src/worker-pool");
+    getSharedPool().close();
+});
+
 

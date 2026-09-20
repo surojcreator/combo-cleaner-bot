@@ -69,11 +69,25 @@ const MAX_TRACKED_RUNS = 200;
  * @returns {string|null} normalized query, or null when unusable
  */
 function normalizeQuery(raw) {
-    const input = String(raw || "").trim();
+    let input = String(raw || "").trim();
     if (!input) return null;
     // One step = one Telegram message, so no line breaks / tabs allowed.
     if (/[\r\n\t]/.test(input)) return null;
-    const query = input.replace(/^@+/, "").trim().replace(/\s+/g, " ");
+    input = input.replace(/^@+/, "").trim();
+
+    // Strip URL scheme, path, query, hash if user passed a URL
+    if (/^https?:\/\//i.test(input)) {
+        try {
+            const parsed = new URL(input);
+            input = parsed.hostname.replace(/^www\./i, "");
+        } catch {
+            input = input.replace(/^https?:\/\//i, "").split(/[\/?#]/)[0];
+        }
+    } else if (input.includes("/") && !input.includes(" ")) {
+        input = input.split(/[\/?#]/)[0];
+    }
+    input = input.replace(/^www\./i, "");
+    const query = input.trim().replace(/\s+/g, " ");
     if (query.length < 2 || query.length > 120) return null;
     return query;
 }

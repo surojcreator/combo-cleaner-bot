@@ -132,7 +132,7 @@ function mainKeyboard() {
         ],
         [
             Markup.button.callback("⚡️ Fast /save Guide", "help:save"),
-            Markup.button.callback("💎 Emoji Packs", "emojis:view"),
+            Markup.button.callback("💎 Bot Features", "emojis:view"),
         ],
         [
             Markup.button.callback("🔄 Refresh Menu", "help"),
@@ -1022,26 +1022,33 @@ function humanSize(bytes) {
 }
 
 /**
- * Render installed account emoji packs.
- * @param {{ packs: Array<{ title: string, shortName: string, id: string, count: number, sample: string[] }>, totalEmojis: number, error?: string }} data
+ * Render bot native emoji features and visual engine.
+ * @param {{ packs?: Array<{ title: string, shortName: string, id: string, count: number, sample: string[] }>, totalEmojis?: number, error?: string }} [data]
  */
-function renderEmojiPacks(data) {
+function renderEmojiPacks(data = {}) {
     const packs = (data && data.packs) || [];
     const totalEmojis = (data && data.totalEmojis) || 0;
     const lines = [
-        `💎  ${B("INSTALLED ACCOUNT EMOJI PACKS")}  ✨`,
+        `💎  ${B("BOT NATIVE EMOJI DASHBOARD")}  ✨`,
         RULE,
-        `📂  ${B("Custom Packs:")} ${packs.length}  ·  🎨  ${B("Total Emojis:")} ${num(totalEmojis)}`,
-        `🤖  ${B("Platform Animated:")} 599 standard animated stickers`,
+        `🎨  ${B("Direct Native Unicode Icons & Visual Palette")}`,
         "",
+        `  🚀  ${B("ULP Search Relay:")} Automated day-by-day searches & URL-stripped outputs`,
+        `  🧼  ${B("Credential Sanitizer:")} Email, User, Phone & CC normalizer`,
+        `  📦  ${B("Storage & Vault:")} Combined files, disk raw dumps & bulk wiping`,
+        `  📊  ${B("Live Metrics:")} Real-time capacity gauges & duplicate counters`,
+        `  🌐  ${B("Site Recon:")} Automated domain detection & per-site stats`,
+        `  🔎  ${B("Deep Search:")} Rapid indexed keyword lookup in batch`,
+        `  ⚡️  ${B("Multi-Core Turbo:")} Parallel CPU processing across all cores`,
+        `  🛡️  ${B("Anti-Flood Shield:")} Paced message queues & safety limits`,
     ];
 
-    if (packs.length === 0) {
+    if (packs.length > 0) {
         lines.push(
-            I("No custom emoji packs found on this MTProto account."),
-            I("Telegram standard animated emojis are fully active! ⚡️"),
+            "",
+            RULE,
+            `📂  ${B("Custom Packs:")} ${packs.length}  ·  🎨  ${B("Total Emojis:")} ${num(totalEmojis)}`,
         );
-    } else {
         packs.forEach((p, idx) => {
             const sampleStr = (p.sample && p.sample.length > 0) ? `  ${p.sample.slice(0, 6).join(" ")}` : "";
             lines.push(
@@ -1054,7 +1061,7 @@ function renderEmojiPacks(data) {
     lines.push(
         "",
         RULE,
-        I("Your bot renders using both Telegram animated emojis and your custom account packs ⚡️"),
+        I("All visual icons and emojis are rendered natively directly on this bot! ⚡️"),
     );
 
     return lines.join("\n");

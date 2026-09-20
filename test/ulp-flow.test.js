@@ -489,4 +489,55 @@ test("ULP flow: searchDayByDay automatically cleans onResult messages and combin
     }
 });
 
+test("ULP flow: removes URL prefixes from credentials and query when searching", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    const store = require("../src/store");
+    try {
+        const dummyContent = "https://example.com/path:user@example.com:pass123\nexample.com:anotheruser:secret456\n";
+        let capturedLines = [];
+        let searchedOpts = null;
+        const peer = {
+            kind: "userbot",
+            isReady: () => true,
+            searcherId: SEARCHER_ID,
+            classify: () => "other",
+            send: async () => ({ message_id: 1, chat: { id: SEARCHER_ID } }),
+            downloadMedia: async () => Buffer.from(dummyContent, "utf8"),
+            searchDayByDay: async (opts) => {
+                searchedOpts = opts;
+                if (opts.onResult) {
+                    await opts.onResult({
+                        id: 999,
+                        media: true,
+                        file: { name: "example.com_20.09.2026.txt" },
+                    });
+                    capturedLines = [...store.getLines(OWNER_CHAT)];
+                }
+                return { status: "done", daysProcessed: 1 };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+        peer.botRef = bot;
+        await bot.handleUpdate(commandUpdate("/ulp https://example.com/login 20.09.2026"));
+
+        assert.ok(searchedOpts, "expected searchDayByDay to be called");
+        assert.equal(searchedOpts.query, "example.com", "expected query to have URL and path removed");
+        assert.deepEqual(capturedLines, [
+            "user@example.com:pass123",
+            "anotheruser:secret456",
+        ], "expected URLs to be stripped from combo results");
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+test.after(() => {
+    const { getSharedPool } = require("../src/worker-pool");
+    getSharedPool().close();
+});
+
+
 

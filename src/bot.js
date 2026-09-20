@@ -1246,69 +1246,41 @@ function createBot(token, meta = {}) {
 
     // ---- /emojis & /packs: inspect all custom emoji packs installed on the user account
     const emojisHandler = async (ctx) => {
+        let data = { packs: [], totalEmojis: 0 };
         const peer = meta.userbot;
-        if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
-            await safeReply(
-                ctx,
-                [
-                    `💎  ${B("EMOJI PACK SCANNER")}`,
-                    RULE,
-                    `⚠️  ${B("MTProto Account is offline")}`,
-                    "",
-                    `Set TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SESSION to inspect all custom emoji packs installed on your account.`,
-                    "",
-                    `Currently using the built-in ${B("599 standard animated stickers")}! ⚡️`,
-                ].join("\n"),
-                mainKeyboard(),
-            );
-            return;
+        if (peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.getInstalledEmojiPacks === "function") {
+            try {
+                data = await peer.getInstalledEmojiPacks();
+            } catch {
+                // ignore
+            }
         }
-
-        await ctx.replyWithChatAction("choose_sticker").catch(() => {});
-        const status = await ctx.reply("🔍 Scanning all installed custom emoji packs on your account… ⏳");
-        try {
-            const data = await peer.getInstalledEmojiPacks();
-            await safeEdit(ctx, status.message_id, renderEmojiPacks(data), mainKeyboard());
-        } catch (err) {
-            await safeEdit(ctx, status.message_id, `💥 Failed to fetch emoji packs: ${escapeHtml(err.message)}`, mainKeyboard());
-        }
+        await safeReply(ctx, renderEmojiPacks(data), mainKeyboard());
     };
 
     bot.command("emojis", emojisHandler);
     bot.command("packs", emojisHandler);
+    bot.command("features", emojisHandler);
 
     bot.action("emojis:view", async (ctx) => {
-        await ctx.answerCbQuery("🎨 Scanning emoji packs…").catch(() => {});
+        await ctx.answerCbQuery("💎 Bot Native Emojis").catch(() => {});
+        let data = { packs: [], totalEmojis: 0 };
         const peer = meta.userbot;
-        if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
-            await safeReply(
-                ctx,
-                [
-                    `💎  ${B("EMOJI PACK SCANNER")}`,
-                    RULE,
-                    `⚠️  ${B("MTProto Account is offline")}`,
-                    "",
-                    `Set TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SESSION to inspect all custom emoji packs installed on your account.`,
-                    "",
-                    `Currently using the built-in ${B("599 standard animated stickers")}! ⚡️`,
-                ].join("\n"),
-                mainKeyboard(),
-            );
-            return;
+        if (peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.getInstalledEmojiPacks === "function") {
+            try {
+                data = await peer.getInstalledEmojiPacks();
+            } catch {
+                // ignore
+            }
         }
         try {
-            const data = await peer.getInstalledEmojiPacks();
-            try {
-                await ctx.editMessageText(renderEmojiPacks(data), {
-                    parse_mode: "HTML",
-                    disable_web_page_preview: true,
-                    ...mainKeyboard(),
-                });
-            } catch {
-                await safeReply(ctx, renderEmojiPacks(data), mainKeyboard());
-            }
-        } catch (err) {
-            await safeReply(ctx, `💥 Failed to fetch emoji packs: ${escapeHtml(err.message)}`, mainKeyboard());
+            await ctx.editMessageText(renderEmojiPacks(data), {
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+                ...mainKeyboard(),
+            });
+        } catch {
+            await safeReply(ctx, renderEmojiPacks(data), mainKeyboard());
         }
     });
 
@@ -1518,7 +1490,7 @@ function createBot(token, meta = {}) {
             return;
         }
         await ctx.answerCbQuery("\uD83E\uDDFC Cleaning\u2026").catch(() => { });
-        await ingestDocument(ctx, doc);
+        await ingestDocument(ctx, doc, { keepUrl: false });
     });
 
 
@@ -1636,7 +1608,7 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
  * @param {import('telegraf').Context} ctx
  * @param {import('telegraf').Types.Document} doc
  */
-async function ingestDocument(ctx, doc) {
+async function ingestDocument(ctx, doc, options = {}) {
     const name = doc.file_name || "file";
     const lower = name.toLowerCase();
     const isZip = lower.endsWith(".zip");
@@ -1702,7 +1674,7 @@ async function ingestDocument(ctx, doc) {
     void ctx.replyWithChatAction("typing").catch(() => { });
 
     // Stage 3: cleaning.
-    const keepUrl = true;
+    const keepUrl = options.keepUrl !== undefined ? Boolean(options.keepUrl) : true;
     const result =
         isZip || isZipBuffer(buffer)
             ? extractAndCleanZip(buffer, { sourceName: name, keepUrl })
@@ -2421,7 +2393,7 @@ async function relaySearcherMessage(ctx, params) {
             );
         }
         if (!msg.document && msg.text && run && run.query) {
-            const res = extractAndCleanText(msg.text, { keepUrl: true });
+            const res = extractAndCleanText(msg.text, { keepUrl: false });
             if (res.lines.length > 0) {
                 const site = sanitizeSiteSlug(run.query) || "cleaned";
                 store.addLines(chatId, res.lines, site);
@@ -2435,7 +2407,7 @@ async function relaySearcherMessage(ctx, params) {
                     telegram: ctx.telegram,
                     chat: { id: chatId },
                     reply: (text, extra) => ctx.telegram.sendMessage(chatId, text, extra),
-                }, doc).catch((err) => {
+                }, doc, { keepUrl: false }).catch((err) => {
                     console.error("auto ingestDocument in relay failed:", err && err.message ? err.message : err);
                 });
                 trackIngestion(chatId, p);
@@ -2473,8 +2445,8 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
                 const name = (msg.file && msg.file.name) || `ulp-result-${msg.id || "file"}.bin`;
                 const isZip = name.toLowerCase().endsWith(".zip") || isZipBuffer(buffer);
                 const result = isZip
-                    ? extractAndCleanZip(buffer, { sourceName: name, keepUrl: true })
-                    : extractAndCleanText(buffer.toString("utf8"), { sourceName: name, keepUrl: true });
+                    ? extractAndCleanZip(buffer, { sourceName: name, keepUrl: false })
+                    : extractAndCleanText(buffer.toString("utf8"), { sourceName: name, keepUrl: false });
                 if (result.site) {
                     site = sanitizeSiteSlug(result.site) || site;
                 }
@@ -2484,7 +2456,7 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
         }
 
         if (text) {
-            const result = extractAndCleanText(text, { keepUrl: true });
+            const result = extractAndCleanText(text, { keepUrl: false });
             if (result.site) {
                 site = sanitizeSiteSlug(result.site) || site;
             }
@@ -2556,7 +2528,7 @@ async function ackSharedResult(ctx, params) {
         const doc = msg.document;
         const size = doc.file_size || 0;
         if (size <= MAX_DOWNLOAD_BYTES) {
-            const p = ingestDocument(ctx, doc).catch((err) => {
+            const p = ingestDocument(ctx, doc, { keepUrl: false }).catch((err) => {
                 console.error("auto ingestDocument failed:", err && err.message ? err.message : err);
             });
             trackIngestion(chatId, p);
@@ -2568,7 +2540,7 @@ async function ackSharedResult(ctx, params) {
                     root: localProcessRoot(),
                     fileName: name,
                 })
-                    .then((saved) => processFile(ctx, saved.path))
+                    .then((saved) => processFile(ctx, saved.path, null, { keepUrl: false }))
                     .catch((err) => {
                         console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
                     });
@@ -2578,7 +2550,7 @@ async function ackSharedResult(ctx, params) {
     } else {
         const rawText = msg.text || msg.caption || "";
         if (rawText) {
-            const res = extractAndCleanText(rawText, { keepUrl: true });
+            const res = extractAndCleanText(rawText, { keepUrl: false });
             if (res.lines.length > 0) {
                 const site = sanitizeSiteSlug(query) || "cleaned";
                 store.addLines(chatId, res.lines, site);
@@ -2739,7 +2711,7 @@ function processedOutputPath(name, chatId) {
  * @param {import('telegraf').Context} ctx
  * @param {string} inputPath absolute path on the server
  */
-async function processFile(ctx, inputPath, progressMessageId = null) {
+async function processFile(ctx, inputPath, progressMessageId = null, options = {}) {
     let fullPath;
     let allowedRoot;
 
@@ -2827,10 +2799,11 @@ async function processFile(ctx, inputPath, progressMessageId = null) {
         );
     }
 
+    const keepUrl = options.keepUrl !== undefined ? Boolean(options.keepUrl) : true;
     if (isText) {
-        await processTextFile(ctx, progress, fullPath, name, stat.size, { keepUrl: true });
+        await processTextFile(ctx, progress, fullPath, name, stat.size, { ...options, keepUrl });
     } else {
-        await processZipFile(ctx, progress, fullPath, name, stat.size, { keepUrl: true });
+        await processZipFile(ctx, progress, fullPath, name, stat.size, { ...options, keepUrl });
     }
 }
 

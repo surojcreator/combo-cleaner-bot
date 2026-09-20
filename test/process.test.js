@@ -196,9 +196,7 @@ test("/lsearch searches the newest persistent cleaned output", async () => {
     }
 });
 
-test.after(() => {
-    fs.rmSync(PROCESSED_ROOT, { recursive: true, force: true });
-});
+
 
 test("/process rejects a missing file path", async () => {
     const api = await startFakeApi();
@@ -376,5 +374,11 @@ test("/process on a ULP file checks for duplicates and does not delete the URL",
         fs.rmSync(tmp, { force: true });
         await api.close();
     }
+});
+
+test.after(() => {
+    fs.rmSync(PROCESSED_ROOT, { recursive: true, force: true });
+    const { getSharedPool } = require("../src/worker-pool");
+    getSharedPool().close();
 });
 

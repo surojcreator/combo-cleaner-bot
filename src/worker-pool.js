@@ -18,7 +18,8 @@ class WorkerPool {
         this.pending = new Map();
         this.isClosed = false;
         this.idleTimer = null;
-        this.idleTimeoutMs = 120000; // Keep workers hot for 2 minutes to eliminate spawn lag
+        const isTest = process.env.NODE_ENV === "test" || process.execArgv.includes("--test") || process.argv.some((a) => a.includes("--test") || a.includes(".test.js"));
+        this.idleTimeoutMs = isTest ? 150 : 120000;
     }
 
     warmup() {
@@ -339,6 +340,10 @@ class WorkerPool {
         this.queue = [];
         this.pending.clear();
     }
+
+    destroy() {
+        this.close();
+    }
 }
 
 // Global shared singleton pool for maximum multi-core saturation
@@ -351,7 +356,15 @@ function getSharedPool() {
     return sharedPool;
 }
 
+function closeSharedPool() {
+    if (sharedPool) {
+        sharedPool.close();
+        sharedPool = null;
+    }
+}
+
 module.exports = {
     WorkerPool,
     getSharedPool,
+    closeSharedPool,
 };

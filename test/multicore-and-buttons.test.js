@@ -11,6 +11,9 @@ const {
     renderHelp,
     renderServerFiles,
     renderSaveGuide,
+    renderUlpProgress,
+    renderUlpStart,
+    renderUlpHint,
     ulpMenuKeyboard,
     saveGuideKeyboard,
     searchPromptKeyboard,
@@ -148,6 +151,68 @@ test("renderHelp and keyboards display animated emojis and button dashboard", ()
     assert.match(serverFiles, /\[1\]/);
     assert.match(serverFiles, /test-dump\.zip/);
     assert.match(serverFiles, /Tap any button below to Clean, Search, or Download files directly/);
+});
+
+test("renderUlpProgress, renderUlpStart, and renderUlpHint format days and steps cleanly without NaN", () => {
+    // Array sends in renderUlpProgress
+    const arrayProgress = renderUlpProgress({
+        searcherBot: "DumpNews14Bot",
+        attempt: 2,
+        maxTries: 7,
+        sends: ["20.09.2026: Opening folder", "hist:20.09.2026"],
+        stepDelayMs: 12000,
+    });
+    assert.match(arrayProgress, /SEARCH IN PROGRESS/);
+    assert.match(arrayProgress, /2\/7/);
+    assert.match(arrayProgress, /20\.09\.2026: Opening folder · hist:20\.09\.2026/);
+    assert.ok(!arrayProgress.includes("NaN"), "expected no NaN in progress card");
+
+    // Number sends in renderUlpProgress
+    const numProgress = renderUlpProgress({
+        searcherBot: "DumpNews14Bot",
+        attempt: 1,
+        maxTries: 5,
+        sends: 3,
+        stepDelayMs: 7000,
+    });
+    assert.match(numProgress, /3 step\(s\) sent/);
+    assert.ok(!numProgress.includes("NaN"));
+
+    // renderUlpStart with daysCount and startDate
+    const startCard = renderUlpStart({
+        query: "netflix.com",
+        scope: "day",
+        searcherBot: "DumpNews14Bot",
+        steps: [{ id: "query", text: "netflix.com" }],
+        stepDelayMs: 12000,
+        maxTries: 7,
+        transport: "userbot",
+        daysCount: 14,
+        startDate: "20.09.2026",
+    });
+    assert.match(startCard, /Day-by-Day \(Last 14 days from 20\.09\.2026\)/);
+    assert.match(startCard, /netflix\.com/);
+
+    // renderUlpHint with active daysCount
+    const hintCard = renderUlpHint({
+        searcherBot: "DumpNews14Bot",
+        stepDelayMs: 12000,
+        maxTries: 5,
+        daysCount: 7,
+    });
+    assert.match(hintCard, /7 days active/);
+    assert.match(hintCard, /\/ulp &lt;query&gt; \[days\] \[start_date\]/);
+
+    // ulpMenuKeyboard active checkmark for 7 days
+    const menu7 = ulpMenuKeyboard(7);
+    const btns7 = menu7.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    assert.ok(btns7.includes("📅 7d ✅"), "expected checkmark on 7d");
+    assert.ok(btns7.includes("📅 1 Day"), "expected other days buttons without checkmark");
+
+    // ulpMenuKeyboard active checkmark for 14 days
+    const menu14 = ulpMenuKeyboard(14);
+    const btns14 = menu14.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    assert.ok(btns14.includes("📅 14d ✅"), "expected checkmark on 14d");
 });
 
 async function startFakeApi() {

@@ -47,6 +47,11 @@ async function main() {
         console.log("Connecting to Telegram for QR login...");
         console.log("Open Telegram mobile -> Settings -> Devices -> Link Desktop Device.");
 
+        // signInUserWithQrCode uses raw auth requests and requires an active
+        // MTProto connection first. Unlike client.start(), it doesn't connect
+        // automatically.
+        await client.connect();
+
         const me = await client.signInUserWithQrCode(
             { apiId, apiHash },
             {

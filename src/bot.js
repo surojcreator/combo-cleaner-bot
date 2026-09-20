@@ -55,6 +55,7 @@ const {
     siteEmoji,
     sitesKeyboard,
     confirmDomainDeleteKeyboard,
+    createInlineKeyboard,
     tgEmoji,
     B,
     I,
@@ -637,7 +638,7 @@ function createBot(token, meta = {}) {
                 "",
                 `${I("Tap a quick filter below or type /lsearch <query>:")}`,
             ].join("\n"),
-            Markup.inlineKeyboard([
+            createInlineKeyboard([
                 [
                     Markup.button.callback("📧 Gmail", `file:dosearch:${idx}:gmail.com`),
                     Markup.button.callback("📧 Hotmail", `file:dosearch:${idx}:hotmail.com`),
@@ -720,7 +721,7 @@ function createBot(token, meta = {}) {
                 "",
                 `${I("Tap a quick filter below or type /lsearch <query>:")}`,
             ].join("\n"),
-            Markup.inlineKeyboard([
+            createInlineKeyboard([
                 [
                     Markup.button.callback("📧 Gmail", `file:dosearch:proc:${idx}:gmail.com`),
                     Markup.button.callback("📧 Hotmail", `file:dosearch:proc:${idx}:hotmail.com`),
@@ -1650,7 +1651,7 @@ function createBot(token, meta = {}) {
                 `Reply with the domain name you wish to remove from the current batch.`,
                 `Example: ${CODE("netflix.com")} or ${CODE("gmail.com")}`,
             ].join("\n"),
-            Markup.inlineKeyboard([
+            createInlineKeyboard([
                 [Markup.button.callback("❌ Cancel", "sites")],
             ])
         );
@@ -2039,6 +2040,41 @@ function createBot(token, meta = {}) {
  * @param {string} text
  * @param {object} [extra] additional sendMessage options (e.g. keyboard)
  */
+/**
+ * Strips icon_custom_emoji_id from inline keyboard buttons for API fallback.
+ * @param {object} extra
+ * @returns {object}
+ */
+function stripButtonEmojis(extra) {
+    if (!extra || !extra.reply_markup || !extra.reply_markup.inline_keyboard) return extra;
+    const cleanKeyboard = extra.reply_markup.inline_keyboard.map((row) =>
+        Array.isArray(row)
+            ? row.map((btn) => {
+                  if (btn && btn.icon_custom_emoji_id) {
+                      const copy = { ...btn };
+                      delete copy.icon_custom_emoji_id;
+                      return copy;
+                  }
+                  return btn;
+              })
+            : btn
+    );
+    return {
+        ...extra,
+        reply_markup: {
+            ...extra.reply_markup,
+            inline_keyboard: cleanKeyboard,
+        },
+    };
+}
+
+/**
+ * Safely send a text message using HTML parse mode, stripping custom emoji tags
+ * and button emoji IDs if rejected by the Telegram API.
+ * @param {import('telegraf').Context} ctx
+ * @param {string} text
+ * @param {object} [extra] additional sendMessage options (e.g. keyboard)
+ */
 async function safeReply(ctx, text, extra = {}) {
     try {
         await ctx.reply(text, {
@@ -2047,9 +2083,13 @@ async function safeReply(ctx, text, extra = {}) {
             ...extra,
         });
     } catch (err) {
-        if (err && /custom_emoji|entity/i.test(err.message) && text && text.includes("<tg-emoji")) {
-            const fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
-            return safeReply(ctx, fallbackText, extra);
+        if (err && /custom_emoji|entity|button|icon|markup/i.test(err.message)) {
+            let fallbackText = text;
+            if (text && text.includes("<tg-emoji")) {
+                fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            }
+            const fallbackExtra = stripButtonEmojis(extra);
+            return safeReply(ctx, fallbackText, fallbackExtra);
         }
         console.error("safeReply failed:", err.message);
     }
@@ -2070,9 +2110,13 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
             ...extra,
         });
     } catch (err) {
-        if (err && /custom_emoji|entity/i.test(err.message) && text && text.includes("<tg-emoji")) {
-            const fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
-            return safeEdit(ctx, messageId, fallbackText, extra);
+        if (err && /custom_emoji|entity|button|icon|markup/i.test(err.message)) {
+            let fallbackText = text;
+            if (text && text.includes("<tg-emoji")) {
+                fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            }
+            const fallbackExtra = stripButtonEmojis(extra);
+            return safeEdit(ctx, messageId, fallbackText, fallbackExtra);
         }
         // ignore other edit errors (e.g. message not modified)
     }
@@ -2190,19 +2234,34 @@ async function ingestDocument(ctx, doc, options = {}) {
  * Safely send a document using context or telegram instance, with fallback.
  */
 async function safeSendDocument(ctx, chatId, payload, extra = {}) {
-    if (typeof ctx.replyWithDocument === "function") {
-        try {
-            return await ctx.replyWithDocument(payload, extra);
-        } catch (err) {
-            if (ctx.telegram && typeof ctx.telegram.sendDocument === "function" && chatId) {
-                return await ctx.telegram.sendDocument(chatId, payload, extra);
+    const doSend = async (opts) => {
+        if (typeof ctx.replyWithDocument === "function") {
+            try {
+                return await ctx.replyWithDocument(payload, opts);
+            } catch (err) {
+                if (ctx.telegram && typeof ctx.telegram.sendDocument === "function" && chatId) {
+                    return await ctx.telegram.sendDocument(chatId, payload, opts);
+                }
+                throw err;
             }
-            throw err;
+        } else if (ctx.telegram && typeof ctx.telegram.sendDocument === "function" && chatId) {
+            return await ctx.telegram.sendDocument(chatId, payload, opts);
         }
-    } else if (ctx.telegram && typeof ctx.telegram.sendDocument === "function" && chatId) {
-        return await ctx.telegram.sendDocument(chatId, payload, extra);
+        throw new Error("No document delivery method available on context");
+    };
+
+    try {
+        return await doSend(extra);
+    } catch (err) {
+        if (err && /custom_emoji|entity|button|icon|markup/i.test(err.message)) {
+            const fallbackExtra = stripButtonEmojis(extra);
+            if (fallbackExtra.caption && fallbackExtra.caption.includes("<tg-emoji")) {
+                fallbackExtra.caption = fallbackExtra.caption.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            }
+            return await doSend(fallbackExtra);
+        }
+        throw err;
     }
-    throw new Error("No document delivery method available on context");
 }
 
 /**
@@ -3651,6 +3710,7 @@ module.exports = {
     ingestUserbotMessage,
     trackIngestion,
     waitForIngestions,
+    stripButtonEmojis,
 };
 
 

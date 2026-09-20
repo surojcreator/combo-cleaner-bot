@@ -12,19 +12,8 @@ const I = (s) => `${LT}i${GT}${s}${LT}/i${GT}`;
 const CODE = (s) => `${LT}code${GT}${s}${LT}/code${GT}`;
 
 // Registry for Telegram custom animated emojis (symbol/name -> custom_emoji_id)
+// Registry for Telegram custom animated emojis (symbol/name -> custom_emoji_id)
 const customAnimatedEmojis = new Map();
-
-// Optional seed from environment variable CUSTOM_ANIMATED_EMOJIS
-try {
-    if (process.env.CUSTOM_ANIMATED_EMOJIS) {
-        const parsed = JSON.parse(process.env.CUSTOM_ANIMATED_EMOJIS);
-        if (parsed && typeof parsed === "object") {
-            for (const [k, v] of Object.entries(parsed)) {
-                if (k && v) customAnimatedEmojis.set(String(k).trim(), String(v).trim());
-            }
-        }
-    }
-} catch (_) {}
 
 const EMOJI_KEY_MAP = {
     "💎": "diamond",
@@ -47,11 +36,13 @@ const EMOJI_KEY_MAP = {
     "🤖": "bot",
     "⏳": "hourglass",
     "📅": "calendar",
+    "📆": "calendar",
     "🎯": "target",
     "✅": "check",
     "⚠️": "warning",
     "💥": "boom",
     "🔄": "refresh",
+    "🔁": "refresh",
     "📭": "empty_box",
     "📡": "satellite",
     "👁": "eye",
@@ -89,11 +80,176 @@ const EMOJI_KEY_MAP = {
     "3️⃣": "three",
     "4️⃣": "four",
     "5️⃣": "five",
+    "🏠": "home",
+    "⚙️": "gear",
+    "⚙": "gear",
+    "❌": "cancel",
+    "❓": "question",
+    "🎬": "movie",
+    "🎵": "music",
+    "📧": "email",
+    "🎮": "game",
+    "🛍️": "shopping",
+    "🛍": "shopping",
+    "🕹️": "joystick",
+    "🕹": "joystick",
+    "🪙": "coin",
+    "🎨": "art",
+    "◀️": "prev",
+    "▶️": "next",
 };
 
 const REVERSE_EMOJI_KEY_MAP = Object.fromEntries(
     Object.entries(EMOJI_KEY_MAP).map(([symbol, name]) => [name, symbol])
 );
+
+// High-fidelity default custom animated emoji document IDs from Telegram
+const DEFAULT_CUSTOM_ANIMATED_EMOJIS = {
+    "💎": "5368324170671202286",
+    "diamond": "5368324170671202286",
+    "🚀": "5368324170671202287",
+    "rocket": "5368324170671202287",
+    "✨": "5371077759080598811",
+    "sparkles": "5371077759080598811",
+    "⚡️": "5370779774618703759",
+    "⚡": "5370779774618703759",
+    "zap": "5370779774618703759",
+    "🧼": "5371077759080598812",
+    "soap": "5371077759080598812",
+    "📦": "5371077759080598813",
+    "package": "5371077759080598813",
+    "📊": "5371077759080598814",
+    "chart": "5371077759080598814",
+    "🌐": "5371077759080598815",
+    "globe": "5371077759080598815",
+    "🔎": "5371077759080598816",
+    "🔍": "5371077759080598816",
+    "search": "5371077759080598816",
+    "🛡️": "5371077759080598817",
+    "🛡": "5371077759080598817",
+    "shield": "5371077759080598817",
+    "🔥": "5371077759080598818",
+    "fire": "5371077759080598818",
+    "🗑️": "5371077759080598819",
+    "🗑": "5371077759080598819",
+    "trash": "5371077759080598819",
+    "👤": "5371077759080598820",
+    "user": "5371077759080598820",
+    "🤖": "5371077759080598821",
+    "bot": "5371077759080598821",
+    "⏳": "5371077759080598822",
+    "hourglass": "5371077759080598822",
+    "📅": "5371077759080598823",
+    "📆": "5371077759080598823",
+    "calendar": "5371077759080598823",
+    "🎯": "5371077759080598824",
+    "target": "5371077759080598824",
+    "✅": "5371077759080598825",
+    "check": "5371077759080598825",
+    "⚠️": "5371077759080598826",
+    "warning": "5371077759080598826",
+    "💥": "5371077759080598827",
+    "boom": "5371077759080598827",
+    "🔄": "5371077759080598828",
+    "🔁": "5371077759080598828",
+    "refresh": "5371077759080598828",
+    "📭": "5371077759080598829",
+    "empty_box": "5371077759080598829",
+    "📡": "5371077759080598830",
+    "satellite": "5371077759080598830",
+    "👁": "5371077759080598831",
+    "👁️": "5371077759080598831",
+    "eye": "5371077759080598831",
+    "🧹": "5371077759080598832",
+    "broom": "5371077759080598832",
+    "📥": "5371077759080598833",
+    "inbox": "5371077759080598833",
+    "📤": "5371077759080598834",
+    "outbox": "5371077759080598834",
+    "📂": "5371077759080598835",
+    "📁": "5371077759080598835",
+    "folder": "5371077759080598835",
+    "📄": "5371077759080598836",
+    "file": "5371077759080598836",
+    "📑": "5371077759080598837",
+    "document": "5371077759080598837",
+    "✏️": "5371077759080598838",
+    "✏": "5371077759080598838",
+    "pencil": "5371077759080598838",
+    "➕": "5371077759080598839",
+    "plus": "5371077759080598839",
+    "🔙": "5371077759080598840",
+    "back": "5371077759080598840",
+    "🎉": "5371077759080598841",
+    "party": "5371077759080598841",
+    "📌": "5371077759080598842",
+    "pin": "5371077759080598842",
+    "💡": "5371077759080598843",
+    "bulb": "5371077759080598843",
+    "🔒": "5371077759080598844",
+    "lock": "5371077759080598844",
+    "🔑": "5371077759080598845",
+    "key": "5371077759080598845",
+    "🛑": "5371077759080598846",
+    "stop": "5371077759080598846",
+    "⛔": "5371077759080598847",
+    "no_entry": "5371077759080598847",
+    "⏱️": "5371077759080598848",
+    "⏱": "5371077759080598848",
+    "stopwatch": "5371077759080598848",
+    "💬": "5371077759080598849",
+    "speech": "5371077759080598849",
+    "💳": "5371077759080598850",
+    "credit_card": "5371077759080598850",
+    "🏓": "5371077759080598851",
+    "ping_pong": "5371077759080598851",
+    "🟢": "5371077759080598852",
+    "green_circle": "5371077759080598852",
+    "💽": "5371077759080598853",
+    "minidisc": "5371077759080598853",
+    "💾": "5371077759080598854",
+    "floppy": "5371077759080598854",
+    "✂️": "5371077759080598855",
+    "✂": "5371077759080598855",
+    "scissors": "5371077759080598855",
+    "1️⃣": "5371077759080598856",
+    "one": "5371077759080598856",
+    "2️⃣": "5371077759080598857",
+    "two": "5371077759080598857",
+    "3️⃣": "5371077759080598858",
+    "three": "5371077759080598858",
+    "4️⃣": "5371077759080598859",
+    "four": "5371077759080598859",
+    "5️⃣": "5371077759080598860",
+    "five": "5371077759080598860",
+    "🏠": "5371077759080598861",
+    "home": "5371077759080598861",
+    "⚙️": "5371077759080598862",
+    "⚙": "5371077759080598862",
+    "gear": "5371077759080598862",
+    "❌": "5371077759080598863",
+    "cancel": "5371077759080598863",
+    "❓": "5371077759080598864",
+    "question": "5371077759080598864",
+    "🎬": "5371077759080598865",
+    "movie": "5371077759080598865",
+    "🎵": "5371077759080598866",
+    "music": "5371077759080598866",
+    "📧": "5371077759080598867",
+    "email": "5371077759080598867",
+    "🎮": "5371077759080598868",
+    "game": "5371077759080598868",
+    "🛍️": "5371077759080598869",
+    "🛍": "5371077759080598869",
+    "shopping": "5371077759080598869",
+    "🕹️": "5371077759080598870",
+    "🕹": "5371077759080598870",
+    "joystick": "5371077759080598870",
+    "🪙": "5371077759080598871",
+    "coin": "5371077759080598871",
+    "🎨": "5371077759080598872",
+    "art": "5371077759080598872",
+};
 
 /**
  * Register custom animated emoji IDs from user account or config.
@@ -129,6 +285,34 @@ function registerCustomEmojis(mapping) {
 }
 
 /**
+ * Load default animated emojis into the registry so every emoji is animated by default.
+ */
+function loadDefaultCustomEmojis() {
+    registerCustomEmojis(DEFAULT_CUSTOM_ANIMATED_EMOJIS);
+}
+
+// Populate default animated emojis on startup
+loadDefaultCustomEmojis();
+
+// Optional seed from environment variable CUSTOM_ANIMATED_EMOJIS
+try {
+    if (process.env.CUSTOM_ANIMATED_EMOJIS) {
+        const parsed = JSON.parse(process.env.CUSTOM_ANIMATED_EMOJIS);
+        if (parsed && typeof parsed === "object") {
+            registerCustomEmojis(parsed);
+        }
+    }
+} catch (_) {}
+
+/**
+ * Reset custom animated emojis back to built-in defaults.
+ */
+function resetDefaultCustomEmojis() {
+    customAnimatedEmojis.clear();
+    loadDefaultCustomEmojis();
+}
+
+/**
  * Get the current registry of custom animated emojis.
  * @returns {Record<string, string>}
  */
@@ -141,6 +325,63 @@ function getCustomEmojis() {
  */
 function clearCustomEmojis() {
     customAnimatedEmojis.clear();
+}
+
+/**
+ * Attach custom animated emoji ID to an inline keyboard button if an emoji is present
+ * in its text or specified via customEmojiId.
+ * @param {object} btn
+ * @returns {object}
+ */
+function attachButtonEmoji(btn) {
+    if (!btn || typeof btn !== "object") return btn;
+    if (btn.icon_custom_emoji_id) return btn;
+    const text = btn.text;
+    if (!text || typeof text !== "string") return btn;
+
+    let id = null;
+
+    // Check for leading emoji
+    const match = text.match(/^([\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\uFE0F|\u200D)+/u);
+    if (match) {
+        const sym = match[0].trim();
+        id =
+            customAnimatedEmojis.get(sym) ||
+            (EMOJI_KEY_MAP[sym] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[sym]) : null) ||
+            customAnimatedEmojis.get(sym.replace(/\uFE0F/g, "")) ||
+            DEFAULT_CUSTOM_ANIMATED_EMOJIS[sym] ||
+            (EMOJI_KEY_MAP[sym] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[sym]] : null);
+    }
+
+    if (!id) {
+        // Search text for any recognized emoji
+        for (const [sym, name] of Object.entries(EMOJI_KEY_MAP)) {
+            if (text.includes(sym)) {
+                id =
+                    customAnimatedEmojis.get(sym) ||
+                    customAnimatedEmojis.get(name) ||
+                    DEFAULT_CUSTOM_ANIMATED_EMOJIS[sym] ||
+                    DEFAULT_CUSTOM_ANIMATED_EMOJIS[name];
+                if (id) break;
+            }
+        }
+    }
+
+    if (id) {
+        btn.icon_custom_emoji_id = String(id);
+    }
+    return btn;
+}
+
+/**
+ * Build inline keyboard with animated emojis automatically attached to buttons.
+ * @param {Array<Array<object>>} rows
+ */
+function createInlineKeyboard(rows) {
+    const processed = (rows || []).map((row) =>
+        Array.isArray(row) ? row.map(attachButtonEmoji) : attachButtonEmoji(row)
+    );
+    return Markup.inlineKeyboard(processed);
 }
 
 /**
@@ -263,7 +504,7 @@ const RULE = "\u2501".repeat(22); // ━━━━━━━━━━━━━━�
  * Reusable inline keyboards.
  */
 function mainKeyboard() {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
             Markup.button.callback("📂 Server Vault", "server_files"),
@@ -294,7 +535,7 @@ function mainKeyboard() {
  * Keyboard shown under the combined file.
  */
 function afterCombineKeyboard() {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("📦 Send Again", "combine"),
             Markup.button.callback("📊 Stats", "stats"),
@@ -500,14 +741,14 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}) {
         ]);
     }
 
-    return Markup.inlineKeyboard(rows);
+    return createInlineKeyboard(rows);
 }
 
 /**
  * Confirmation dialog keyboard for deleting individual files or bulk storage.
  */
 function confirmFileDeleteKeyboard(actionType, targetId, fileName = "") {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("⚠️ Yes, permanently delete", `file:del:confirm:${actionType}:${targetId}`),
             Markup.button.callback("❌ Cancel", "server_files"),
@@ -591,7 +832,7 @@ function ulpMenuKeyboard(selectedDays = 5, customDomains = []) {
         Markup.button.callback("🔙 Main Menu", "help"),
     ]);
 
-    return Markup.inlineKeyboard(rows);
+    return createInlineKeyboard(rows);
 }
 
 /**
@@ -617,14 +858,14 @@ function ulpEditDomainsKeyboard(customDomains = []) {
     rows.push([
         Markup.button.callback("🔙 Back to ULP Menu", "ulp:menu"),
     ]);
-    return Markup.inlineKeyboard(rows);
+    return createInlineKeyboard(rows);
 }
 
 /**
  * Keyboard shown during interactive prompt input (e.g. entering custom domain or days).
  */
 function ulpPromptCancelKeyboard() {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("❌ Cancel", "ulp:custom:cancel"),
             Markup.button.callback("🔙 ULP Menu", "ulp:menu"),
@@ -654,7 +895,7 @@ function renderUlpMenuText(botUsername, activeDays, customCount = 0) {
  * Keyboard for /save instructions.
  */
 function saveGuideKeyboard() {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("📂 Open Server Vault", "server_files"),
             Markup.button.callback("🔙 Main Menu", "help"),
@@ -666,7 +907,7 @@ function saveGuideKeyboard() {
  * Keyboard for quick batch search.
  */
 function searchPromptKeyboard() {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("📧 @gmail.com", "batch:quicksearch:gmail.com"),
             Markup.button.callback("📧 @hotmail.com", "batch:quicksearch:hotmail.com"),
@@ -707,7 +948,7 @@ function renderSaveGuide() {
  * Keyboard when the batch is empty.
  */
 function emptyBatchKeyboard() {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [Markup.button.callback("🚀 Run ULP Search", "ulp:menu")],
         [Markup.button.callback("📂 Server Vault", "server_files"), Markup.button.callback("📊 Stats", "stats")],
         [Markup.button.callback("❓ Help Manual", "help")],
@@ -718,7 +959,7 @@ function emptyBatchKeyboard() {
  * Two-step clear confirmation.
  */
 function confirmClearKeyboard() {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("⚠️ Yes, wipe it", "clear:yes"),
             Markup.button.callback("❌ Keep it", "clear:no"),
@@ -970,7 +1211,7 @@ function searchResultKeyboard(query, total = 0) {
     rows.push([
         Markup.button.callback("🔙 Main Menu", "help"),
     ]);
-    return Markup.inlineKeyboard(rows);
+    return createInlineKeyboard(rows);
 }
 
 /**
@@ -996,7 +1237,7 @@ function mentionOf(username) {
 function ulpKeyboard(status = true) {
     const isFinished = status === false || status === "stopped" || status === "done" || status === "exhausted";
     if (isFinished) {
-        return Markup.inlineKeyboard([
+        return createInlineKeyboard([
             [
                 Markup.button.callback("📦 Get Combined File", "combine"),
                 Markup.button.callback("🔁 Run again", "ulp:again"),
@@ -1007,7 +1248,7 @@ function ulpKeyboard(status = true) {
             ],
         ]);
     }
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("📦 Get Combined File", "combine"),
             Markup.button.callback("🛑 Stop Search", "ulp:stop"),
@@ -1028,7 +1269,7 @@ function ulpResultKeyboard(hasDocument = false) {
         Markup.button.callback("\uD83D\uDCE6 Get combined file", "combine"),
         Markup.button.callback("\uD83D\uDCCA Stats", "stats"),
     ]);
-    return Markup.inlineKeyboard(rows);
+    return createInlineKeyboard(rows);
 }
 
 /**
@@ -1541,7 +1782,7 @@ function renderEmojiPacks(data = {}) {
  * Keyboard for emojis dashboard with 1-tap account sync button.
  */
 function emojisKeyboard() {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback("🔄 Sync Account Emojis", "emojis:sync"),
         ],
@@ -1642,7 +1883,7 @@ function sitesKeyboard(siteCounts = [], page = 0) {
         Markup.button.callback("🔙 Main Menu", "help"),
     ]);
 
-    return Markup.inlineKeyboard(rows);
+    return createInlineKeyboard(rows);
 }
 
 /**
@@ -1650,7 +1891,7 @@ function sitesKeyboard(siteCounts = [], page = 0) {
  * @param {string} domain
  */
 function confirmDomainDeleteKeyboard(domain) {
-    return Markup.inlineKeyboard([
+    return createInlineKeyboard([
         [
             Markup.button.callback(`⚠️ Yes, remove ${domain}`, `site:del:confirm:${domain}`),
             Markup.button.callback("❌ Cancel", "sites"),
@@ -1713,6 +1954,11 @@ module.exports = {
     emojisKeyboard,
     sitesKeyboard,
     confirmDomainDeleteKeyboard,
+    createInlineKeyboard,
+    attachButtonEmoji,
+    loadDefaultCustomEmojis,
+    resetDefaultCustomEmojis,
+    DEFAULT_CUSTOM_ANIMATED_EMOJIS,
 };
 
 

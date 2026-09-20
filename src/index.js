@@ -136,6 +136,14 @@ async function connectUserbot() {
         peer.onResult((msg) => relayUserbotResult(peer, msg));
         botMeta.userbot = peer;
         console.log(`Userbot: connected as your account, listening to @${username} (id ${id}).`);
+        if (typeof peer.syncCustomEmojis === "function") {
+            try {
+                const syncRes = await peer.syncCustomEmojis();
+                console.log(`Userbot: synchronized ${syncRes.synced || 0} custom animated emojis from your account.`);
+            } catch (syncErr) {
+                console.warn("Userbot: emoji auto-sync warning:", syncErr && syncErr.message ? syncErr.message : syncErr);
+            }
+        }
     } catch (err) {
         console.error("Userbot: failed to start — relay falls back to the Bot API.", err && err.message ? err.message : err);
     }

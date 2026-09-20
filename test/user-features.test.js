@@ -344,4 +344,81 @@ describe("User Requested Features & Optimizations", () => {
         const toolsBtns = toolsKb.reply_markup.inline_keyboard.flat();
         assert.ok(toolsBtns.some((b) => b.callback_data === "files:wipe:all:ask"));
     });
+
+    test("10. Animated emojis by default and animated emojis on keyboard buttons", () => {
+        const messages = require("../src/messages");
+        const bot = require("../src/bot");
+
+        // 1. Ensure default animated emojis are active by default
+        messages.resetDefaultCustomEmojis();
+        const rocketHtml = messages.tgEmoji("🚀");
+        assert.ok(rocketHtml.includes("<tg-emoji"), "🚀 should render with <tg-emoji> tag by default");
+        assert.ok(rocketHtml.includes('emoji-id="5368324170671202287"'), "🚀 should have default document ID");
+
+        const diamondHtml = messages.tgEmoji("💎");
+        assert.ok(diamondHtml.includes("<tg-emoji"), "💎 should render with <tg-emoji> tag by default");
+        assert.ok(diamondHtml.includes('emoji-id="5368324170671202286"'), "💎 should have default document ID");
+
+        const soapHtml = messages.tgEmoji("🧼");
+        assert.ok(soapHtml.includes("<tg-emoji"), "🧼 should render with <tg-emoji> tag by default");
+
+        // 2. Verify keyboard buttons have icon_custom_emoji_id attached by default
+        const mainKb = messages.mainKeyboard();
+        const mainBtns = mainKb.reply_markup.inline_keyboard.flat();
+
+        const btnUlp = mainBtns.find((b) => b.callback_data === "ulp:menu");
+        assert.ok(btnUlp, "ULP button exists");
+        assert.equal(btnUlp.icon_custom_emoji_id, "5368324170671202287", "🚀 button has rocket custom emoji id");
+
+        const btnVault = mainBtns.find((b) => b.callback_data === "server_files");
+        assert.ok(btnVault, "Vault button exists");
+        assert.equal(btnVault.icon_custom_emoji_id, "5371077759080598835", "📂 button has folder custom emoji id");
+
+        const btnCombine = mainBtns.find((b) => b.callback_data === "combine");
+        assert.ok(btnCombine, "Combine button exists");
+        assert.equal(btnCombine.icon_custom_emoji_id, "5371077759080598813", "📦 button has package custom emoji id");
+
+        const btnStats = mainBtns.find((b) => b.callback_data === "stats");
+        assert.ok(btnStats, "Stats button exists");
+        assert.equal(btnStats.icon_custom_emoji_id, "5371077759080598814", "📊 button has chart custom emoji id");
+
+        // 3. Verify serverFilesKeyboard buttons have animated emoji IDs
+        const serverKb = messages.serverFilesKeyboard(
+            [{ name: "test.zip", size: 1000, mtime: new Date() }],
+            [{ name: "output.txt", size: 500, mtime: new Date() }],
+            { tab: "raw" }
+        );
+        const serverBtns = serverKb.reply_markup.inline_keyboard.flat();
+        const cleanBtn = serverBtns.find((b) => b.callback_data === "file:clean:0");
+        assert.ok(cleanBtn, "Clean button exists");
+        assert.equal(cleanBtn.icon_custom_emoji_id, "5371077759080598812", "🧼 button has soap custom emoji id");
+
+        const delBtn = serverBtns.find((b) => b.callback_data === "file:del:raw:ask:0");
+        assert.ok(delBtn, "Delete button exists");
+        assert.equal(delBtn.icon_custom_emoji_id, "5371077759080598819", "🗑 button has trash custom emoji id");
+
+        // 4. Verify ulpKeyboard has animated emoji IDs
+        const ulpKb = messages.ulpKeyboard("running");
+        const ulpBtns = ulpKb.reply_markup.inline_keyboard.flat();
+        const stopBtn = ulpBtns.find((b) => b.callback_data === "ulp:stop");
+        assert.ok(stopBtn, "Stop button exists");
+        assert.equal(stopBtn.icon_custom_emoji_id, "5371077759080598846", "🛑 button has stop custom emoji id");
+
+        // 5. Verify stripButtonEmojis fallback functionality
+        const extraWithEmojis = {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "🚀 Test", callback_data: "test", icon_custom_emoji_id: "12345" },
+                        { text: "Plain", callback_data: "plain" },
+                    ],
+                ],
+            },
+        };
+        const stripped = bot.stripButtonEmojis(extraWithEmojis);
+        assert.strictEqual(stripped.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id, undefined, "icon_custom_emoji_id should be stripped");
+        assert.equal(stripped.reply_markup.inline_keyboard[0][0].text, "🚀 Test", "Text should be preserved");
+        assert.equal(stripped.reply_markup.inline_keyboard[0][0].callback_data, "test", "Callback data should be preserved");
+    });
 });
+

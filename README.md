@@ -173,8 +173,11 @@ it lands with the usual **🧼 Clean into batch** button. No other owner needed.
 Setup (one time, ~5 minutes):
 
 1. Create an app at [my.telegram.org](https://my.telegram.org) → copy `api_id` and `api_hash`.
-2. Run `npm run userbot:login`, follow the prompts (phone number, login code, 2FA
-   password if set). It prints a `TELEGRAM_SESSION=...` line.
+2. Put the values in local `.env`, then run `npm run userbot:login:qr`. In the
+   Telegram mobile app, open **Settings → Devices → Link Desktop Device** and
+   scan the terminal QR. This avoids SMS. If the account has 2FA, enter its
+   password when prompted. The script saves `TELEGRAM_SESSION` into `.env` and
+   prints it once for Render. The older SMS flow remains `npm run userbot:login`.
 3. Add the three secrets to your environment — locally in `.env`, on Render in the
    dashboard (**Environment → Secrets**):
    `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION`.

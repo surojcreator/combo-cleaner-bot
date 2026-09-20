@@ -20,6 +20,8 @@
 
 "use strict";
 
+require("dotenv").config();
+
 const { execSync } = require("node:child_process");
 
 function numOrZero(x) {

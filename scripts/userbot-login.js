@@ -1,5 +1,7 @@
 "use strict";
 
+require("dotenv").config();
+
 /**
  * One-time setup for the MTProto userbot bypass.
  *

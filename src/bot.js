@@ -321,6 +321,108 @@ function createBot(token, meta = {}) {
             .finally(() => localJobs.delete(ctx.chat.id));
     });
 
+    // ---- /save: reply to a Telegram document in a shared group.
+    //
+    // The Bot API only downloads files up to 20 MB. The logged-in MTProto
+    // account can see the replied-to group message and stream its document
+    // directly to /var/data, then the existing /process pipeline takes over.
+    bot.command("save", async (ctx) => {
+        const replied = ctx.message && ctx.message.reply_to_message;
+        if (!replied || !replied.document) {
+            await safeReply(
+                ctx,
+                [
+                    `\uD83D\uDCCC  ${B("REPLY TO A FILE")}`,
+                    RULE,
+                    `Forward the document into a private group containing:`,
+                    `  \u2022 your MTProto user account`,
+                    `  \u2022 ${B(meta.botUsername ? `@${escapeHtml(meta.botUsername)}` : "this bot")}`,
+                    `Then reply to the document with ${CODE("/save")}.`,
+                    "",
+                    `${I("Direct private forwarding to the bot stays limited to 20 MB. Telegram itself usually caps user files at 2 GB, or 4 GB with Premium.")}`,
+                ].join("\n"),
+            );
+            return;
+        }
+
+        const peer = meta.userbot;
+        if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
+            await safeReply(
+                ctx,
+                `\u26A0\uFE0F  ${B("Account downloader is offline")}\nSet TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SESSION, then redeploy.`,
+            );
+            return;
+        }
+        if (localJobs.has(ctx.chat.id)) {
+            await safeReply(ctx, `\u23F3  Already processing ${CODE(escapeHtml(localJobs.get(ctx.chat.id)))}.`);
+            return;
+        }
+
+        const sourceMessageId = replied.message_id;
+        const originalName = replied.document.file_name || `telegram-${sourceMessageId}.bin`;
+        const status = await ctx.reply(
+            [
+                `\uD83D\uDCE5  ${B("DOWNLOADING FROM TELEGRAM")}`,
+                RULE,
+                `\uD83D\uDCC4  ${escapeHtml(originalName)}`,
+                `\uD83D\uDCBE  destination: ${CODE(escapeHtml(localProcessRoot()))}`,
+                "",
+                `${I("The MTProto account is streaming the file directly to disk\u2026")}`,
+            ].join("\n"),
+            { parse_mode: "HTML" },
+        );
+
+        localJobs.set(ctx.chat.id, `telegram:${ctx.chat.id}/${sourceMessageId}`);
+        let lastProgressAt = 0;
+        void peer.downloadMessageToDisk(ctx.chat.id, sourceMessageId, {
+            root: localProcessRoot(),
+            fileName: originalName,
+            onProgress: (done, total) => {
+                if (Date.now() - lastProgressAt < 3000) return;
+                lastProgressAt = Date.now();
+                const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
+                void safeEdit(
+                    ctx,
+                    status.message_id,
+                    [
+                        `\uD83D\uDCE5  ${B("DOWNLOADING FROM TELEGRAM")} \u00B7 ${pct}%`,
+                        RULE,
+                        `\uD83D\uDCC4  ${escapeHtml(originalName)}`,
+                        `\uD83D\uDCE6  ${humanSize(done)} / ${humanSize(total || done)}`,
+                    ].join("\n"),
+                );
+            },
+        })
+            .then(async (saved) => {
+                await safeEdit(
+                    ctx,
+                    status.message_id,
+                    [
+                        `\u2705  ${B("SAVED TO DISK")}`,
+                        RULE,
+                        `\uD83D\uDCC4  ${escapeHtml(saved.originalName)}`,
+                        `\uD83D\uDCE6  ${humanSize(saved.size)}`,
+                        `\uD83D\uDCBE  ${CODE(escapeHtml(saved.path))}`,
+                        "",
+                        `${I("Starting the local cleaner now\u2026")}`,
+                    ].join("\n"),
+                );
+                await processFile(ctx, saved.path);
+            })
+            .catch((err) => safeEdit(
+                ctx,
+                status.message_id,
+                [
+                    `\uD83D\uDCA5  ${B("TELEGRAM DOWNLOAD FAILED")}`,
+                    RULE,
+                    `${I(escapeHtml(err.message || String(err)))}`,
+                    "",
+                    `Make sure the MTProto account is a member of this group and can see the replied-to message.`,
+                ].join("\n"),
+            ))
+            .finally(() => localJobs.delete(ctx.chat.id));
+    });
+
     // Inline button: Combine
     bot.action("combine", async (ctx) => {
         await ctx.answerCbQuery("\uD83D\uDCE6 Building file\u2026").catch(() => { });

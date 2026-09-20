@@ -72,6 +72,7 @@ async function registerCommands() {
             { command: "name", description: "\uD83C\uDFF7\uFE0F Force a custom filename" },
             { command: "search", description: "\uD83D\uDD0E Search your batch" },
             { command: "lsearch", description: "\uD83D\uDCBE Search newest disk output" },
+            { command: "save", description: "\uD83D\uDCE5 Save replied Telegram file to disk" },
             { command: "ulp", description: "\uD83D\uDD0E ULP search relay (query + hist:full)" },
             { command: "process", description: "\uD83D\uDCC2 Clean a local file on the server" },
             { command: "clear", description: "\uD83E\uDDF9 Start a fresh batch" },

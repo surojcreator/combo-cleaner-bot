@@ -68,14 +68,16 @@ async function startFakeApi() {
     };
 }
 
-function makeBot(apiRoot) {
+function makeBot(apiRoot, userbot) {
     return createBot("123456:TEST", {
         botUsername: "ulpsorter69bot",
         telegram: { telegram: { apiRoot } },
+        ...(userbot ? { userbot } : {}),
     });
 }
 
 function command(text) {
+    const commandLength = String(text).split(/\s+/, 1)[0].length;
     return {
         update_id: 1,
         message: {
@@ -84,9 +86,15 @@ function command(text) {
             chat: { id: OWNER_CHAT, type: "private", first_name: "Tester" },
             from: { id: 999, is_bot: false, first_name: "Tester" },
             text,
-            entities: [{ offset: 0, length: 8, type: "bot_command" }],
+            entities: [{ offset: 0, length: commandLength, type: "bot_command" }],
         },
     };
+}
+
+function saveCommand(replyToMessage) {
+    const update = command("/save");
+    update.message.reply_to_message = replyToMessage;
+    return update;
 }
 
 async function waitFor(predicate, timeoutMs = 3000) {
@@ -241,6 +249,77 @@ test("/process without a path shows usage", async () => {
         const msg = api.calls.find((c) => c.method === "sendMessage");
         assert.match(msg.payload.text, /PROCESS A LOCAL FILE/);
     } finally {
+        await api.close();
+    }
+});
+
+test("/save explains that it must reply to a document", async () => {
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot, { isReady: () => true });
+        await bot.handleUpdate(command("/save"));
+        assert.equal(
+            await waitFor(() => api.calls.some(
+                (c) => c.method === "sendMessage" && /REPLY TO A FILE/.test(c.payload.text || ""),
+            )),
+            true,
+        );
+    } finally {
+        await api.close();
+    }
+});
+
+test("/save downloads the replied document to disk and automatically processes it", async () => {
+    store.clear(OWNER_CHAT);
+    const savedRoot = path.join(os.tmpdir(), `save-root-${process.pid}-${Date.now()}`);
+    const previousRoot = process.env.LOCAL_PROCESS_ROOT;
+    process.env.LOCAL_PROCESS_ROOT = savedRoot;
+    fs.mkdirSync(savedRoot, { recursive: true });
+
+    const fakePeer = {
+        isReady: () => true,
+        downloadMessageToDisk: async (chatId, messageId, options) => {
+            assert.equal(chatId, OWNER_CHAT);
+            assert.equal(messageId, 321);
+            const output = path.join(options.root, "forwarded_321.txt");
+            fs.writeFileSync(output, "saved@example.com:secret\njunk\n", "utf8");
+            if (options.onProgress) options.onProgress(32, 32);
+            return {
+                path: output,
+                name: path.basename(output),
+                originalName: "forwarded.txt",
+                size: fs.statSync(output).size,
+            };
+        },
+    };
+
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot, fakePeer);
+        await bot.handleUpdate(saveCommand({
+            message_id: 321,
+            date: Math.floor(Date.now() / 1000),
+            chat: { id: OWNER_CHAT, type: "private" },
+            from: { id: 123, is_bot: false, first_name: "Forwarder" },
+            document: {
+                file_id: "large-file",
+                file_unique_id: "large-file-u",
+                file_name: "forwarded.txt",
+                file_size: 1_000_000_000,
+            },
+        }));
+
+        assert.equal(
+            await waitFor(() => api.calls.some(
+                (c) => c.method === "editMessageText" && /CLEAN REPORT/.test(c.payload.text || ""),
+            )),
+            true,
+        );
+        assert.equal(store.searchLines(OWNER_CHAT, "saved@example.com").total, 1);
+    } finally {
+        process.env.LOCAL_PROCESS_ROOT = previousRoot;
+        store.clear(OWNER_CHAT);
+        fs.rmSync(savedRoot, { recursive: true, force: true });
         await api.close();
     }
 });

@@ -84,3 +84,17 @@ test("isSearcherForward spots results shared by the bypass", () => {
     assert.equal(isSearcherForward(plainText, meta, searchOptions), false);
 });
 
+test("safeDownloadName removes path traversal and Windows-invalid characters", () => {
+    assert.equal(userbot.safeDownloadName("../../evil:name?.txt"), "evil_name_.txt");
+    assert.equal(userbot.safeDownloadName("..\\..\\dump.txt"), "dump.txt");
+    assert.equal(userbot.safeDownloadName(""), "telegram-file.bin");
+});
+
+test("downloadPath always stays under the requested root", () => {
+    const path = require("node:path");
+    const root = path.resolve("test-download-root");
+    const output = userbot.downloadPath(root, "../../dump.txt", 42);
+    assert.equal(path.dirname(output), root);
+    assert.match(path.basename(output), /^dump_42_.*\.txt$/);
+});
+

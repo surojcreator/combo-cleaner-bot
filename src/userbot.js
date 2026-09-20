@@ -1,5 +1,8 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
+
 /**
  * MTProto "userbot" transport — the bypass for sealed search bots.
  *
@@ -100,6 +103,29 @@ function withTimeout(promise, ms, label) {
     return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * Turn a Telegram document name into a safe local filename.
+ * @param {string} raw
+ */
+function safeDownloadName(raw) {
+    const base = path.basename(String(raw || "telegram-file.bin"));
+    const safe = base
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+        .replace(/\s+/g, " ")
+        .replace(/^\.+/, "")
+        .slice(0, 180);
+    return safe || "telegram-file.bin";
+}
+
+/** Build a collision-resistant destination path under the configured root. */
+function downloadPath(root, rawName, messageId) {
+    const name = safeDownloadName(rawName);
+    const ext = path.extname(name).slice(0, 16);
+    const stem = path.basename(name, ext).slice(0, 140) || "telegram-file";
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return path.join(path.resolve(root), `${stem}_${messageId}_${stamp}${ext}`);
+}
+
 module.exports = {
     ULP_MARKER,
     CALL_TIMEOUT_MS,
@@ -108,6 +134,8 @@ module.exports = {
     classifyUserbotError,
     loadLibs,
     withTimeout,
+    safeDownloadName,
+    downloadPath,
     createUserbot,
 };
 
@@ -210,6 +238,61 @@ function createUserbot(cfg, opts = {}) {
                 "userbot sendMessage",
             );
             return { message_id: Number(sent && sent.id) || 0, chat: { id: searcherId } };
+        },
+
+        /**
+         * Fetch a message visible to the account and stream its media to disk.
+         * The account must be a member of the source group/chat.
+         *
+         * @param {number|string} chatId
+         * @param {number} messageId
+         * @param {{ root: string, fileName?: string, onProgress?: (done: number, total: number) => void }} options
+         */
+        async downloadMessageToDisk(chatId, messageId, options) {
+            if (!ready || !client) throw new Error("USERBOT_NOT_READY");
+            const root = path.resolve(options.root);
+            fs.mkdirSync(root, { recursive: true });
+
+            const messages = await withTimeout(
+                client.getMessages(chatId, { ids: Number(messageId) }),
+                timeoutMs,
+                "userbot getMessages",
+            );
+            const message = messages && messages[0];
+            if (!message || !message.media) {
+                throw new Error("REPLIED_MESSAGE_HAS_NO_MEDIA");
+            }
+
+            const actualName =
+                (message.file && message.file.name) ||
+                options.fileName ||
+                `telegram-${messageId}.bin`;
+            const finalPath = downloadPath(root, actualName, messageId);
+            const partialPath = `${finalPath}.partial`;
+
+            try {
+                const result = await client.downloadMedia(message, {
+                    outputFile: partialPath,
+                    progressCallback: (done, total) => {
+                        if (options.onProgress) options.onProgress(Number(done), Number(total));
+                    },
+                    requestTimeout: 60_000,
+                });
+                if (!result || !fs.existsSync(partialPath)) {
+                    throw new Error("TELEGRAM_MEDIA_DOWNLOAD_FAILED");
+                }
+                fs.renameSync(partialPath, finalPath);
+                const stat = fs.statSync(finalPath);
+                return {
+                    path: finalPath,
+                    name: path.basename(finalPath),
+                    originalName: safeDownloadName(actualName),
+                    size: stat.size,
+                };
+            } catch (err) {
+                fs.rmSync(partialPath, { force: true });
+                throw err;
+            }
         },
 
         async forwardResult(toChatId, msg) {

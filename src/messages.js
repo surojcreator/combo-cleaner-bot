@@ -197,6 +197,7 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
         `  /preview \u2014 \uD83D\uDC41 peek at sample lines`,
         `  /search \u2014 \uD83D\uDD0E search your batch`,
         `  /lsearch \u2014 \uD83D\uDCBE search the newest full disk output`,
+        `  /save \u2014 \uD83D\uDCE5 reply to a group file: save to /var/data + process`,
         `  /ulp \u2014 \uD83D\uDD0E relay a ULP search (query + hist:full)`,
         `  /process \u2014 \uD83D\uDCC2 clean a file already on the server (e.g. /var/data/...)`,
         `  /clear \u2014 \uD83E\uDDF9 fresh batch`,

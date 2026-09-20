@@ -42,6 +42,7 @@ want the download. `/clear` starts a fresh batch.
 - `/ulp <query> [day|month|year]` — 🔎 relay a search to the searcher bot, results forwarded back
 - `/process /var/data/file.txt` — process a server-side file without uploading through Telegram
 - `/process local` — process the newest file directly under `/var/data`
+- `/save` — reply to a forwarded document in the shared group; download it to `/var/data` through the user account and process it
 - `/lsearch <query>` — search the newest full output under `/var/data/processed`
 - `/combine` — download the combined, deduped file
 - `/stats` — how many unique lines are stored for this chat
@@ -65,6 +66,29 @@ Or process the newest file directly under the mount:
 ```text
 /process local
 ```
+
+### Save a forwarded Telegram file directly to the mounted disk
+
+For files larger than the Bot API download limit, use a private group shared by
+the bot and the MTProto account:
+
+1. Create a private Telegram group.
+2. Add `@ulpsorter69bot` and the user account represented by `TELEGRAM_SESSION`.
+3. Forward the document into that group.
+4. Reply directly to the document with:
+
+```text
+/save
+```
+
+The user account fetches the replied-to message and streams its media directly
+to `LOCAL_PROCESS_ROOT` (`/var/data` by default). The bot then automatically
+runs the same local processing pipeline as `/process` and writes full cleaned
+output under `/var/data/processed`.
+
+This bypasses the Bot API's 20 MB download limit, but not Telegram's own
+user-file upload limit. A 50 GB file still cannot travel through Telegram; use
+SCP/SFTP/direct server upload for that size, then run `/process`.
 
 Plain `.txt`, `.csv`, `.tsv`, `.log`, `.lst`, `.list`, and `.dat` files are
 streamed line-by-line, so a 50 GB input does not need 50 GB of RAM. The complete

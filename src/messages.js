@@ -260,8 +260,9 @@ function confirmFileDeleteKeyboard(actionType, targetId, fileName = "") {
 /**
  * Keyboard for ULP preset searches and days duration selection.
  * @param {number} [selectedDays]
+ * @param {string[]} [customDomains]
  */
-function ulpMenuKeyboard(selectedDays = 5) {
+function ulpMenuKeyboard(selectedDays = 5, customDomains = []) {
     const days = Math.max(1, Math.min(90, Number(selectedDays) || 5));
     const daysRow1 = [1, 3, 5].map((d) =>
         Markup.button.callback(d === days ? `📅 ${d}d ✅` : `📅 ${d} Day${d > 1 ? "s" : ""}`, `ulp:setdays:${d}`)
@@ -270,7 +271,21 @@ function ulpMenuKeyboard(selectedDays = 5) {
         Markup.button.callback(d === days ? `📅 ${d}d ✅` : `📅 ${d} Day${d > 1 ? "s" : ""}`, `ulp:setdays:${d}`)
     );
 
-    return Markup.inlineKeyboard([
+    const rows = [];
+
+    // If user has custom saved domains, display them at the top as quick 1-tap buttons
+    if (Array.isArray(customDomains) && customDomains.length > 0) {
+        for (let i = 0; i < customDomains.length; i += 2) {
+            const pair = [Markup.button.callback(`🌐 ${customDomains[i]}`, `ulp:quick:${customDomains[i]}`)];
+            if (i + 1 < customDomains.length) {
+                pair.push(Markup.button.callback(`🌐 ${customDomains[i + 1]}`, `ulp:quick:${customDomains[i + 1]}`));
+            }
+            rows.push(pair);
+        }
+    }
+
+    // Default target presets
+    rows.push(
         [
             Markup.button.callback("🎬 Netflix", "ulp:quick:netflix.com"),
             Markup.button.callback("🎵 Spotify", "ulp:quick:spotify.com"),
@@ -287,12 +302,94 @@ function ulpMenuKeyboard(selectedDays = 5) {
             Markup.button.callback("💳 PayPal", "ulp:quick:paypal.com"),
             Markup.button.callback("🪙 Crypto", "ulp:quick:binance.com"),
         ],
-        daysRow1,
-        daysRow2,
+    );
+
+    // Custom domain action buttons:
+    // 1. Enter a custom domain to search now
+    rows.push([
+        Markup.button.callback("🌐 Enter Custom Domain", "ulp:custom:prompt"),
+    ]);
+
+    // 2. Add custom domain or edit existing custom domains
+    const editLabel = customDomains && customDomains.length > 0
+        ? `✏️ Edit Domains (${customDomains.length})`
+        : "✏️ Edit Domains";
+    rows.push([
+        Markup.button.callback("➕ Add Domain", "ulp:custom:add:prompt"),
+        Markup.button.callback(editLabel, "ulp:custom:edit"),
+    ]);
+
+    // Duration selectors
+    rows.push(daysRow1);
+    rows.push(daysRow2);
+
+    // Edit amount of days custom button
+    rows.push([
+        Markup.button.callback(`📅 Custom Days (${days}d)`, "ulp:custom:days_prompt"),
+    ]);
+
+    // Back to main menu
+    rows.push([
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+
+    return Markup.inlineKeyboard(rows);
+}
+
+/**
+ * Keyboard for managing custom domains (view, delete, add).
+ * @param {string[]} [customDomains]
+ */
+function ulpEditDomainsKeyboard(customDomains = []) {
+    const rows = [];
+    if (Array.isArray(customDomains) && customDomains.length > 0) {
+        for (const domain of customDomains) {
+            rows.push([
+                Markup.button.callback(`🌐 ${domain}`, `ulp:quick:${domain}`),
+                Markup.button.callback("❌ Delete", `ulp:custom:del:${domain}`),
+            ]);
+        }
+        rows.push([
+            Markup.button.callback("🗑 Clear All Domains", "ulp:custom:clear"),
+        ]);
+    }
+    rows.push([
+        Markup.button.callback("➕ Add Custom Domain", "ulp:custom:add:prompt"),
+    ]);
+    rows.push([
+        Markup.button.callback("🔙 Back to ULP Menu", "ulp:menu"),
+    ]);
+    return Markup.inlineKeyboard(rows);
+}
+
+/**
+ * Keyboard shown during interactive prompt input (e.g. entering custom domain or days).
+ */
+function ulpPromptCancelKeyboard() {
+    return Markup.inlineKeyboard([
         [
-            Markup.button.callback("🔙 Main Menu", "help"),
+            Markup.button.callback("❌ Cancel", "ulp:custom:cancel"),
+            Markup.button.callback("🔙 ULP Menu", "ulp:menu"),
         ],
     ]);
+}
+
+/**
+ * Text rendered for ULP search target menu.
+ * @param {string} botUsername
+ * @param {number} activeDays
+ * @param {number} [customCount]
+ */
+function renderUlpMenuText(botUsername, activeDays, customCount = 0) {
+    const customLine = customCount > 0 ? `\n🌐  Custom Targets: ${B(`${customCount} saved`)}` : "";
+    return [
+        `🚀  ${B("SELECT ULP SEARCH TARGET")}  ⚡️`,
+        RULE,
+        `🤖  Searcher: ${CODE(`@${escapeHtml(botUsername || "DumpNews14Bot")}`)}`,
+        `📅  Search Duration: ${B(`${activeDays} Day(s)`)}${customLine}`,
+        "",
+        `👇 ${I("Tap a target to start searching, enter a custom domain, or customize duration:")}`,
+    ].join("\n");
 }
 
 /**
@@ -1162,6 +1259,9 @@ module.exports = {
     confirmFileDeleteKeyboard,
     formatFileDate,
     ulpMenuKeyboard,
+    ulpEditDomainsKeyboard,
+    ulpPromptCancelKeyboard,
+    renderUlpMenuText,
     saveGuideKeyboard,
     searchPromptKeyboard,
     escapeHtml,

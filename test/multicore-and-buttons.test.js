@@ -15,6 +15,9 @@ const {
     renderUlpStart,
     renderUlpHint,
     ulpMenuKeyboard,
+    ulpEditDomainsKeyboard,
+    ulpPromptCancelKeyboard,
+    renderUlpMenuText,
     saveGuideKeyboard,
     searchPromptKeyboard,
     serverFilesKeyboard,
@@ -213,6 +216,60 @@ test("renderUlpProgress, renderUlpStart, and renderUlpHint format days and steps
     const menu14 = ulpMenuKeyboard(14);
     const btns14 = menu14.reply_markup.inline_keyboard.flat().map((b) => b.text);
     assert.ok(btns14.includes("📅 14d ✅"), "expected checkmark on 14d");
+
+    // ulpMenuKeyboard with custom domains and custom action buttons
+    const menuCustom = ulpMenuKeyboard(5, ["targetsite.com", "cryptoapp.io"]);
+    const customBtns = menuCustom.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    assert.ok(customBtns.includes("🌐 targetsite.com"), "expected custom target button");
+    assert.ok(customBtns.includes("🌐 cryptoapp.io"), "expected second custom target button");
+    assert.ok(customBtns.includes("🌐 Enter Custom Domain"), "expected enter custom domain action button");
+    assert.ok(customBtns.includes("➕ Add Domain"), "expected add domain button");
+    assert.ok(customBtns.some((t) => t.includes("✏️ Edit Domains")), "expected edit domains button");
+    assert.ok(customBtns.some((t) => t.includes("📅 Custom Days")), "expected custom days prompt button");
+
+    // ulpEditDomainsKeyboard
+    const editMenu = ulpEditDomainsKeyboard(["targetsite.com"]);
+    const editBtns = editMenu.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    assert.ok(editBtns.includes("🌐 targetsite.com"));
+    assert.ok(editBtns.includes("❌ Delete"));
+    assert.ok(editBtns.includes("➕ Add Custom Domain"));
+    assert.ok(editBtns.includes("🔙 Back to ULP Menu"));
+
+    // ulpPromptCancelKeyboard
+    const cancelMenu = ulpPromptCancelKeyboard();
+    const cancelBtns = cancelMenu.reply_markup.inline_keyboard.flat().map((b) => b.text);
+    assert.ok(cancelBtns.includes("❌ Cancel"));
+    assert.ok(cancelBtns.includes("🔙 ULP Menu"));
+
+    // renderUlpMenuText
+    const menuText = renderUlpMenuText("DumpNews14Bot", 10, 2);
+    assert.match(menuText, /SELECT ULP SEARCH TARGET/);
+    assert.match(menuText, /Search Duration: <b>10 Day\(s\)<\/b>/);
+    assert.match(menuText, /Custom Targets: <b>2 saved<\/b>/);
+});
+
+test("store manages custom ULP domains and search days per chat", () => {
+    const testChat = 987654321;
+    store.clearCustomDomains(testChat);
+    assert.deepEqual(store.getCustomDomains(testChat), []);
+    assert.equal(store.getUlpDays(testChat), 5);
+
+    // Add domains
+    assert.equal(store.addCustomDomain(testChat, "https://Shopify.com/login"), true);
+    assert.equal(store.addCustomDomain(testChat, "portal.gov"), true);
+    assert.deepEqual(store.getCustomDomains(testChat), ["https://shopify.com/login", "portal.gov"]);
+
+    // Remove domain
+    assert.equal(store.removeCustomDomain(testChat, "https://shopify.com/login"), true);
+    assert.deepEqual(store.getCustomDomains(testChat), ["portal.gov"]);
+
+    // Set custom days
+    assert.equal(store.setUlpDays(testChat, 21), 21);
+    assert.equal(store.getUlpDays(testChat), 21);
+
+    // Clear custom domains
+    store.clearCustomDomains(testChat);
+    assert.deepEqual(store.getCustomDomains(testChat), []);
 });
 
 async function startFakeApi() {
@@ -302,6 +359,91 @@ test("bot handles interactive button callbacks: ulp:menu, help:save, batch:searc
         const searchEdit = api.calls.find((c) => c.method === "editMessageText" && c.payload.text.includes("QUICK BATCH SEARCH"));
         assert.ok(searchEdit, "expected editMessageText with quick batch search prompt");
     } finally {
+        await api.close();
+    }
+});
+
+test("bot handles ULP custom domains and days editing workflow", async () => {
+    const api = await startFakeApi();
+    const testChatId = 123999;
+    try {
+        const bot = createBot("123456:fake-token", {
+            botUsername: "TestBot",
+            telegram: { telegram: { apiRoot: api.apiRoot } },
+        });
+
+        const callbackUpdate = (data) => ({
+            update_id: Date.now(),
+            callback_query: {
+                id: "cb_ulp_" + Date.now(),
+                from: { id: testChatId, is_bot: false, first_name: "TestUser" },
+                message: {
+                    message_id: 100,
+                    chat: { id: testChatId, type: "private" },
+                    text: "Current Menu",
+                },
+                data,
+            },
+        });
+
+        const messageUpdate = (text) => ({
+            update_id: Date.now(),
+            message: {
+                message_id: 200,
+                from: { id: testChatId, is_bot: false, first_name: "TestUser" },
+                chat: { id: testChatId, type: "private" },
+                date: Math.floor(Date.now() / 1000),
+                text,
+            },
+        });
+
+        // 1. Trigger custom days prompt
+        await bot.handleUpdate(callbackUpdate("ulp:custom:days_prompt"));
+        const daysPrompt = api.calls.find((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("EDIT SEARCH DURATION (DAYS)"));
+        assert.ok(daysPrompt, "expected days prompt message");
+
+        // Send invalid days -> should reject with error
+        await bot.handleUpdate(messageUpdate("abc"));
+        const invalidDays = api.calls.find((c) => c.method === "sendMessage" && c.payload.text && c.payload.text.includes("between 1 and 90"));
+        assert.ok(invalidDays, "expected rejection of invalid days");
+
+        // Send valid days -> should set to 15 days
+        await bot.handleUpdate(messageUpdate("15"));
+        const validDays = api.calls.find((c) => c.method === "sendMessage" && c.payload.text && c.payload.text.includes("15 Day(s)"));
+        assert.ok(validDays, "expected duration updated message");
+        assert.equal(store.getUlpDays(testChatId), 15);
+
+        // 2. Trigger add custom domain preset prompt
+        await bot.handleUpdate(callbackUpdate("ulp:custom:add:prompt"));
+        const addPrompt = api.calls.find((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("ADD CUSTOM DOMAIN PRESET"));
+        assert.ok(addPrompt, "expected add domain prompt message");
+
+        // Send custom domain "https://mycustomforum.com/login"
+        await bot.handleUpdate(messageUpdate("https://mycustomforum.com/login"));
+        const addedMsg = api.calls.find((c) => c.method === "sendMessage" && c.payload.text && c.payload.text.includes("Added"));
+        assert.ok(addedMsg, "expected domain added confirmation message");
+        assert.ok(store.getCustomDomains(testChatId).includes("mycustomforum.com"), "expected normalized domain stored");
+
+        // 3. Edit custom domains menu
+        await bot.handleUpdate(callbackUpdate("ulp:custom:edit"));
+        const editMenu = api.calls.find((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("MANAGE CUSTOM DOMAINS"));
+        assert.ok(editMenu, "expected edit custom domains card");
+
+        // 4. Delete custom domain
+        await bot.handleUpdate(callbackUpdate("ulp:custom:del:mycustomforum.com"));
+        assert.equal(store.getCustomDomains(testChatId).includes("mycustomforum.com"), false, "expected domain deleted from custom domains");
+
+        // 5. Enter custom domain on the fly prompt
+        await bot.handleUpdate(callbackUpdate("ulp:custom:prompt"));
+        const searchPrompt = api.calls.find((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("ENTER CUSTOM DOMAIN TO SEARCH"));
+        assert.ok(searchPrompt, "expected search custom domain prompt");
+
+        // Cancel prompt
+        await bot.handleUpdate(callbackUpdate("ulp:custom:cancel"));
+        const cancelEdit = api.calls.find((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("SELECT ULP SEARCH TARGET"));
+        assert.ok(cancelEdit, "expected cancellation to return to ULP menu");
+    } finally {
+        store.clearCustomDomains(testChatId);
         await api.close();
     }
 });

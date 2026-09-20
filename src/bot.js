@@ -39,6 +39,9 @@ const {
     confirmFileDeleteKeyboard,
     formatFileDate,
     ulpMenuKeyboard,
+    ulpEditDomainsKeyboard,
+    ulpPromptCancelKeyboard,
+    renderUlpMenuText,
     saveGuideKeyboard,
     searchPromptKeyboard,
     mainKeyboard,
@@ -185,6 +188,8 @@ function createBot(token, meta = {}) {
     const ulpWindows = new Map();
     /** chatId -> user selected search duration in days */
     const userUlpDays = new Map();
+    /** chatId -> { action: string, messageId?: number } active prompt state */
+    const userPromptState = new Map();
     /** chatId -> absolute path currently being processed */
     const localJobs = new Map();
 
@@ -679,46 +684,36 @@ function createBot(token, meta = {}) {
 
     bot.action("ulp:menu", async (ctx) => {
         await ctx.answerCbQuery("🚀 ULP Target Selector").catch(() => { });
-        const activeDays = userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
-        const text = [
-            `🚀  ${B("SELECT ULP SEARCH TARGET")}  ⚡️`,
-            RULE,
-            `🤖  Searcher: ${CODE(`@${escapeHtml(searchOptions.botUsername || "DumpNews14Bot")}`)}`,
-            `📅  Search Duration: ${B(`${activeDays} Day(s)`)}`,
-            "",
-            `👇 ${I("Tap a duration button to change days, or tap a target to start searching:")}`,
-        ].join("\n");
+        userPromptState.delete(ctx.chat.id);
+        const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+        const text = renderUlpMenuText(searchOptions.botUsername, activeDays, customDomains.length);
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         if (msg) {
-            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(activeDays));
+            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(activeDays, customDomains));
         } else {
-            await safeReply(ctx, text, ulpMenuKeyboard(activeDays));
+            await safeReply(ctx, text, ulpMenuKeyboard(activeDays, customDomains));
         }
     });
 
     bot.action(/^ulp:setdays:(\d+)$/, async (ctx) => {
         const days = Math.max(1, Math.min(90, parseInt(ctx.match[1], 10) || 5));
         userUlpDays.set(ctx.chat.id, days);
+        if (store && store.setUlpDays) store.setUlpDays(ctx.chat.id, days);
         await ctx.answerCbQuery(`📅 Duration: ${days} day(s)`).catch(() => { });
-        const text = [
-            `🚀  ${B("SELECT ULP SEARCH TARGET")}  ⚡️`,
-            RULE,
-            `🤖  Searcher: ${CODE(`@${escapeHtml(searchOptions.botUsername || "DumpNews14Bot")}`)}`,
-            `📅  Search Duration: ${B(`${days} Day(s)`)}`,
-            "",
-            `👇 ${I("Tap a duration button to change days, or tap a target to start searching:")}`,
-        ].join("\n");
+        const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+        const text = renderUlpMenuText(searchOptions.botUsername, days, customDomains.length);
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         if (msg) {
-            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(days));
+            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(days, customDomains));
         } else {
-            await safeReply(ctx, text, ulpMenuKeyboard(days));
+            await safeReply(ctx, text, ulpMenuKeyboard(days, customDomains));
         }
     });
 
     bot.action(/^ulp:quick:(.+)$/, async (ctx) => {
         const query = ctx.match[1];
-        const activeDays = userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         await ctx.answerCbQuery(`🚀 Launching ${query} (${activeDays}d)…`).catch(() => { });
         await beginUlpRun(ctx, {
             query,
@@ -730,6 +725,134 @@ function createBot(token, meta = {}) {
             ulpWindows,
             cardMessageId: ctx.callbackQuery && ctx.callbackQuery.message ? ctx.callbackQuery.message.message_id : null,
         });
+    });
+
+    bot.action("ulp:custom:prompt", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => { });
+        userPromptState.set(ctx.chat.id, { action: "ulp:search_domain" });
+        const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        const text = [
+            `🌐  ${B("ENTER CUSTOM DOMAIN TO SEARCH")}  ⚡️`,
+            RULE,
+            `📅  Active Duration: ${B(`${activeDays} Day(s)`)}`,
+            "",
+            `Send any domain or URL you want to search (e.g. ${CODE("target.com")} or ${CODE("https://portal.com")}):`,
+            "",
+            `${I("The bot will automatically clean the domain and launch ULP day-by-day search.")}`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpPromptCancelKeyboard());
+        } else {
+            await safeReply(ctx, text, ulpPromptCancelKeyboard());
+        }
+    });
+
+    bot.action("ulp:custom:add:prompt", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => { });
+        userPromptState.set(ctx.chat.id, { action: "ulp:add_domain" });
+        const text = [
+            `➕  ${B("ADD CUSTOM DOMAIN PRESET")}  ⚡️`,
+            RULE,
+            `Send the domain or URL you want to pin to your quick presets (e.g. ${CODE("epicgames.com")}):`,
+            "",
+            `${I("It will appear as a quick one-tap button in your ULP menu!")}`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpPromptCancelKeyboard());
+        } else {
+            await safeReply(ctx, text, ulpPromptCancelKeyboard());
+        }
+    });
+
+    bot.action("ulp:custom:edit", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => { });
+        userPromptState.delete(ctx.chat.id);
+        const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+        const text = [
+            `✏️  ${B("MANAGE CUSTOM DOMAINS")}  ⚡️`,
+            RULE,
+            customDomains.length > 0
+                ? `You have ${B(customDomains.length)} custom target(s). Tap ${B("❌ Delete")} to remove one, or tap a domain to test search:`
+                : `You don't have any custom domains yet. Tap ${B("➕ Add Custom Domain")} below to add one!`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpEditDomainsKeyboard(customDomains));
+        } else {
+            await safeReply(ctx, text, ulpEditDomainsKeyboard(customDomains));
+        }
+    });
+
+    bot.action(/^ulp:custom:del:(.+)$/, async (ctx) => {
+        const domain = ctx.match[1];
+        if (store && store.removeCustomDomain) store.removeCustomDomain(ctx.chat.id, domain);
+        await ctx.answerCbQuery(`🗑 Removed ${domain}`).catch(() => { });
+        const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+        const text = [
+            `✏️  ${B("MANAGE CUSTOM DOMAINS")}  ⚡️`,
+            RULE,
+            customDomains.length > 0
+                ? `You have ${B(customDomains.length)} custom target(s). Tap ${B("❌ Delete")} to remove one, or tap a domain to test search:`
+                : `You don't have any custom domains yet. Tap ${B("➕ Add Custom Domain")} below to add one!`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpEditDomainsKeyboard(customDomains));
+        } else {
+            await safeReply(ctx, text, ulpEditDomainsKeyboard(customDomains));
+        }
+    });
+
+    bot.action("ulp:custom:clear", async (ctx) => {
+        if (store && store.clearCustomDomains) store.clearCustomDomains(ctx.chat.id);
+        await ctx.answerCbQuery("🗑 All custom domains cleared!").catch(() => { });
+        const text = [
+            `✏️  ${B("MANAGE CUSTOM DOMAINS")}  ⚡️`,
+            RULE,
+            `You don't have any custom domains yet. Tap ${B("➕ Add Custom Domain")} below to add one!`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpEditDomainsKeyboard([]));
+        } else {
+            await safeReply(ctx, text, ulpEditDomainsKeyboard([]));
+        }
+    });
+
+    bot.action("ulp:custom:days_prompt", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => { });
+        userPromptState.set(ctx.chat.id, { action: "ulp:set_days" });
+        const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        const text = [
+            `📅  ${B("EDIT SEARCH DURATION (DAYS)")}  ⚡️`,
+            RULE,
+            `Current Duration: ${B(`${activeDays} Day(s)`)}`,
+            "",
+            `Send the number of days you want to search back (${B("1 to 90")} days):`,
+            `${I("Examples: 2, 4, 10, 21, 45, or 60")}`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpPromptCancelKeyboard());
+        } else {
+            await safeReply(ctx, text, ulpPromptCancelKeyboard());
+        }
+    });
+
+    bot.action("ulp:custom:cancel", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        await ctx.answerCbQuery("Cancelled").catch(() => { });
+        const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+        const text = renderUlpMenuText(searchOptions.botUsername, activeDays, customDomains.length);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(activeDays, customDomains));
+        } else {
+            await safeReply(ctx, text, ulpMenuKeyboard(activeDays, customDomains));
+        }
     });
 
     bot.action("batch:search:prompt", async (ctx) => {
@@ -1429,11 +1552,14 @@ function createBot(token, meta = {}) {
     //   answer the searcher sends back is forwarded into this chat.
     const ulpCommand = async (ctx) => {
         const raw = (ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
+        userPromptState.delete(ctx.chat.id);
         const parsed = parseUlpArg(raw, searchOptions);
         if (parsed.daysCount) {
             userUlpDays.set(ctx.chat.id, parsed.daysCount);
+            if (store && store.setUlpDays) store.setUlpDays(ctx.chat.id, parsed.daysCount);
         }
-        const activeDays = parsed.daysCount || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        const activeDays = parsed.daysCount || (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
         if (!parsed.query) {
             await safeReply(
                 ctx,
@@ -1443,7 +1569,7 @@ function createBot(token, meta = {}) {
                     maxTries: searchOptions.maxTries,
                     daysCount: activeDays,
                 }),
-                ulpMenuKeyboard(activeDays),
+                ulpMenuKeyboard(activeDays, customDomains),
             );
             return;
         }
@@ -1564,6 +1690,79 @@ function createBot(token, meta = {}) {
         if (!msg) return;
         if (msg.text && msg.text.startsWith("/")) return;
         if (msg.document) return;
+        if (msg.text && userPromptState.has(ctx.chat.id)) {
+            const prompt = userPromptState.get(ctx.chat.id);
+            const input = msg.text.trim();
+
+            if (prompt.action === "ulp:search_domain") {
+                const query = searchbot.normalizeQuery(input);
+                if (!query) {
+                    await safeReply(
+                        ctx,
+                        `⚠️ ${B("Invalid domain or URL.")} Please provide a valid domain (e.g. ${CODE("target.com")}):`,
+                        ulpPromptCancelKeyboard()
+                    );
+                    return;
+                }
+                userPromptState.delete(ctx.chat.id);
+                const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+                await safeReply(ctx, `🚀 ${B("Starting search for")} ${CODE(escapeHtml(query))} (${activeDays} days)…`);
+                await beginUlpRun(ctx, {
+                    query,
+                    scope: "day",
+                    daysCount: activeDays,
+                    searchOptions,
+                    meta,
+                    ulpStartedAt,
+                    ulpWindows,
+                });
+                return;
+            }
+
+            if (prompt.action === "ulp:add_domain") {
+                const domain = searchbot.normalizeQuery(input);
+                if (!domain) {
+                    await safeReply(
+                        ctx,
+                        `⚠️ ${B("Invalid domain or URL.")} Please provide a valid domain (e.g. ${CODE("roblox.com")}):`,
+                        ulpPromptCancelKeyboard()
+                    );
+                    return;
+                }
+                userPromptState.delete(ctx.chat.id);
+                if (store && store.addCustomDomain) store.addCustomDomain(ctx.chat.id, domain);
+                const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+                const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+                await safeReply(
+                    ctx,
+                    `✅ ${B("Added")} ${CODE(escapeHtml(domain))} ${B("to your custom targets!")}`,
+                    ulpMenuKeyboard(activeDays, customDomains)
+                );
+                return;
+            }
+
+            if (prompt.action === "ulp:set_days") {
+                const parsed = parseInt(input.replace(/[^\d]/g, ""), 10);
+                if (!parsed || parsed < 1 || parsed > 90) {
+                    await safeReply(
+                        ctx,
+                        `⚠️ ${B("Please enter a valid number of days between 1 and 90.")}`,
+                        ulpPromptCancelKeyboard()
+                    );
+                    return;
+                }
+                userPromptState.delete(ctx.chat.id);
+                userUlpDays.set(ctx.chat.id, parsed);
+                if (store && store.setUlpDays) store.setUlpDays(ctx.chat.id, parsed);
+                const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+                await safeReply(
+                    ctx,
+                    `📅 ${B("Search duration set to")} ${B(`${parsed} Day(s)`)}!`,
+                    ulpMenuKeyboard(parsed, customDomains)
+                );
+                return;
+            }
+        }
         if (msg.photo || msg.video || msg.audio || msg.voice || msg.sticker) {
             await safeReply(
                 ctx,

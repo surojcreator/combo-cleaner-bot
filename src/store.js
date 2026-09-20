@@ -36,7 +36,16 @@ const chats = new Map();
 function getChat(chatId) {
     let chat = chats.get(chatId);
     if (!chat) {
-        chat = { lines: new Set(), totalKept: 0, files: 0, sites: new Map(), customName: null, updatedAt: Date.now() };
+        chat = {
+            lines: new Set(),
+            totalKept: 0,
+            files: 0,
+            sites: new Map(),
+            customName: null,
+            customDomains: new Set(),
+            ulpDays: 5,
+            updatedAt: Date.now(),
+        };
         chats.set(chatId, chat);
         evictIfNeeded();
     }
@@ -253,6 +262,92 @@ function getMemoryStats() {
     };
 }
 
+/**
+ * Get saved custom ULP domains for a chat.
+ * @param {number} chatId
+ * @returns {string[]}
+ */
+function getCustomDomains(chatId) {
+    if (!chatId) return [];
+    const chat = getChat(chatId);
+    return Array.from(chat.customDomains || []);
+}
+
+/**
+ * Add a custom ULP domain to a chat's presets.
+ * @param {number} chatId
+ * @param {string} domain
+ * @returns {boolean}
+ */
+function addCustomDomain(chatId, domain) {
+    if (!chatId || !domain) return false;
+    const clean = String(domain).toLowerCase().trim();
+    if (!clean) return false;
+    const chat = getChat(chatId);
+    if (!chat.customDomains) chat.customDomains = new Set();
+    if (chat.customDomains.size >= 30) return false;
+    chat.customDomains.add(clean);
+    chat.updatedAt = Date.now();
+    return true;
+}
+
+/**
+ * Remove a custom ULP domain from a chat's presets.
+ * @param {number} chatId
+ * @param {string} domain
+ * @returns {boolean}
+ */
+function removeCustomDomain(chatId, domain) {
+    if (!chatId || !domain) return false;
+    const clean = String(domain).toLowerCase().trim();
+    const chat = getChat(chatId);
+    if (!chat.customDomains) return false;
+    const deleted = chat.customDomains.delete(clean);
+    chat.updatedAt = Date.now();
+    return deleted;
+}
+
+/**
+ * Clear all custom ULP domains for a chat.
+ * @param {number} chatId
+ * @returns {boolean}
+ */
+function clearCustomDomains(chatId) {
+    if (!chatId) return false;
+    const chat = getChat(chatId);
+    if (chat.customDomains) {
+        chat.customDomains.clear();
+        chat.updatedAt = Date.now();
+    }
+    return true;
+}
+
+/**
+ * Get active ULP search days for a chat.
+ * @param {number} chatId
+ * @returns {number}
+ */
+function getUlpDays(chatId) {
+    if (!chatId) return 5;
+    const chat = getChat(chatId);
+    return chat.ulpDays || 5;
+}
+
+/**
+ * Set active ULP search days for a chat.
+ * @param {number} chatId
+ * @param {number} days
+ * @returns {number}
+ */
+function setUlpDays(chatId, days) {
+    if (!chatId) return 5;
+    const chat = getChat(chatId);
+    const d = Math.max(1, Math.min(90, Number(days) || 5));
+    chat.ulpDays = d;
+    chat.updatedAt = Date.now();
+    return d;
+}
+
 module.exports = {
     addLines,
     getStats,
@@ -268,6 +363,12 @@ module.exports = {
     getMemoryStats,
     getMaxLinesPerChat,
     getMaxChats,
+    getCustomDomains,
+    addCustomDomain,
+    removeCustomDomain,
+    clearCustomDomains,
+    getUlpDays,
+    setUlpDays,
     get MAX_LINES_PER_CHAT() {
         return getMaxLinesPerChat();
     },

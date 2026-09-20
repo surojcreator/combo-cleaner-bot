@@ -258,8 +258,8 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
         } catch (firstError) {
             log.log(`userbot peer cache miss for ${wanted}; loading dialogs`);
             const dialogs = await withTimeout(
-                client.getDialogs({ limit: undefined }),
-                Math.max(timeoutMs, 60_000),
+                client.getDialogs({ limit: 40 }),
+                Math.max(timeoutMs, 30_000),
                 "userbot getDialogs",
             );
             for (const dialog of dialogs) {
@@ -299,6 +299,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             client = new TelegramClient(new StringSession(cfg.session), cfg.apiId, cfg.apiHash, {
                 connectionRetries: 5,
                 autoReconnect: true,
+                maxSessions: 8,
+                sessions: 4,
+                download: {
+                    maxSessions: 8,
+                    startSessions: 4,
+                },
             });
 
             const noInput = () => {
@@ -320,12 +326,32 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             searcherEntity = await withTimeout(client.getEntity(cfg.searcher), timeoutMs, "userbot getEntity");
             searcherId = Number(searcherEntity && searcherEntity.id) || null;
             ready = true;
-            log.log(`Userbot connected \u00B7 searcher @${cfg.searcher} (id ${searcherId})`);
+            log.log(`Userbot connected · searcher @${cfg.searcher} (id ${searcherId})`);
+
+            // Pre-warm active dialogs in background so resolveChatPeer is instant for /save
+            void client.getDialogs({ limit: 40 }).then((dialogs) => {
+                for (const d of dialogs || []) {
+                    try {
+                        const pid = markedPeerId(getPeerId(d.inputEntity, true));
+                        if (pid) peerCache.set(pid, d.inputEntity);
+                        if (d.id) peerCache.set(markedPeerId(d.id), d.inputEntity);
+                    } catch {}
+                }
+            }).catch(() => {});
 
             const libs = loadLibs();
             client.addEventHandler(async (event) => {
                 const msg = event.message;
-                if (!msg || !resultSink) return;
+                if (!msg) return;
+                if (msg.peerId) {
+                    try {
+                        const mid = markedPeerId(getPeerId(msg.peerId, true));
+                        if (mid && !peerCache.has(mid)) {
+                            peerCache.set(mid, msg.inputPeer || msg.peerId);
+                        }
+                    } catch {}
+                }
+                if (!resultSink) return;
                 const sender = Number(msg.senderId || (msg.peerId && msg.peerId.userId) || 0);
                 if (searcherId && sender && sender !== searcherId) return;
                 try {
@@ -372,13 +398,16 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             const root = path.resolve(options.root);
             fs.mkdirSync(root, { recursive: true });
 
-            const inputPeer = await resolveChatPeer(chatId);
-            const messages = await withTimeout(
-                client.getMessages(inputPeer, { ids: Number(messageId) }),
-                timeoutMs,
-                "userbot getMessages",
-            );
-            const message = messages && messages[0];
+            let message = options.message || null;
+            if (!message) {
+                const inputPeer = await resolveChatPeer(chatId);
+                const messages = await withTimeout(
+                    client.getMessages(inputPeer, { ids: Number(messageId) }),
+                    timeoutMs,
+                    "userbot getMessages",
+                );
+                message = messages && messages[0];
+            }
             if (!message) {
                 throw new Error(`MESSAGE_NOT_VISIBLE:${messageId}`);
             }
@@ -396,11 +425,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             try {
                 const result = await client.downloadMedia(message, {
                     outputFile: partialPath,
-                    partSizeKb: 512,
+                    partSizeKb: 1024,
                     progressCallback: (done, total) => {
                         if (options.onProgress) options.onProgress(Number(done), Number(total));
                     },
-                    requestTimeout: 120_000,
+                    requestTimeout: 180_000,
                 });
                 if (!result || !fs.existsSync(partialPath)) {
                     throw new Error("TELEGRAM_MEDIA_DOWNLOAD_FAILED");
@@ -520,6 +549,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             fileName: safeDownloadName(fileName),
                             size,
                             document: msg.media.document || msg.file,
+                            message: msg,
                         };
                     }
                 } catch (err) {
@@ -549,6 +579,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             fileName: safeDownloadName(fileName),
                             size,
                             document: msg.media.document || msg.file,
+                            message: msg,
                         };
                     }
                 }

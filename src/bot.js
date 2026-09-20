@@ -445,6 +445,7 @@ function createBot(token, meta = {}) {
         let sourceMessageId = replied && replied.message_id;
         let originalName = replied && replied.document && (replied.document.file_name || `telegram-${sourceMessageId}.bin`);
         let docSize = replied && replied.document && replied.document.file_size;
+        let repliedMessageObj = null;
 
         const peer = meta.userbot;
 
@@ -461,6 +462,7 @@ function createBot(token, meta = {}) {
                     sourceMessageId = found.messageId;
                     originalName = found.fileName || `telegram-${sourceMessageId}.bin`;
                     docSize = found.size;
+                    repliedMessageObj = found.message || null;
                     replied = { message_id: found.messageId, document: { file_name: originalName, file_size: found.size } };
                 }
             } catch (err) {
@@ -518,6 +520,7 @@ function createBot(token, meta = {}) {
         void peer.downloadMessageToDisk(ctx.chat.id, sourceMessageId, {
             root: localProcessRoot(),
             fileName: originalName,
+            message: repliedMessageObj,
             onProgress: (done, total) => {
                 if (Date.now() - lastProgressAt < 3000) return;
                 lastProgressAt = Date.now();
@@ -526,29 +529,16 @@ function createBot(token, meta = {}) {
                     ctx,
                     status.message_id,
                     [
-                        `\uD83D\uDCE5  ${B("DOWNLOADING FROM TELEGRAM")} \u00B7 ${pct}%`,
+                        `📥  ${B("DOWNLOADING FROM TELEGRAM")} · ${pct}%`,
                         RULE,
-                        `\uD83D\uDCC4  ${escapeHtml(originalName)}`,
-                        `\uD83D\uDCE6  ${humanSize(done)} / ${humanSize(total || done)}`,
+                        `📄  ${escapeHtml(originalName)}`,
+                        `📦  ${humanSize(done)} / ${humanSize(total || done)}`,
                     ].join("\n"),
                 );
             },
         })
             .then(async (saved) => {
-                await safeEdit(
-                    ctx,
-                    status.message_id,
-                    [
-                        `\u2705  ${B("SAVED TO DISK")}`,
-                        RULE,
-                        `\uD83D\uDCC4  ${escapeHtml(saved.originalName)}`,
-                        `\uD83D\uDCE6  ${humanSize(saved.size)}`,
-                        `\uD83D\uDCBE  ${CODE(escapeHtml(saved.path))}`,
-                        "",
-                        `${I("Starting the local cleaner now\u2026")}`,
-                    ].join("\n"),
-                );
-                await processFile(ctx, saved.path);
+                await processFile(ctx, saved.path, status.message_id);
             })
             .catch((err) => safeEdit(
                 ctx,
@@ -1767,7 +1757,7 @@ function processedOutputPath(name, chatId) {
  * @param {import('telegraf').Context} ctx
  * @param {string} inputPath absolute path on the server
  */
-async function processFile(ctx, inputPath) {
+async function processFile(ctx, inputPath, progressMessageId = null) {
     let fullPath;
     let allowedRoot;
 
@@ -1779,11 +1769,11 @@ async function processFile(ctx, inputPath) {
         if (err && err.code === "OUTSIDE_LOCAL_PROCESS_ROOT") {
             await safeReply(
                 ctx,
-                `\u26D4  ${B("Path blocked")}\nFiles must be under ${CODE(escapeHtml(localProcessRoot()))}.`,
+                `⛔  ${B("Path blocked")}\nFiles must be under ${CODE(escapeHtml(localProcessRoot()))}.`,
             );
             return;
         }
-        await safeReply(ctx, `\u26A0\uFE0F  Not found: ${CODE(escapeHtml(path.resolve(inputPath)))}`);
+        await safeReply(ctx, `⚠️  Not found: ${CODE(escapeHtml(path.resolve(inputPath)))}`);
         return;
     }
 
@@ -1791,12 +1781,12 @@ async function processFile(ctx, inputPath) {
     try {
         stat = fs.statSync(fullPath);
     } catch {
-        await safeReply(ctx, `\u26A0\uFE0F  Not found: ${CODE(escapeHtml(fullPath))}`);
+        await safeReply(ctx, `⚠️  Not found: ${CODE(escapeHtml(fullPath))}`);
         return;
     }
 
     if (stat.isDirectory()) {
-        await safeReply(ctx, `\u26A0\uFE0F  That's a directory. Give a file path like ${CODE("/var/data/dump.zip")}.`);
+        await safeReply(ctx, `⚠️  That's a directory. Give a file path like ${CODE("/var/data/dump.zip")}.`);
         return;
     }
 
@@ -1809,9 +1799,9 @@ async function processFile(ctx, inputPath) {
         await safeReply(
             ctx,
             [
-                `\u26D4  ${B("Unsupported file type")}`,
+                `⛔  ${B("Unsupported file type")}`,
                 `I only handle ${B(".zip")} archives and plain text files`,
-                `(${B(".txt")}, .csv, .tsv, .log, \u2026) \uD83D\uDCC2`,
+                `(${B(".txt")}, .csv, .tsv, .log, …) 📁`,
             ].join("\n"),
         );
         return;
@@ -1822,8 +1812,8 @@ async function processFile(ctx, inputPath) {
         await safeReply(
             ctx,
             [
-                `\uD83D\uDCA5  ${B("Zip too big for memory")}`,
-                `That zip is ${humanSize(stat.size)} \u2014 over the`,
+                `💥  ${B("Zip too big for memory")}`,
+                `That zip is ${humanSize(stat.size)} — over the`,
                 `${humanSize(zipLimit)} in-memory limit.`,
                 "",
                 `${I("Split it on the server first (unzip to /var/data/... and process the .txt).")}`,
@@ -1833,14 +1823,27 @@ async function processFile(ctx, inputPath) {
     }
 
     // Stage 1: reading from disk.
-    const progress = await ctx.reply(
-        [
-            `\uD83D\uDCE5  ${B("Reading")} ${escapeHtml(name)}`,
-            `     \uD83D\uDCC2  ${humanSize(stat.size)}  \u00B7  ${escapeHtml(path.dirname(fullPath))}`,
-            `     \uD83D\uDD12  allowed root: ${escapeHtml(allowedRoot)}`,
-        ].join("\n"),
-        { parse_mode: "HTML" },
-    );
+    let progress;
+    if (progressMessageId) {
+        progress = { message_id: progressMessageId };
+        void safeEdit(
+            ctx,
+            progressMessageId,
+            [
+                `📥  ${B("Reading")} ${escapeHtml(name)}`,
+                `     📁  ${humanSize(stat.size)}  ·  ${escapeHtml(path.dirname(fullPath))}`,
+            ].join("\n"),
+        );
+    } else {
+        progress = await ctx.reply(
+            [
+                `📥  ${B("Reading")} ${escapeHtml(name)}`,
+                `     📁  ${humanSize(stat.size)}  ·  ${escapeHtml(path.dirname(fullPath))}`,
+                `     🔒  allowed root: ${escapeHtml(allowedRoot)}`,
+            ].join("\n"),
+            { parse_mode: "HTML" },
+        );
+    }
 
     if (isText) {
         await processTextFile(ctx, progress, fullPath, name, stat.size, { keepUrl: true });

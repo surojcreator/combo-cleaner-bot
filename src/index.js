@@ -4,7 +4,7 @@ require("dotenv").config();
 
 const http = require("http");
 const { Telegraf } = require("telegraf");
-const { createBot } = require("./bot");
+const { createBot, ingestUserbotMessage, trackIngestion } = require("./bot");
 const searchbot = require("./searchbot");
 const userbot = require("./userbot");
 
@@ -128,6 +128,9 @@ async function connectUserbot() {
     }
     try {
         const peer = userbot.createUserbot(userbotConfig);
+        if (botMeta.botUsername && typeof peer.setBotUsername === "function") {
+            peer.setBotUsername(botMeta.botUsername);
+        }
         const { id, username } = await peer.start();
         if (id) botMeta.searcherBotId = id;
         peer.onResult((msg) => relayUserbotResult(peer, msg));
@@ -152,7 +155,11 @@ async function relayUserbotResult(peer, msg) {
     if (targets.length === 0) return; // nobody asked — leave the user's dialog alone
     for (const chatId of targets) {
         try {
-            await peer.forwardResult(chatId, msg);
+            const run = searchbot.getRun(chatId);
+            const query = run ? run.query : "";
+            const p = ingestUserbotMessage(chatId, msg, peer, query);
+            if (p) trackIngestion(chatId, p);
+            await peer.forwardResult(chatId, msg, { botUsername: botMeta.botUsername });
         } catch (err) {
             console.error(`Userbot: could not share result with ${chatId}.`, err && err.message ? err.message : err);
         }
@@ -164,6 +171,9 @@ async function main() {
     botMeta.botUsername = me.username;
     console.log(`Bot started as @${me.username} (id ${me.id})`);
     await connectUserbot();
+    if (botMeta.userbot && typeof botMeta.userbot.setBotUsername === "function") {
+        botMeta.userbot.setBotUsername(me.username);
+    }
     console.log(
         `ULP relay -> @${botMeta.search.botUsername} · ${botMeta.search.stepDelayMs}ms before every try · ` +
             `${botMeta.search.maxTries} tries · hist template "${botMeta.search.histTemplate}" · ` +

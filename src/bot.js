@@ -2259,6 +2259,7 @@ async function beginUlpRun(ctx, params) {
             daysCount,
             startDate: startDate || new Date(),
             chatId,
+            botUsername: meta && meta.botUsername,
             stepDelayMs: searchOptions.stepDelayMs,
             shouldStop: () => !searchbot.isRunning(chatId),
             onStatus: (st) => {
@@ -2275,6 +2276,11 @@ async function beginUlpRun(ctx, params) {
                     }),
                     ulpKeyboard(scope),
                 );
+            },
+            onResult: async (m) => {
+                const p = ingestUserbotMessage(chatId, m, transport.userbot, query);
+                trackIngestion(chatId, p);
+                await p;
             },
             sleep,
         });
@@ -2443,6 +2449,54 @@ async function relaySearcherMessage(ctx, params) {
             console.error("relay forward failed:", err.message);
         }
     }
+}
+
+/**
+ * Ingest and clean a message received from the searcher bot via userbot.
+ * Directly extracts and cleans credentials from buffer or text and adds them to the chat batch.
+ *
+ * @param {number} chatId
+ * @param {any} msg teleproto message object
+ * @param {any} peer userbot peer instance
+ * @param {string} [query]
+ */
+async function ingestUserbotMessage(chatId, msg, peer, query = "") {
+    if (!chatId || !msg) return null;
+    try {
+        const text = msg.message || "";
+        const media = msg.media;
+        let site = sanitizeSiteSlug(query) || "cleaned";
+
+        if (media && peer && typeof peer.downloadMedia === "function") {
+            const buffer = await peer.downloadMedia(msg).catch(() => null);
+            if (buffer && buffer.length > 0) {
+                const name = (msg.file && msg.file.name) || `ulp-result-${msg.id || "file"}.bin`;
+                const isZip = name.toLowerCase().endsWith(".zip") || isZipBuffer(buffer);
+                const result = isZip
+                    ? extractAndCleanZip(buffer, { sourceName: name, keepUrl: true })
+                    : extractAndCleanText(buffer.toString("utf8"), { sourceName: name, keepUrl: true });
+                if (result.site) {
+                    site = sanitizeSiteSlug(result.site) || site;
+                }
+                const added = store.addLines(chatId, result.lines, site);
+                return { lines: result.lines.length, added: added.added, duplicates: added.duplicates, site };
+            }
+        }
+
+        if (text) {
+            const result = extractAndCleanText(text, { keepUrl: true });
+            if (result.site) {
+                site = sanitizeSiteSlug(result.site) || site;
+            }
+            if (result.lines.length > 0) {
+                const added = store.addLines(chatId, result.lines, site);
+                return { lines: result.lines.length, added: added.added, duplicates: added.duplicates, site };
+            }
+        }
+    } catch (err) {
+        console.error(`ingestUserbotMessage error for chat ${chatId}:`, err && err.message ? err.message : err);
+    }
+    return null;
 }
 
 /**
@@ -2991,6 +3045,9 @@ module.exports = {
     renderSaveError,
     scanDirFiles,
     deliverCombinedAndResetBatch,
+    ingestUserbotMessage,
+    trackIngestion,
+    waitForIngestions,
 };
 
 

@@ -40,6 +40,7 @@ function loadConfig(env = process.env) {
         session: String(env.TELEGRAM_SESSION || "").trim(),
         searcher: String(env.SEARCH_BOT_USERNAME || "DumpNews14Bot").replace(/^@+/, ""),
         transport: String(env.SEARCH_TRANSPORT || "auto").trim().toLowerCase(),
+        botUsername: String(env.BOT_USERNAME || "").replace(/^@+/, ""),
     };
 }
 
@@ -231,6 +232,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
     /** @type {any} */
     let searcherEntity = null;
     let searcherId = null;
+    let botUsername = cfg.botUsername || (opts && opts.botUsername) || "";
     let ready = false;
 
     /**
@@ -285,6 +287,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
         kind: "userbot",
         get searcherId() {
             return searcherId;
+        },
+        get botUsername() {
+            return botUsername;
+        },
+        setBotUsername(name) {
+            botUsername = String(name || "").replace(/^@+/, "");
         },
         /** @param {(msg: any) => Promise<void>|void} sink */
         onResult(sink) {
@@ -449,7 +457,22 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             }
         },
 
-        async forwardResult(toChatId, msg) {
+        /**
+         * Download media directly from an MTProto message without writing to disk.
+         * @param {any} msg
+         * @param {any} [options]
+         * @returns {Promise<Buffer|null>}
+         */
+        async downloadMedia(msg, options = {}) {
+            if (!ready || !client) throw new Error("USERBOT_NOT_READY");
+            return await withTimeout(
+                client.downloadMedia(msg, options),
+                timeoutMs,
+                "userbot downloadMedia",
+            );
+        },
+
+        async forwardResult(toChatId, msg, forwardOpts = {}) {
             if (!ready || !client) return "skipped";
             if (!msg || !msg.id) return "skipped";
             const fwdKey = `${toChatId}:${msg.id}`;
@@ -461,11 +484,24 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 const first = forwardedMsgKeys.values().next().value;
                 forwardedMsgKeys.delete(first);
             }
+
+            const targetBot = (forwardOpts && forwardOpts.botUsername) || botUsername || cfg.botUsername;
+            const isPrivateChat = Number(toChatId) > 0;
             let targetPeer = toChatId;
-            try {
-                targetPeer = await resolveChatPeer(toChatId);
-            } catch (err) {
-                log.log(`userbot resolveChatPeer fallback for ${toChatId}: ${err && err.message ? err.message : err}`);
+
+            // In private 1-on-1 chats with the bot, forward/copy to the bot so it arrives in the bot conversation
+            if (isPrivateChat && targetBot) {
+                try {
+                    targetPeer = await client.getInputEntity(targetBot.replace(/^@+/, ""));
+                } catch {
+                    targetPeer = `@${targetBot.replace(/^@+/, "")}`;
+                }
+            } else {
+                try {
+                    targetPeer = await resolveChatPeer(toChatId);
+                } catch (err) {
+                    log.log(`userbot resolveChatPeer fallback for ${toChatId}: ${err && err.message ? err.message : err}`);
+                }
             }
 
             try {
@@ -993,7 +1029,10 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                         if (resultSink) {
                                             await resultSink(m);
                                         }
-                                        await forwardResult(chatId, m);
+                                        if (options.onResult) {
+                                            await options.onResult(m);
+                                        }
+                                        await forwardResult(chatId, m, { botUsername: options.botUsername || botUsername || cfg.botUsername });
                                     }
                                 }
                             } catch (err) {

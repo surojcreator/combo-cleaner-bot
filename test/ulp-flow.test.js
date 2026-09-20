@@ -450,4 +450,43 @@ test("ULP flow: automatically delivers combined file and clears batch when searc
     }
 });
 
+test("ULP flow: searchDayByDay automatically cleans onResult messages and combines results", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    const store = require("../src/store");
+    try {
+        const dummyZipContent = "user@testdomain.com:pass123\nuser2@testdomain.com:secret456\n";
+        const peer = {
+            kind: "userbot",
+            isReady: () => true,
+            searcherId: SEARCHER_ID,
+            classify: () => "other",
+            send: async () => ({ message_id: 1, chat: { id: SEARCHER_ID } }),
+            downloadMedia: async (msg) => Buffer.from(dummyZipContent, "utf8"),
+            searchDayByDay: async (opts) => {
+                if (opts.onResult) {
+                    await opts.onResult({
+                        id: 777,
+                        media: true,
+                        file: { name: "testdomain.com_20.09.2026.txt" },
+                    });
+                }
+                return { status: "done", daysProcessed: 1 };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+        peer.botRef = bot;
+        await bot.handleUpdate(commandUpdate("/ulp testdomain.com 20.09.2026"));
+
+        const docCall = api.calls.find((c) => c.method === "sendDocument");
+        assert.ok(docCall, "expected sendDocument to deliver combined file");
+        assert.equal(docCall.payload.chat_id, OWNER_CHAT);
+        assert.equal(store.getLines(OWNER_CHAT).length, 0, "expected batch to be cleared after combine");
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
 

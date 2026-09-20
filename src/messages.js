@@ -116,19 +116,24 @@ const RULE = "\u2501".repeat(22); // ━━━━━━━━━━━━━━�
 function mainKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("📦 Get combined file", "combine"),
-            Markup.button.callback("📊 Stats", "stats"),
+            Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
+            Markup.button.callback("📂 Server Vault", "server_files"),
         ],
         [
-            Markup.button.callback("📡 Sites", "sites"),
-            Markup.button.callback("👁 Preview", "preview"),
+            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback("📊 System Stats", "stats"),
         ],
         [
-            Markup.button.callback("📂 Server files", "server_files"),
-            Markup.button.callback("🧹 Clear batch", "clear:ask"),
+            Markup.button.callback("🔎 Search Batch", "batch:search:prompt"),
+            Markup.button.callback("👁 Line Preview", "preview"),
         ],
         [
-            Markup.button.callback("❓ Help", "help"),
+            Markup.button.callback("🌐 Detected Sites", "sites"),
+            Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+        ],
+        [
+            Markup.button.callback("⚡️ Fast /save Guide", "help:save"),
+            Markup.button.callback("🔄 Refresh Menu", "help"),
         ],
     ]);
 }
@@ -139,12 +144,15 @@ function mainKeyboard() {
 function afterCombineKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("📦 Send again", "combine"),
+            Markup.button.callback("📦 Send Again", "combine"),
             Markup.button.callback("📊 Stats", "stats"),
         ],
         [
-            Markup.button.callback("📂 Server files", "server_files"),
-            Markup.button.callback("🧹 Clear batch", "clear:ask"),
+            Markup.button.callback("📂 Server Vault", "server_files"),
+            Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+        ],
+        [
+            Markup.button.callback("🔙 Main Menu", "help"),
         ],
     ]);
 }
@@ -152,17 +160,107 @@ function afterCombineKeyboard() {
 /**
  * Keyboard shown under the server files vault.
  */
-function serverFilesKeyboard() {
+function serverFilesKeyboard(rawFiles = [], processedFiles = []) {
+    const rows = [];
+    if (Array.isArray(rawFiles) && rawFiles.length > 0) {
+        for (let i = 0; i < Math.min(rawFiles.length, 4); i++) {
+            rows.push([
+                Markup.button.callback(`🧼 Clean #${i + 1}`, `file:clean:${i}`),
+                Markup.button.callback(`🔎 Search #${i + 1}`, `file:search:${i}`),
+            ]);
+        }
+        if (rawFiles.length > 1) {
+            rows.push([
+                Markup.button.callback(`⚡️ Clean All Raw (${rawFiles.length})`, "files:clean:all"),
+            ]);
+        }
+    }
+    rows.push([
+        Markup.button.callback("🔄 Refresh Vault", "files:refresh"),
+        Markup.button.callback("📊 System Stats", "stats"),
+    ]);
+    rows.push([
+        Markup.button.callback("📦 Get Combined File", "combine"),
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+    return Markup.inlineKeyboard(rows);
+}
+
+/**
+ * Keyboard for ULP preset searches.
+ */
+function ulpMenuKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("🔄 Refresh files", "files:refresh"),
-            Markup.button.callback("📊 Stats", "stats"),
+            Markup.button.callback("🎬 Netflix", "ulp:quick:netflix.com"),
+            Markup.button.callback("🎵 Spotify", "ulp:quick:spotify.com"),
         ],
         [
-            Markup.button.callback("📦 Get combined file", "combine"),
-            Markup.button.callback("❓ Help", "help"),
+            Markup.button.callback("📧 Gmail", "ulp:quick:gmail.com"),
+            Markup.button.callback("🎮 Steam", "ulp:quick:store.steampowered.com"),
+        ],
+        [
+            Markup.button.callback("🛍 Amazon", "ulp:quick:amazon.com"),
+            Markup.button.callback("🕹 Roblox", "ulp:quick:roblox.com"),
+        ],
+        [
+            Markup.button.callback("💳 PayPal", "ulp:quick:paypal.com"),
+            Markup.button.callback("🪙 Crypto", "ulp:quick:binance.com"),
+        ],
+        [
+            Markup.button.callback("🔙 Main Menu", "help"),
         ],
     ]);
+}
+
+/**
+ * Keyboard for /save instructions.
+ */
+function saveGuideKeyboard() {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback("📂 Open Server Vault", "server_files"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
+}
+
+/**
+ * Keyboard for quick batch search.
+ */
+function searchPromptKeyboard() {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback("📧 @gmail.com", "batch:quicksearch:gmail.com"),
+            Markup.button.callback("📧 @hotmail.com", "batch:quicksearch:hotmail.com"),
+        ],
+        [
+            Markup.button.callback("📧 @yahoo.com", "batch:quicksearch:yahoo.com"),
+            Markup.button.callback("📧 @proton.me", "batch:quicksearch:proton"),
+        ],
+        [
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
+}
+
+/**
+ * Visual guide card explaining how to save files to the server vault.
+ */
+function renderSaveGuide() {
+    return [
+        `⚡️  ${B("FAST SERVER SAVE GUIDE")}  ⚡️`,
+        RULE,
+        `💎  ${B("How to save any dump to server instantly:")}`,
+        "",
+        `1️⃣  ${B("Forward or upload")} any ${CODE(".zip")} or ${CODE(".txt")} dump into chat.`,
+        `2️⃣  ${B("Reply to that message")} with the command ${CODE("/save")}.`,
+        `3️⃣  The bot downloads it directly to server disk & cleans it into your batch!`,
+        "",
+        `✨ ${I("No file size limits on the server! Clean or search files anytime via Server Vault.")}`,
+        RULE,
+        `👇 ${I("Tap below to open your server vault:")}`,
+    ].join("\n");
 }
 
 /**
@@ -170,8 +268,9 @@ function serverFilesKeyboard() {
  */
 function emptyBatchKeyboard() {
     return Markup.inlineKeyboard([
-        [Markup.button.callback("❓ How do I use this?", "help")],
-        [Markup.button.callback("📂 Server files", "server_files"), Markup.button.callback("📊 Stats", "stats")],
+        [Markup.button.callback("🚀 Run ULP Search", "ulp:menu")],
+        [Markup.button.callback("📂 Server Vault", "server_files"), Markup.button.callback("📊 Stats", "stats")],
+        [Markup.button.callback("❓ Help Manual", "help")],
     ]);
 }
 
@@ -188,61 +287,33 @@ function confirmClearKeyboard() {
 }
 
 /**
- * /start and /help message — full branded welcome.
+ * /start and /help message — full interactive button dashboard with animated emojis.
  * @param {string} [botUsername]
  * @param {{ size: number, files: number }|null} [batch] existing batch summary
  * @param {string|null} [searcherBot] configured ULP searcher bot username
  */
 function renderHelp(botUsername, batch = null, searcherBot = null) {
     const mention = botUsername ? `@${escapeHtml(botUsername)}` : "this bot";
-    const lines = [
-        `⚡️  ${B("COMBO CLEANER PRO")}  ⚡️`,
-        `🚀  ${I("Raw Dumps In • Crystal Clean Batches Out • Ultra-Fast")}`,
+    const batchSize = batch ? Number(batch.size || 0) : 0;
+    const batchFiles = batch ? Number(batch.files || 0) : 0;
+    const cpus = require("os").cpus().length || 8;
+
+    return [
+        `🔥  ${B("COMBO CLEANER ULTIMATE")}  🔥`,
+        `⚡️  ${I("Multi-Core Turbo Cleaning & ULP Relay Engine")}  ⚡️`,
+        RULE,
+        `💎  ${B("SYSTEM ENGINE STATUS")}`,
+        `  ⚡️ ${B("Multi-Core Workers:")} ${CODE(`${cpus}x Parallel CPU Cores Active`)}`,
+        `  📦 ${B("Active Batch Vault:")} ${B(num(batchSize))} unique lines (${num(batchFiles)} files)`,
+        `  🤖 ${B("Connected ULP Searcher:")} ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
+        `  🚀 ${B("Engine Mode:")} ${B("TURBO 100% CPU SATURATION")}`,
         RULE,
         "",
-        `💎  ${B("Core Superpowers")}`,
-        `  ⚡️ ${B("Instant RAM Pipeline")} \u2014 zero wait streaming`,
-        `  🧹 ${B("Auto-Deduplication")} \u2014 drops duplicates on the fly`,
-        `  🌐 ${B("Smart Site Detection")} \u2014 identifies domain source`,
-        `  📦 ${B("Tidy Auto-Named Outputs")} \u2014 ready to use`,
+        `✨  ${B("INTERACTIVE ACTION DASHBOARD")}`,
+        `👇 ${I("Tap any button below to execute instantly without typing commands:")}`,
         "",
-        `🛠  ${B("Command Arsenal")}`,
-        `  🚀 /ulp \u2014 Auto-relay dump search (@${escapeHtml(searcherBot || "DumpNews14Bot")})`,
-        `  📂 /files \u2014 Browse & search server files & dumps`,
-        `  📦 /combine \u2014 Download your deduped combined batch`,
-        `  📊 /stats \u2014 Real-time batch metrics & capacity gauge`,
-        `  📡 /sites \u2014 Site distribution reconnaissance`,
-        `  👁 /preview \u2014 Peek at sample cleaned lines`,
-        `  🔎 /search \u2014 Query your active RAM batch`,
-        `  ⚡ /lsearch \u2014 Fast-scan huge disk output files`,
-        `  📥 /save \u2014 Save replied group document directly to disk`,
-        `  🛠 /process \u2014 Stream-clean large local file from disk`,
-        `  🧹 /clear \u2014 Wipe current batch for a fresh run`,
-        `  🏓 /ping \u2014 Latency and system uptime check`,
-        `  ❓ /help \u2014 Show this manual`,
-        "",
-    ];
-
-    if (batch && batch.size > 0) {
-        lines.push(
-            `💎  ${B("Active Batch:")} ${B(num(batch.size))}` +
-                ` unique line${batch.size === 1 ? "" : "s"} waiting 🎁`,
-            "",
-        );
-    }
-
-    if (searcherBot) {
-        lines.push(
-            `🤖  ${B("ULP Search Relay")}`,
-            `  ${CODE(escapeHtml("/ulp <query> [start_date]"))}`,
-            `  ↳ Auto-detects latest batch date & steps down day-by-day`,
-            `  ↳ Relays & ingests dumps with automatic pacing ⏳`,
-            "",
-        );
-    }
-
-    lines.push(RULE, `🛡️ ${mention} \u00B7 Pro Edition`);
-    return lines.join("\n");
+        `🛡️ ${mention} · Ultimate Pro Edition`,
+    ].join("\n");
 }
 
 /**
@@ -635,12 +706,13 @@ function renderServerFiles(info) {
 
     lines.push(`📥  ${B("Raw Incoming Dumps")} \u00B7 ${CODE(escapeHtml(rawRoot))}`);
     if (rawFiles.length === 0) {
-        lines.push(`  ${I("No raw files found on disk \u2014 forward a file and reply with /save")}`);
+        lines.push(`  ${I("No raw files found on disk \u2014 reply to any file with /save")}`);
     } else {
-        for (const f of rawFiles.slice(0, 10)) {
+        for (let i = 0; i < Math.min(rawFiles.length, 10); i++) {
+            const f = rawFiles[i];
             const isZip = f.name.toLowerCase().endsWith(".zip");
             const icon = isZip ? "📦" : "📄";
-            lines.push(`  ${icon} ${B(escapeHtml(f.name))} \u00B7 ${CODE(humanSize(f.size))}`);
+            lines.push(`  ${B(`[${i + 1}]`)} ${icon} ${B(escapeHtml(f.name))} \u00B7 ${CODE(humanSize(f.size))}`);
         }
         if (rawFiles.length > 10) {
             lines.push(`  ${I(`…and ${rawFiles.length - 10} more raw file(s)`)}`);
@@ -650,10 +722,11 @@ function renderServerFiles(info) {
     lines.push("");
     lines.push(`💎  ${B("Cleaned Output Files")} \u00B7 ${CODE(escapeHtml(processedRoot))}`);
     if (processedFiles.length === 0) {
-        lines.push(`  ${I("No processed outputs yet \u2014 clean a dump with /process")}`);
+        lines.push(`  ${I("No processed outputs yet \u2014 tap a Clean button below")}`);
     } else {
-        for (const f of processedFiles.slice(0, 10)) {
-            lines.push(`  ⚡ ${B(escapeHtml(f.name))} \u00B7 ${CODE(humanSize(f.size))}`);
+        for (let i = 0; i < Math.min(processedFiles.length, 10); i++) {
+            const f = processedFiles[i];
+            lines.push(`  ${B(`[${i + 1}]`)} ⚡️ ${B(escapeHtml(f.name))} \u00B7 ${CODE(humanSize(f.size))}`);
         }
         if (processedFiles.length > 10) {
             lines.push(`  ${I(`…and ${processedFiles.length - 10} more output(s)`)}`);
@@ -663,8 +736,7 @@ function renderServerFiles(info) {
     lines.push(
         "",
         RULE,
-        `💡 ${I("Clean any raw file:")} ${CODE("/process /var/data/filename.zip")}`,
-        `🔍 ${I("Fast-search cleaned output:")} ${CODE(escapeHtml("/lsearch <query>"))}`,
+        `👇 ${I("Tap any button below to clean or search immediately without typing commands:")}`,
     );
     return lines.join("\n");
 }
@@ -818,7 +890,11 @@ module.exports = {
     renderUlpBlocked,
     renderUlpSharedResult,
     renderServerFiles,
+    renderSaveGuide,
     serverFilesKeyboard,
+    ulpMenuKeyboard,
+    saveGuideKeyboard,
+    searchPromptKeyboard,
     escapeHtml,
     mainKeyboard,
     confirmClearKeyboard,

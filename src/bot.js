@@ -4,10 +4,11 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("node:readline");
 const { once } = require("node:events");
-const { Telegraf } = require("telegraf");
+const { Telegraf, Markup } = require("telegraf");
 const { extractAndCleanZip, extractAndCleanText, isZipBuffer } = require("./extractor");
 const { sanitizeSiteSlug, detectSite } = require("./sites");
 const { cleanLine } = require("./cleaner");
+const { getSharedPool } = require("./worker-pool");
 const searchbot = require("./searchbot");
 const store = require("./store");
 const userbot = require("./userbot");
@@ -29,7 +30,11 @@ const {
     renderUlpBlocked,
     renderUlpSharedResult,
     renderServerFiles,
+    renderSaveGuide,
     serverFilesKeyboard,
+    ulpMenuKeyboard,
+    saveGuideKeyboard,
+    searchPromptKeyboard,
     mainKeyboard,
     confirmClearKeyboard,
     afterCombineKeyboard,
@@ -233,9 +238,9 @@ function createBot(token, meta = {}) {
             humanSize,
         });
         if (editMessageId) {
-            await safeEdit(ctx, editMessageId, text, serverFilesKeyboard());
+            await safeEdit(ctx, editMessageId, text, serverFilesKeyboard(rawFiles, processedFiles));
         } else {
-            await safeReply(ctx, text, serverFilesKeyboard());
+            await safeReply(ctx, text, serverFilesKeyboard(rawFiles, processedFiles));
         }
     };
 
@@ -261,6 +266,181 @@ function createBot(token, meta = {}) {
         await ctx.answerCbQuery("🔄 Files refreshed").catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         await showServerFiles(ctx, msg ? msg.message_id : null);
+    });
+
+    bot.action(/^file:clean:(\d+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        await ctx.answerCbQuery(`🧼 Cleaning file #${idx + 1}…`).catch(() => { });
+        const rawFiles = scanDirFiles(localProcessRoot());
+        if (!rawFiles[idx]) {
+            await safeReply(ctx, `⚠️ File #${idx + 1} not found in server vault.`, mainKeyboard());
+            return;
+        }
+        const file = rawFiles[idx];
+        const status = await ctx.reply(
+            `⚡️  ${B("MULTI-CORE CLEANING STARTED")}\n📄  ${escapeHtml(file.name)} (${humanSize(file.size)})\n🚀  Saturating all CPU cores…`,
+            { parse_mode: "HTML" },
+        );
+        try {
+            await processFile(ctx, file.path, status.message_id);
+        } catch (err) {
+            await safeEdit(ctx, status.message_id, `💥  ${B("Cleaning failed")}: ${escapeHtml(err.message)}`, mainKeyboard());
+        }
+    });
+
+    bot.action("files:clean:all", async (ctx) => {
+        await ctx.answerCbQuery("⚡️ Batch cleaning all raw files…").catch(() => { });
+        const rawFiles = scanDirFiles(localProcessRoot());
+        if (rawFiles.length === 0) {
+            await safeReply(ctx, "📭 No raw files to clean in server vault.", mainKeyboard());
+            return;
+        }
+        const status = await ctx.reply(
+            `⚡️  ${B("BATCH CLEANING")} ${rawFiles.length} file(s) across all CPU cores…`,
+            { parse_mode: "HTML" },
+        );
+        for (let i = 0; i < rawFiles.length; i++) {
+            const f = rawFiles[i];
+            await safeEdit(ctx, status.message_id, `🧼  ${B(`[${i + 1}/${rawFiles.length}] Cleaning`)} ${escapeHtml(f.name)}…`);
+            try {
+                await processFile(ctx, f.path, null);
+            } catch (err) {
+                console.error(`Error processing ${f.name}:`, err);
+            }
+        }
+        await safeEdit(
+            ctx,
+            status.message_id,
+            `✨  ${B("All files cleaned successfully into batch!")}\n📦  Tap below to download the combined result:`,
+            afterCombineKeyboard(),
+        );
+    });
+
+    bot.action(/^file:search:(\d+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        await ctx.answerCbQuery().catch(() => { });
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const file = rawFiles[idx];
+        if (!file) {
+            await safeReply(ctx, `⚠️ File #${idx + 1} not found.`, mainKeyboard());
+            return;
+        }
+        await safeReply(
+            ctx,
+            [
+                `🔎  ${B("SEARCH FILE")} \u00B7 ${B(escapeHtml(file.name))}`,
+                `📁  Size: ${humanSize(file.size)}`,
+                "",
+                `${I("Tap a quick filter below or type /lsearch <query>:")}`,
+            ].join("\n"),
+            Markup.inlineKeyboard([
+                [
+                    Markup.button.callback("📧 Gmail", `file:dosearch:${idx}:gmail.com`),
+                    Markup.button.callback("📧 Hotmail", `file:dosearch:${idx}:hotmail.com`),
+                ],
+                [
+                    Markup.button.callback("📧 Yahoo", `file:dosearch:${idx}:yahoo.com`),
+                    Markup.button.callback("🌐 .com", `file:dosearch:${idx}:.com`),
+                ],
+                [
+                    Markup.button.callback("🔙 Server Vault", "server_files"),
+                ],
+            ]),
+        );
+    });
+
+    bot.action(/^file:dosearch:(\d+):(.+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        const query = ctx.match[2];
+        await ctx.answerCbQuery(`Searching ${query}…`).catch(() => { });
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const file = rawFiles[idx];
+        if (!file) {
+            await safeReply(ctx, "⚠️ File not found.", mainKeyboard());
+            return;
+        }
+        const status = await ctx.reply(
+            `🔎  ${B("MULTI-CORE SEARCH")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`,
+            { parse_mode: "HTML" },
+        );
+        try {
+            const result = await searchTextFile(file.path, query, 20);
+            await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+        } catch (err) {
+            await safeEdit(ctx, status.message_id, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+        }
+    });
+
+    bot.action("ulp:menu", async (ctx) => {
+        await ctx.answerCbQuery("🚀 ULP Target Selector").catch(() => { });
+        const text = [
+            `🚀  ${B("SELECT ULP SEARCH TARGET")}  ⚡️`,
+            RULE,
+            `🤖  Searcher: ${CODE(`@${escapeHtml(searchOptions.botUsername || "DumpNews14Bot")}`)}`,
+            `🎯  Mode: ${B("Automatic Latest Batch Step-Down")}`,
+            "",
+            `👇 ${I("Tap any target button below to start searching immediately:")}`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard());
+        } else {
+            await safeReply(ctx, text, ulpMenuKeyboard());
+        }
+    });
+
+    bot.action(/^ulp:quick:(.+)$/, async (ctx) => {
+        const query = ctx.match[1];
+        await ctx.answerCbQuery(`🚀 Launching ${query}…`).catch(() => { });
+        await beginUlpRun(ctx, {
+            query,
+            scope: "day",
+            searchOptions,
+            meta,
+            ulpStartedAt,
+            ulpWindows,
+            cardMessageId: ctx.callbackQuery && ctx.callbackQuery.message ? ctx.callbackQuery.message.message_id : null,
+        });
+    });
+
+    bot.action("batch:search:prompt", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => { });
+        const text = [
+            `🔎  ${B("QUICK BATCH SEARCH")}  ⚡️`,
+            RULE,
+            `💎  Batch size: ${B(num(store.getStats(ctx.chat.id)?.size || 0))} lines`,
+            "",
+            `👇 ${I("Tap a quick domain filter below or type /search <query>:")}`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, searchPromptKeyboard());
+        } else {
+            await safeReply(ctx, text, searchPromptKeyboard());
+        }
+    });
+
+    bot.action(/^batch:quicksearch:(.+)$/, async (ctx) => {
+        const query = ctx.match[1];
+        await ctx.answerCbQuery(`Searching ${query}…`).catch(() => { });
+        const chatStats = store.getStats(ctx.chat.id);
+        let result;
+        if (chatStats && chatStats.size > 5000) {
+            result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
+        } else {
+            result = store.searchLines(ctx.chat.id, query, 20);
+        }
+        await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+    });
+
+    bot.action("help:save", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, renderSaveGuide(), saveGuideKeyboard());
+        } else {
+            await safeReply(ctx, renderSaveGuide(), saveGuideKeyboard());
+        }
     });
 
     bot.command("lsearch", async (ctx) => {
@@ -1722,18 +1902,33 @@ function localProcessedRoot() {
 async function searchTextFile(filePath, query, limit = 20) {
     const q = String(query || "").trim();
     if (!q) return { total: 0, matches: [] };
-    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(escaped, "i");
+    const pool = getSharedPool();
     let total = 0;
     const matches = [];
+    let buffer = [];
+    const CHUNK_SIZE = 25000;
+
     const rl = readline.createInterface({
         input: fs.createReadStream(filePath, { encoding: "utf8", highWaterMark: 1024 * 1024 }),
         crlfDelay: Infinity,
     });
     for await (const line of rl) {
-        if (!re.test(line)) continue;
-        total += 1;
-        if (matches.length < limit) matches.push(line);
+        buffer.push(line);
+        if (buffer.length >= CHUNK_SIZE) {
+            const res = await pool.searchLinesParallel(buffer, q);
+            total += res.total;
+            for (const m of res.matches) {
+                if (matches.length < limit) matches.push(m);
+            }
+            buffer = [];
+        }
+    }
+    if (buffer.length > 0) {
+        const res = await pool.searchLinesParallel(buffer, q);
+        total += res.total;
+        for (const m of res.matches) {
+            if (matches.length < limit) matches.push(m);
+        }
     }
     return { total, matches };
 }
@@ -1880,6 +2075,9 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
     const output = fs.createWriteStream(partialPath, { encoding: "utf8", highWaterMark: 1024 * 1024 });
     let writtenLines = 0;
     const seen = new Set();
+    const pool = getSharedPool();
+    let lineBuffer = [];
+    const PARALLEL_CHUNK = 25000;
 
     const rl = readline.createInterface({
         input: fs.createReadStream(fullPath, { encoding: "utf8", highWaterMark: 1024 * 1024 }),
@@ -1897,16 +2095,24 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
         batch = [];
     };
 
-    try {
-        for await (const line of rl) {
-            if (rawSample.length < PROCESS_SAMPLE_BYTES) rawSample += line + "\n";
-            stats.total += 1;
-            const cleaned = cleanLine(line, { keepUrl });
-            if (cleaned === null) {
-                if (line.trim() !== "") stats.dropped += 1;
-                continue;
-            }
-            // Check for duplicates before writing to disk and batch
+    const processBuffer = async () => {
+        if (lineBuffer.length === 0) return;
+        const currentLines = lineBuffer;
+        lineBuffer = [];
+        stats.total += currentLines.length;
+
+        let res;
+        if (currentLines.length < 5000) {
+            const { cleanText } = require("./cleaner");
+            res = cleanText(currentLines.join("\n"), { keepUrl, dedupe: false });
+        } else {
+            // Execute parallel multi-core cleaning across worker threads
+            res = await pool.cleanLinesParallel(currentLines, { keepUrl, dedupe: false });
+        }
+        stats.dropped += res.stats.dropped;
+
+        for (let i = 0; i < res.lines.length; i++) {
+            const cleaned = res.lines[i];
             if (seen.has(cleaned)) {
                 stats.duplicates += 1;
                 continue;
@@ -1919,19 +2125,32 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
             if (!output.write(cleaned + "\n")) await once(output, "drain");
             batch.push(cleaned);
             if (batch.length >= PROCESS_BATCH_SIZE) flushBatch();
+        }
 
-            if (stats.total % PROCESS_PROGRESS_EVERY === 0 && Date.now() - lastProgressAt > 3000) {
-                lastProgressAt = Date.now();
-                await safeEdit(
-                    ctx,
-                    progress.message_id,
-                    [
-                        `\uD83E\uDDFC  ${B("Cleaning")} ${escapeHtml(name)}`,
-                        `     \u2702\uFE0F  ${num(stats.total)} lines so far \u2014 ${num(stats.kept)} kept`,
-                        `     \uD83D\uDCBE  full output \u2192 ${escapeHtml(outputPath)}`,
-                    ].join("\n"),
-                );
+        if (stats.total >= PROCESS_PROGRESS_EVERY && Date.now() - lastProgressAt > 3000) {
+            lastProgressAt = Date.now();
+            await safeEdit(
+                ctx,
+                progress.message_id,
+                [
+                    `⚡️  ${B("Multi-Core Cleaning")} ${escapeHtml(name)}`,
+                    `     🚀  ${num(stats.total)} lines scanned \u2014 ${num(stats.kept)} kept`,
+                    `     💎  full output \u2192 ${escapeHtml(outputPath)}`,
+                ].join("\n"),
+            );
+        }
+    };
+
+    try {
+        for await (const line of rl) {
+            if (rawSample.length < PROCESS_SAMPLE_BYTES) rawSample += line + "\n";
+            lineBuffer.push(line);
+            if (lineBuffer.length >= PARALLEL_CHUNK) {
+                await processBuffer();
             }
+        }
+        if (lineBuffer.length > 0) {
+            await processBuffer();
         }
         flushBatch();
         if (!countedFile) store.addLines(chatId, [], site, { countFile: true });

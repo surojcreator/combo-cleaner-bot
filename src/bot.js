@@ -948,10 +948,11 @@ async function ingestDocument(ctx, doc) {
     await ctx.replyWithChatAction("typing").catch(() => { });
 
     // Stage 3: cleaning.
+    const keepUrl = true;
     const result =
         isZip || isZipBuffer(buffer)
-            ? extractAndCleanZip(buffer, { sourceName: name })
-            : extractAndCleanText(buffer.toString("utf8"), { sourceName: name });
+            ? extractAndCleanZip(buffer, { sourceName: name, keepUrl })
+            : extractAndCleanText(buffer.toString("utf8"), { sourceName: name, keepUrl });
 
     await safeEdit(
         ctx,
@@ -1840,9 +1841,9 @@ async function processFile(ctx, inputPath) {
     );
 
     if (isText) {
-        await processTextFile(ctx, progress, fullPath, name, stat.size);
+        await processTextFile(ctx, progress, fullPath, name, stat.size, { keepUrl: true });
     } else {
-        await processZipFile(ctx, progress, fullPath, name, stat.size);
+        await processZipFile(ctx, progress, fullPath, name, stat.size, { keepUrl: true });
     }
 }
 
@@ -1856,8 +1857,9 @@ async function processFile(ctx, inputPath) {
  * @param {string} name
  * @param {number} size
  */
-async function processTextFile(ctx, progress, fullPath, name, size) {
+async function processTextFile(ctx, progress, fullPath, name, size, options = {}) {
     const chatId = ctx.chat.id;
+    const keepUrl = options.keepUrl !== false;
     const stats = { files: 1, total: 0, kept: 0, dropped: 0, duplicates: 0, truncated: false, skippedLarge: 0 };
     let batch = [];
     let added = { added: 0, duplicates: 0, capped: false, size: 0 };
@@ -1872,6 +1874,7 @@ async function processTextFile(ctx, progress, fullPath, name, size) {
     const partialPath = `${outputPath}.partial`;
     const output = fs.createWriteStream(partialPath, { encoding: "utf8" });
     let writtenLines = 0;
+    const seen = new Set();
 
     const rl = readline.createInterface({
         input: fs.createReadStream(fullPath, { encoding: "utf8" }),
@@ -1893,10 +1896,18 @@ async function processTextFile(ctx, progress, fullPath, name, size) {
         for await (const line of rl) {
             if (rawSample.length < PROCESS_SAMPLE_BYTES) rawSample += line + "\n";
             stats.total += 1;
-            const cleaned = cleanLine(line);
+            const cleaned = cleanLine(line, { keepUrl });
             if (cleaned === null) {
                 if (line.trim() !== "") stats.dropped += 1;
                 continue;
+            }
+            // Check for duplicates before writing to disk and batch
+            if (seen.has(cleaned)) {
+                stats.duplicates += 1;
+                continue;
+            }
+            if (seen.size < 2_000_000) {
+                seen.add(cleaned);
             }
             stats.kept += 1;
             writtenLines += 1;
@@ -1955,7 +1966,7 @@ async function processTextFile(ctx, progress, fullPath, name, size) {
  * @param {string} name
  * @param {number} size
  */
-async function processZipFile(ctx, progress, fullPath, name, size) {
+async function processZipFile(ctx, progress, fullPath, name, size, options = {}) {
     // Stage 2: extracting.
     await safeEdit(
         ctx,
@@ -1967,9 +1978,10 @@ async function processZipFile(ctx, progress, fullPath, name, size) {
     );
 
     const buffer = fs.readFileSync(fullPath);
+    const keepUrl = options.keepUrl !== false;
 
     // Stage 3: cleaning.
-    const result = extractAndCleanZip(buffer, { sourceName: name });
+    const result = extractAndCleanZip(buffer, { sourceName: name, keepUrl });
 
     await safeEdit(
         ctx,

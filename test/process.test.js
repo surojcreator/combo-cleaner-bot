@@ -324,3 +324,57 @@ test("/save downloads the replied document to disk and automatically processes i
     }
 });
 
+test("/process on a ULP file checks for duplicates and does not delete the URL", async () => {
+    store.clear(OWNER_CHAT);
+    const tmp = path.join(os.tmpdir(), `ulp-${Date.now()}.txt`);
+    fs.writeFileSync(
+        tmp,
+        [
+            "https://netflix.com/login:john_doe:secret123",
+            "https://netflix.com/login:john_doe:secret123", // duplicate
+            "https://spotify.com/auth:musiclover@gmail.com:pass456",
+            "https://site.com:443", // bare URL dropped
+            "",
+        ].join("\n"),
+        "utf8",
+    );
+
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot);
+        await bot.handleUpdate(command(`/process ${tmp}`));
+
+        assert.equal(await waitFor(() => Boolean(finalReport(api.calls))), true);
+
+        const report = finalReport(api.calls).payload.text;
+        assert.match(report, /CLEAN REPORT/);
+        // Verify duplicates were found and counted
+        assert.match(report, /Duplicates\s+1/);
+
+        // Verify the store retained the full URL
+        const netflixMatch = store.searchLines(OWNER_CHAT, "https://netflix.com");
+        assert.equal(netflixMatch.total, 1);
+        assert.equal(netflixMatch.matches[0], "https://netflix.com/login:john_doe:secret123");
+
+        const spotifyMatch = store.searchLines(OWNER_CHAT, "spotify.com");
+        assert.equal(spotifyMatch.total, 1);
+        assert.equal(spotifyMatch.matches[0], "https://spotify.com/auth:musiclover@gmail.com:pass456");
+
+        // Verify disk output file also kept URLs and deduplicated
+        const diskFileMatch = report.match(/<code>(.*?)<\/code>/);
+        assert.ok(diskFileMatch, "expected disk output path in report");
+        const diskFile = diskFileMatch[1];
+        assert.equal(fs.existsSync(diskFile), true);
+        const diskContent = fs.readFileSync(diskFile, "utf8").trim().split(/\r?\n/);
+        assert.deepEqual(diskContent, [
+            "https://netflix.com/login:john_doe:secret123",
+            "https://spotify.com/auth:musiclover@gmail.com:pass456",
+        ]);
+        fs.rmSync(diskFile, { force: true });
+    } finally {
+        store.clear(OWNER_CHAT);
+        fs.rmSync(tmp, { force: true });
+        await api.close();
+    }
+});
+

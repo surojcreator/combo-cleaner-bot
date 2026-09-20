@@ -146,3 +146,62 @@ test("cleanText can disable dedupe", () => {
     const { lines } = cleanText(input, { dedupe: false });
     assert.equal(lines.length, 2);
 });
+
+test("cleanLine with keepUrl preserves the URL/domain prefix without deleting it", () => {
+    assert.equal(
+        cleanLine("https://rewards.example.co.il/path/:027223395:Wekselma7", { keepUrl: true }),
+        "https://rewards.example.co.il/path/:027223395:Wekselma7",
+    );
+    assert.equal(
+        cleanLine("rewards.example.co.il:weintraubetattoo:weintraube867", { keepUrl: true }),
+        "rewards.example.co.il:weintraubetattoo:weintraube867",
+    );
+    assert.equal(
+        cleanLine("rewards.example.co.il:bodywanted@gmail.com:145871643", { keepUrl: true }),
+        "rewards.example.co.il:bodywanted@gmail.com:145871643",
+    );
+    assert.equal(
+        cleanLine("https://rewards.example.co.il/page 027152230:dani1234", { keepUrl: true }),
+        "https://rewards.example.co.il/page 027152230:dani1234",
+    );
+    assert.equal(
+        cleanLine("https://rewards.example.co.il/|043154756|saarofri2014", { keepUrl: true }),
+        "https://rewards.example.co.il/|043154756|saarofri2014",
+    );
+    assert.equal(
+        cleanLine("https://site.com:bob:secret123", { keepUrl: true }),
+        "https://site.com:bob:secret123",
+    );
+    assert.equal(
+        cleanLine("user@example.com:pass1", { keepUrl: true }),
+        "user@example.com:pass1",
+    );
+});
+
+test("cleanLine with keepUrl still drops bare URLs and lines without credentials", () => {
+    assert.equal(cleanLine("https://example.com:443", { keepUrl: true }), null);
+    assert.equal(cleanLine("example.com:password", { keepUrl: true }), null);
+    assert.equal(cleanLine("www.example.com:8080", { keepUrl: true }), null);
+    assert.equal(cleanLine("just some text", { keepUrl: true }), null);
+    assert.equal(cleanLine("", { keepUrl: true }), null);
+});
+
+test("cleanText with keepUrl keeps URLs and checks for duplicates", () => {
+    const input = [
+        "https://site.com:user@mail.com:pass1",
+        "https://site.com:user@mail.com:pass1", // duplicate
+        "  https://site.com:user@mail.com:pass1  ", // whitespace duplicate
+        "https://other.com:admin:secret",
+        "https://site.com:443", // bare URL dropped
+        "",
+    ].join("\n");
+
+    const { lines, stats } = cleanText(input, { keepUrl: true });
+    assert.deepEqual(lines, [
+        "https://site.com:user@mail.com:pass1",
+        "https://other.com:admin:secret",
+    ]);
+    assert.equal(stats.kept, 2);
+    assert.equal(stats.duplicates, 2);
+    assert.equal(stats.dropped, 1);
+});

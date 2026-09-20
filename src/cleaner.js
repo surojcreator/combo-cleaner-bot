@@ -218,7 +218,8 @@ function extractCandidates(line) {
  * @param {string} rawLine
  * @returns {string|null} normalized `login:password`, or null to drop the line.
  */
-function cleanLine(rawLine) {
+function cleanLine(rawLine, options = {}) {
+    const keepUrl = Boolean(options && options.keepUrl);
     const line = normalizeLine(rawLine);
     if (!line) return null;
 
@@ -235,7 +236,7 @@ function cleanLine(rawLine) {
     for (const { login, password } of candidates) {
         if (!password) continue;
         if (isEmail(login) || isPhone(login)) {
-            return `${login}:${password}`;
+            return keepUrl ? line : `${login}:${password}`;
         }
     }
 
@@ -244,7 +245,24 @@ function cleanLine(rawLine) {
     for (const { login, password } of candidates) {
         if (!password) continue;
         if (isUsername(login, password)) {
-            return `${login}:${password}`;
+            return keepUrl ? line : `${login}:${password}`;
+        }
+    }
+
+    // Pass 3: when keepUrl is enabled, also support shorter or non-standard
+    // usernames (1-3 chars) preceded by a URL or domain, so ULP dumps like
+    // "https://site.com:sam:pass" or "site.com:bob:pass" are kept intact.
+    if (keepUrl) {
+        for (const { login, password } of candidates) {
+            if (!password) continue;
+            if (
+                !SCHEMES.has(login.toLowerCase()) &&
+                !isUrlOrDomain(login) &&
+                !password.startsWith("//") &&
+                login.length >= 1
+            ) {
+                return line;
+            }
         }
     }
 
@@ -255,7 +273,7 @@ function cleanLine(rawLine) {
  * Clean a whole text blob.
  *
  * @param {string} text
- * @param {{ dedupe?: boolean }} [options]
+ * @param {{ dedupe?: boolean, keepUrl?: boolean }} [options]
  * @returns {{ lines: string[], stats: { total: number, kept: number, dropped: number, duplicates: number } }}
  */
 function cleanText(text, options = {}) {
@@ -269,7 +287,7 @@ function cleanText(text, options = {}) {
     let duplicates = 0;
 
     for (const raw of rawLines) {
-        const cleaned = cleanLine(raw);
+        const cleaned = cleanLine(raw, options);
         if (cleaned === null) {
             if (normalizeLine(raw) !== "") dropped += 1;
             continue;

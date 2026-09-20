@@ -234,7 +234,7 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
     if (searcherBot) {
         lines.push(
             `🤖  ${B("ULP Search Relay")}`,
-            `  /ulp <query> [start_date]`,
+            `  ${CODE(escapeHtml("/ulp <query> [start_date]"))}`,
             `  ↳ Auto-detects latest batch date & steps down day-by-day`,
             `  ↳ Relays & ingests dumps with automatic pacing ⏳`,
             "",
@@ -508,7 +508,7 @@ function renderUlpHint(info) {
     return [
         `🚀  ${B("ULP SEARCH RELAY")}  ⚡️`,
         RULE,
-        `${I("Usage:")} ${CODE("/ulp <query> [start_date]")}`,
+        `${I("Usage:")} ${CODE(escapeHtml("/ulp <query> [start_date]"))}`,
         "",
         `  1️⃣ ${B("Target")} \u2014 Sent to ${B(mentionOf(info.searcherBot))}`,
         `  2️⃣ ${B("Smart Batch")} \u2014 Auto-detects latest batch date & steps down day-by-day`,
@@ -581,7 +581,7 @@ function renderUlpEmpty(info) {
         `Tried ${B(`${info.attempts}×`)} with ${B(pacingLabel(info.stepDelayMs))} pacing \u2014 ${B(mentionOf(info.searcherBot))} returned no dumps.`,
         `🎯  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
         "",
-        `${I("Try another query with /ulp <query> 🔄")}`,
+        `${I(`Try another query with ${CODE(escapeHtml("/ulp <query>"))} 🔄`)}`,
     ].join("\n");
 }
 
@@ -664,7 +664,7 @@ function renderServerFiles(info) {
         "",
         RULE,
         `💡 ${I("Clean any raw file:")} ${CODE("/process /var/data/filename.zip")}`,
-        `🔍 ${I("Fast-search cleaned output:")} ${CODE("/lsearch <query>")}`,
+        `🔍 ${I("Fast-search cleaned output:")} ${CODE(escapeHtml("/lsearch <query>"))}`,
     );
     return lines.join("\n");
 }

@@ -46,6 +46,10 @@ async function startFakeApi(opts = {}) {
             } catch {
                 payload = {};
             }
+            if (body && body.includes('name="chat_id"')) {
+                const match = body.match(/name="chat_id"\r?\n\r?\n([^\r\n]+)/);
+                if (match) payload.chat_id = isNaN(match[1]) ? match[1].trim() : Number(match[1].trim());
+            }
             const reply = (status, json) => {
                 res.writeHead(status, { "Content-Type": "application/json" });
                 res.end(JSON.stringify(json));
@@ -80,6 +84,9 @@ async function startFakeApi(opts = {}) {
                     return;
                 case "forwardMessage":
                     reply(200, { ok: true, result: { message_id: 4242, date: now, chat, text: "forwarded" } });
+                    return;
+                case "sendDocument":
+                    reply(200, { ok: true, result: { message_id: 8888, date: now, chat, document: { file_name: "combined.txt" } } });
                     return;
                 default:
                     reply(200, { ok: true, result: true });
@@ -224,7 +231,7 @@ test("ULP flow: sends the query, then forwards the searcher's answer back", asyn
         const card = api.calls.find((c) => c.method === "sendMessage" && c.payload.chat_id === OWNER_CHAT);
         assert.match(card.payload.text, /ULP SEARCH/);
         assert.match(card.payload.text, /htzone\.co\.il/);
-        assert.match(JSON.stringify(card.payload.reply_markup || {}), /ulp:day/);
+        assert.match(JSON.stringify(card.payload.reply_markup || {}), /ulp:stop/);
 
         // The query reaches the searcher bot...
         assert.ok(
@@ -405,6 +412,37 @@ test("ULP flow: userbot day search drives button day-by-day search", async () =>
         assert.equal(searchedDayOptions.query, "testsite.com");
         assert.equal(searchedDayOptions.startDate instanceof Date, true);
         assert.equal(searchedDayOptions.startDate.getDate(), 20);
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+test("ULP flow: automatically delivers combined file and clears batch when search finishes", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    const store = require("../src/store");
+    try {
+        const peer = {
+            kind: "userbot",
+            isReady: () => true,
+            searcherId: SEARCHER_ID,
+            classify: () => "other",
+            send: async () => ({ message_id: 1, chat: { id: SEARCHER_ID } }),
+            searchDayByDay: async () => {
+                store.addLines(OWNER_CHAT, ["user@test.com:pass123", "user2@test.com:pass456"], { site: "testsite.com" });
+                return { status: "done", daysProcessed: 1 };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+        peer.botRef = bot;
+        await bot.handleUpdate(commandUpdate("/ulp testsite.com 20.09.2026"));
+
+        const docCall = api.calls.find((c) => c.method === "sendDocument");
+        assert.ok(docCall, "expected sendDocument to deliver combined file");
+        assert.equal(docCall.payload.chat_id, OWNER_CHAT);
+        assert.equal(store.getLines(OWNER_CHAT).length, 0, "expected batch to be cleared");
         searchbot.resetRuns();
     } finally {
         await api.close();

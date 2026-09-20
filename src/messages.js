@@ -455,18 +455,15 @@ function mentionOf(username) {
  * Scope buttons for the ULP relay.
  * @param {string} [scope]
  */
-function ulpKeyboard(scope = "day") {
-    const mark = (s) => (s === scope ? "\u25CF " : "");
+function ulpKeyboard(status = true) {
+    const isFinished = status === false || status === "stopped" || status === "done" || status === "exhausted";
+    if (isFinished) {
+        return Markup.inlineKeyboard([
+            [Markup.button.callback("🔁 Run again", "ulp:again")],
+        ]);
+    }
     return Markup.inlineKeyboard([
-        [
-            Markup.button.callback(`${mark("day")}\uD83D\uDDD3\uFE0F Day`, "ulp:day"),
-            Markup.button.callback(`${mark("month")}\uD83D\uDDD3\uFE0F Month`, "ulp:month"),
-            Markup.button.callback(`${mark("year")}\uD83D\uDDD3\uFE0F Year`, "ulp:year"),
-        ],
-        [
-            Markup.button.callback("\uD83D\uDD01 Run again", "ulp:again"),
-            Markup.button.callback("\uD83D\uDED1 Stop", "ulp:stop"),
-        ],
+        [Markup.button.callback("🛑 Stop", "ulp:stop")],
     ]);
 }
 
@@ -494,14 +491,12 @@ function renderUlpHint(info) {
     return [
         `\uD83D\uDD0E  ${B("ULP SEARCH RELAY")}`,
         RULE,
-        `${I("Usage:")} ${CODE("/ulp htzone.co.il [day|month|year]")}`,
+        `${I("Usage:")} ${CODE("/ulp <query> [start_date]")}`,
         "",
-        `  1\uFE0F\u20E3 ${B("query")} \u2014 sent to ${B(mentionOf(info.searcherBot))} exactly as you typed it`,
-        `  2\uFE0F\u20E3 ${B("hist:full")} \u2014 right after, for the scope you pick`,
-        `  3\uFE0F\u20E3 ${B("wait")} \u2014 ${B(pacingLabel(info.stepDelayMs))} before every try, up to ${B(String(info.maxTries))} tries`,
-        `  4\uFE0F\u20E3 ${B("forward")} \u2014 every answer comes back here \u2B07\uFE0F`,
-        "",
-        `${I("Documents land with a \uD83E\uDDFC Clean into batch button \u2728")}`,
+        `  1\uFE0F\u20E3 ${B("query")} \u2014 sent to ${B(mentionOf(info.searcherBot))}`,
+        `  2\uFE0F\u20E3 ${B("day-by-day")} \u2014 starts from current date and steps down one by one`,
+        `  3\uFE0F\u20E3 ${B("auto-forward")} \u2014 every result message is forwarded here`,
+        `  4\uFE0F\u20E3 ${B("combined output")} \u2014 when done or stopped, gives combined file and cleans batch \u2728`,
     ].join("\n");
 }
 
@@ -510,7 +505,6 @@ function renderUlpHint(info) {
  * @param {{ query: string, scope: string, searcherBot: string, steps: Array<{ id: string, text: string }>, stepDelayMs: number, maxTries: number, transport?: string }} info
  */
 function renderUlpStart(info) {
-    const histStep = info.steps.find((s) => s.id === "hist");
     const whoRow =
         info.transport === "userbot"
             ? [
@@ -522,14 +516,12 @@ function renderUlpStart(info) {
         `\uD83D\uDD0E  ${B("ULP SEARCH")}`,
         RULE,
         `\uD83C\uDFAF  Query     ${B(escapeHtml(info.query))}`,
-        `\uD83D\uDDD3\uFE0F  History   ${B(escapeHtml(histStep ? histStep.text : `hist:full:${info.scope}`))}`,
+        `\uD83D\uDDD3\uFE0F  Search    ${B("Day-by-day (starting from current date)")}`,
         ...whoRow,
-        `\u23F1\uFE0F  Pacing    ${B(pacingLabel(info.stepDelayMs))} before every try \u00B7 up to ${B(String(info.maxTries))}`,
+        `\u23F1\uFE0F  Pacing    ${B(pacingLabel(info.stepDelayMs))} before every try`,
         "",
-        `\uD83D\uDCE4  ${B("Sending")}`,
-        ...info.steps.map((step, i) => `  ${i + 1}\uFE0F\u20E3 ${CODE(escapeHtml(step.text))}`),
-        "",
-        `${I("Results are forwarded here as they arrive \u2B07\uFE0F")}`,
+        `${I("Results are forwarded and auto-cleaned into batch \u2B07\uFE0F")}`,
+        `${I("When done or stopped, the combined file is delivered automatically \u2728")}`,
     ].join("\n");
 }
 

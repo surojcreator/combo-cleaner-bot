@@ -679,9 +679,10 @@ function createBot(token, meta = {}) {
                 ctx,
                 message.message_id,
                 renderUlpStopped({ query: run.query, scope: run.scope, count: run.results.length }),
-                ulpKeyboard(run.scope),
+                ulpKeyboard("stopped"),
             );
         }
+        await deliverCombinedAndResetBatch(ctx);
     });
 
     // "Clean into batch" on a relayed document. The button lives on our card,
@@ -1048,6 +1049,52 @@ function defaultSleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const activeIngestions = new Map(); // chatId -> Set<Promise<any>>
+
+function trackIngestion(chatId, promise) {
+    if (!chatId || !promise || typeof promise.finally !== "function") return;
+    if (!activeIngestions.has(chatId)) {
+        activeIngestions.set(chatId, new Set());
+    }
+    const set = activeIngestions.get(chatId);
+    set.add(promise);
+    promise.finally(() => {
+        set.delete(promise);
+        if (set.size === 0) activeIngestions.delete(chatId);
+    });
+}
+
+async function waitForIngestions(chatId) {
+    const set = activeIngestions.get(chatId);
+    if (set && set.size > 0) {
+        await Promise.allSettled(Array.from(set));
+    }
+}
+
+const deliveringCombined = new Set();
+
+async function deliverCombinedAndResetBatch(ctx) {
+    const chatId = ctx.chat && ctx.chat.id;
+    if (!chatId || deliveringCombined.has(chatId)) return;
+    deliveringCombined.add(chatId);
+    try {
+        await waitForIngestions(chatId);
+        await new Promise((r) => setTimeout(r, 1200));
+        const lines = store.getLines(chatId);
+        if (lines.length > 0) {
+            await sendCombined(ctx);
+            store.clear(chatId);
+            await safeReply(ctx, "\uD83E\uDDF9 Batch automatically cleaned and reset.");
+        } else {
+            await safeReply(ctx, "\uD83D\uDCED Search completed, but no credentials were found in the batch.");
+        }
+    } catch (err) {
+        console.error("deliverCombinedAndResetBatch failed:", err);
+    } finally {
+        deliveringCombined.delete(chatId);
+    }
+}
+
 /**
  * Parse "/ulp <query> [day|month|year]" arguments.
  * The scope is optional and may also be written first ("/ulp month htzone.co.il"
@@ -1302,20 +1349,23 @@ async function beginUlpRun(ctx, params) {
             sleep,
         });
 
-        const live = searchbot.getRun(chatId);
-        if (live && live.results.length > 0) {
-            result = { status: "results" };
-        } else if (dayRes.status === "stopped") {
-            result = { status: "stopped" };
-        } else {
-            await sleep(Math.min(searchOptions.resultWaitMs || 5000, 5000));
-            const afterWait = searchbot.getRun(chatId);
-            if (afterWait && afterWait.results.length > 0) {
-                result = { status: "results" };
-            } else {
-                result = { status: "exhausted", attempts: dayRes.daysProcessed || daysCount };
-            }
+        clearUlpWindow(ulpWindows, chatId);
+        const finalStatus = dayRes.status === "stopped" ? "stopped" : "done";
+        searchbot.finishRun(chatId, finalStatus);
+        if (card) {
+            await safeEdit(
+                ctx,
+                card.message_id,
+                renderUlpStopped({
+                    query,
+                    scope,
+                    count: (searchbot.getRun(chatId) || {}).results?.length || 0,
+                }),
+                ulpKeyboard(finalStatus),
+            );
         }
+        await deliverCombinedAndResetBatch(ctx);
+        return;
     } else {
         result = await searchbot.runSearch({
             steps,
@@ -1486,14 +1536,15 @@ async function ackSharedResult(ctx, params) {
         const doc = msg.document;
         const size = doc.file_size || 0;
         if (size <= MAX_DOWNLOAD_BYTES) {
-            void ingestDocument(ctx, doc).catch((err) => {
+            const p = ingestDocument(ctx, doc).catch((err) => {
                 console.error("auto ingestDocument failed:", err && err.message ? err.message : err);
             });
+            trackIngestion(chatId, p);
         } else {
             const peer = meta && meta.userbot;
             if (peer && typeof peer.isReady === "function" && peer.isReady()) {
                 const name = doc.file_name || `result-${msg.message_id}.txt`;
-                void peer.downloadMessageToDisk(chatId, msg.message_id, {
+                const p = peer.downloadMessageToDisk(chatId, msg.message_id, {
                     root: localProcessRoot(),
                     fileName: name,
                 })
@@ -1501,6 +1552,7 @@ async function ackSharedResult(ctx, params) {
                     .catch((err) => {
                         console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
                     });
+                trackIngestion(chatId, p);
             }
         }
     }

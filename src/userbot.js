@@ -300,12 +300,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             client.addEventHandler(async (event) => {
                 const msg = event.message;
                 if (!msg || !resultSink) return;
+                const sender = Number(msg.senderId || (msg.peerId && msg.peerId.userId) || 0);
+                if (searcherId && sender && sender !== searcherId) return;
                 try {
                     await resultSink(msg);
                 } catch (err) {
                     log.error("userbot result sink failed:", err && err.message ? err.message : err);
                 }
-            }, new libs.NewMessage({ fromUsers: [searcherId] }));
+            }, new libs.NewMessage({}));
 
             return { id: searcherId, username: cfg.searcher };
         },
@@ -592,6 +594,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
             let currentDate = new Date(startDate.getTime());
             let daysProcessed = 0;
+            let consecutiveMisses = 0;
 
             for (let dayIdx = 0; dayIdx < daysCount; dayIdx++) {
                 if (shouldStop()) return { status: "stopped", daysProcessed };
@@ -674,8 +677,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 if (!folderBtn || !menuMsg) {
                     log.log(`userbot could not find date folder for ${dateStr}`);
                     currentDate = previousDate(currentDate);
+                    consecutiveMisses++;
+                    if (consecutiveMisses >= 3) {
+                        log.log(`userbot no more date folders available, stopping day search`);
+                        break;
+                    }
                     continue;
                 }
+                consecutiveMisses = 0;
 
                 // Click folder button
                 onStatus({
@@ -736,6 +745,25 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         "userbot click hist",
                     );
                     daysProcessed++;
+
+                    // Wait for result message from DumpNews14Bot and forward
+                    await sleep(3500);
+                    if (chatId) {
+                        try {
+                            const latest = await client.getMessages(searchTarget, { limit: 4 });
+                            for (const m of latest) {
+                                if (!m.out && (m.id > (folderView.id || 0) || m.media || m.document)) {
+                                    if (resultSink) {
+                                        await resultSink(m);
+                                    } else {
+                                        await forwardResult(chatId, m);
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            log.log(`userbot post-hist message fetch error: ${err && err.message ? err.message : err}`);
+                        }
+                    }
                 } else {
                     log.log(`userbot could not find hist button in folder for ${dateStr}`);
                 }
@@ -748,7 +776,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         totalDays: daysCount,
                         step: `Waiting before next day…`,
                     });
-                    await sleep(stepDelayMs);
+                    await sleep(Math.max(2000, stepDelayMs - 3500));
                 }
 
                 // Go down one day at a time

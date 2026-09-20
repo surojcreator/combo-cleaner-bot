@@ -53,6 +53,9 @@ const {
     ulpKeyboard,
     ulpResultKeyboard,
     siteEmoji,
+    sitesKeyboard,
+    confirmDomainDeleteKeyboard,
+    tgEmoji,
     B,
     I,
     CODE,
@@ -219,7 +222,53 @@ function createBot(token, meta = {}) {
 
     bot.command("sites", async (ctx) => {
         userPromptState.delete(ctx.chat.id);
-        await safeReply(ctx, renderSites(store.getSiteCounts(ctx.chat.id)), mainKeyboard());
+        const counts = store.getSiteCounts(ctx.chat.id);
+        await safeReply(ctx, renderSites(counts), sitesKeyboard(counts));
+    });
+
+    bot.command(["removedomain", "deldomain", "delsite", "rmdomain"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const domain = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        if (!domain) {
+            const counts = store.getSiteCounts(ctx.chat.id);
+            if (counts.length === 0) {
+                return safeReply(
+                    ctx,
+                    `${tgEmoji("📭")} No sites/domains found in current batch to remove.`,
+                    mainKeyboard()
+                );
+            }
+            userPromptState.set(ctx.chat.id, { action: "remove_domain" });
+            return safeReply(
+                ctx,
+                [
+                    `${tgEmoji("🗑️")}  ${B("REMOVE DOMAIN FROM BATCH")}  ${tgEmoji("⚡️")}`,
+                    RULE,
+                    `Please tap a domain below to remove it, or reply with the domain name:`,
+                    `Example: ${CODE("netflix.com")}`,
+                ].join("\n"),
+                sitesKeyboard(counts)
+            );
+        }
+        const res = store.removeDomain(ctx.chat.id, domain);
+        const counts = store.getSiteCounts(ctx.chat.id);
+        if (res.removed === 0) {
+            return safeReply(
+                ctx,
+                `${tgEmoji("⚠️")} No credentials found matching ${CODE(escapeHtml(domain))} in active batch.`,
+                sitesKeyboard(counts)
+            );
+        }
+        return safeReply(
+            ctx,
+            [
+                `${tgEmoji("🗑️")}  ${B("DOMAIN PURGED")}  ${tgEmoji("⚡️")}`,
+                RULE,
+                `Successfully removed ${B(num(res.removed))} credentials matching ${CODE(escapeHtml(domain))}.`,
+                `Remaining batch credentials: ${B(num(res.remaining))}.`,
+            ].join("\n"),
+            sitesKeyboard(counts)
+        );
     });
 
     bot.command("preview", async (ctx) => {
@@ -1334,24 +1383,27 @@ function createBot(token, meta = {}) {
                     if (isText) {
                         if (doc.size > 80 * 1024 * 1024) {
                             const rl = readline.createInterface({
-                                input: fs.createReadStream(fullPath, { encoding: "utf8" }),
+                                input: fs.createReadStream(fullPath, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
                                 crlfDelay: Infinity,
                             });
                             let batch = [];
                             let fileAdded = 0;
+                            let countedInFile = false;
                             const site = sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
                             for await (const line of rl) {
                                 batch.push(line);
                                 if (batch.length >= 25000) {
                                     const res = extractAndCleanText(batch.join("\n"), { keepUrl: true });
-                                    const r = store.addLines(ctx.chat.id, res.lines, site);
+                                    const r = store.addLines(ctx.chat.id, res.lines, site, { countFile: !countedInFile });
+                                    countedInFile = true;
                                     fileAdded += r.added;
                                     batch = [];
                                 }
                             }
                             if (batch.length > 0) {
                                 const res = extractAndCleanText(batch.join("\n"), { keepUrl: true });
-                                const r = store.addLines(ctx.chat.id, res.lines, site);
+                                const r = store.addLines(ctx.chat.id, res.lines, site, { countFile: !countedInFile });
+                                countedInFile = true;
                                 fileAdded += r.added;
                             }
                             totalLinesAdded += fileAdded;
@@ -1526,16 +1578,88 @@ function createBot(token, meta = {}) {
 
     // Inline button: Sites
     bot.action("sites", async (ctx) => {
-        await ctx.answerCbQuery("\uD83D\uDCE1 Loading sites\u2026").catch(() => { });
+        await ctx.answerCbQuery("📡 Loading sites…").catch(() => { });
+        const counts = store.getSiteCounts(ctx.chat.id);
         try {
-            await ctx.editMessageText(renderSites(store.getSiteCounts(ctx.chat.id)), {
+            await ctx.editMessageText(renderSites(counts), {
                 parse_mode: "HTML",
                 disable_web_page_preview: true,
-                ...mainKeyboard(),
+                ...sitesKeyboard(counts),
             });
         } catch {
-            await safeReply(ctx, renderSites(store.getSiteCounts(ctx.chat.id)), mainKeyboard());
+            await safeReply(ctx, renderSites(counts), sitesKeyboard(counts));
         }
+    });
+
+    // Inline button: site:del:ask:<site>
+    bot.action(/^site:del:ask:(.+)$/, async (ctx) => {
+        const domain = ctx.match[1];
+        await ctx.answerCbQuery().catch(() => {});
+        await safeReply(
+            ctx,
+            `⚠️ Are you sure you want to remove all credentials matching ${CODE(escapeHtml(domain))} from the batch?`,
+            confirmDomainDeleteKeyboard(domain)
+        );
+    });
+
+    // Inline button: site:del:confirm:<site>
+    bot.action(/^site:del:confirm:(.+)$/, async (ctx) => {
+        const domain = ctx.match[1];
+        await ctx.answerCbQuery(`Removing ${domain}…`).catch(() => {});
+        const res = store.removeDomain(ctx.chat.id, domain);
+        const counts = store.getSiteCounts(ctx.chat.id);
+        await safeReply(
+            ctx,
+            [
+                `${tgEmoji("🗑️")}  ${B("DOMAIN REMOVED")}  ${tgEmoji("⚡️")}`,
+                RULE,
+                `Removed ${B(num(res.removed))} credentials matching domain ${CODE(escapeHtml(domain))}.`,
+                `Remaining batch credentials: ${B(num(res.remaining))}.`,
+            ].join("\n"),
+            sitesKeyboard(counts)
+        );
+    });
+
+    // Inline button: site:del:prompt
+    bot.action("site:del:prompt", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => {});
+        userPromptState.set(ctx.chat.id, { action: "remove_domain" });
+        await safeReply(
+            ctx,
+            [
+                `${tgEmoji("🗑️")}  ${B("ENTER DOMAIN TO REMOVE")}  ${tgEmoji("⚡️")}`,
+                RULE,
+                `Reply with the domain name you wish to remove from the current batch.`,
+                `Example: ${CODE("netflix.com")} or ${CODE("gmail.com")}`,
+            ].join("\n"),
+            Markup.inlineKeyboard([
+                [Markup.button.callback("❌ Cancel", "sites")],
+            ])
+        );
+    });
+
+    // Inline button: site:page:<page>
+    bot.action(/^site:page:(\d+)$/, async (ctx) => {
+        const page = parseInt(ctx.match[1], 10) || 0;
+        await ctx.answerCbQuery().catch(() => {});
+        const counts = store.getSiteCounts(ctx.chat.id);
+        try {
+            await ctx.editMessageText(renderSites(counts), {
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+                ...sitesKeyboard(counts, page),
+            });
+        } catch {
+            await safeReply(ctx, renderSites(counts), sitesKeyboard(counts, page));
+        }
+    });
+
+    // Inline button: site:view:<site>
+    bot.action(/^site:view:(.+)$/, async (ctx) => {
+        const domain = ctx.match[1];
+        await ctx.answerCbQuery(`Searching for ${domain}…`).catch(() => {});
+        const res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), domain, 20);
+        await safeReply(ctx, renderSearch(domain, res), searchResultKeyboard(domain, res.total));
     });
 
     // Inline button: Preview
@@ -1830,6 +1954,32 @@ function createBot(token, meta = {}) {
                     ctx,
                     `📅 ${B("Search duration set to")} ${B(`${parsed} Day(s)`)}!`,
                     ulpMenuKeyboard(parsed, customDomains)
+                );
+                return;
+            }
+
+            if (prompt.action === "remove_domain") {
+                const domain = input.trim();
+                userPromptState.delete(ctx.chat.id);
+                const res = store.removeDomain(ctx.chat.id, domain);
+                const counts = store.getSiteCounts(ctx.chat.id);
+                if (res.removed === 0) {
+                    await safeReply(
+                        ctx,
+                        `${tgEmoji("⚠️")} No credentials found matching ${CODE(escapeHtml(domain))} in active batch.`,
+                        sitesKeyboard(counts)
+                    );
+                    return;
+                }
+                await safeReply(
+                    ctx,
+                    [
+                        `${tgEmoji("🗑️")}  ${B("DOMAIN PURGED")}  ${tgEmoji("⚡️")}`,
+                        RULE,
+                        `Successfully removed ${B(num(res.removed))} credentials matching ${CODE(escapeHtml(domain))}.`,
+                        `Remaining batch credentials: ${B(num(res.remaining))}.`,
+                    ].join("\n"),
+                    sitesKeyboard(counts)
                 );
                 return;
             }
@@ -2776,7 +2926,7 @@ async function relaySearcherMessage(ctx, params) {
             const res = extractAndCleanText(msg.text, { keepUrl: false });
             if (res.lines.length > 0) {
                 const site = sanitizeSiteSlug(run.query) || "cleaned";
-                store.addLines(chatId, res.lines, site);
+                store.addLines(chatId, res.lines, site, { isTextResponse: true });
             }
         }
         if (msg.document) {
@@ -2841,7 +2991,7 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
                 site = sanitizeSiteSlug(result.site) || site;
             }
             if (result.lines.length > 0) {
-                const added = store.addLines(chatId, result.lines, site);
+                const added = store.addLines(chatId, result.lines, site, { isTextResponse: true });
                 return { lines: result.lines.length, added: added.added, duplicates: added.duplicates, site };
             }
         }
@@ -2940,7 +3090,7 @@ async function ackSharedResult(ctx, params) {
             const res = extractAndCleanText(rawText, { keepUrl: false });
             if (res.lines.length > 0) {
                 const site = sanitizeSiteSlug(query) || "cleaned";
-                store.addLines(chatId, res.lines, site);
+                store.addLines(chatId, res.lines, site, { isTextResponse: true });
             }
         }
     }
@@ -3219,7 +3369,7 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
     let countedFile = false;
     const outputPath = processedOutputPath(name, chatId);
     const partialPath = `${outputPath}.partial`;
-    const output = fs.createWriteStream(partialPath, { encoding: "utf8", highWaterMark: 1024 * 1024 });
+    const output = fs.createWriteStream(partialPath, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 });
     let writtenLines = 0;
     const seen = new Set();
     const pool = getSharedPool();
@@ -3227,7 +3377,7 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
     const PARALLEL_CHUNK = 25000;
 
     const rl = readline.createInterface({
-        input: fs.createReadStream(fullPath, { encoding: "utf8", highWaterMark: 1024 * 1024 }),
+        input: fs.createReadStream(fullPath, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
         crlfDelay: Infinity,
     });
 

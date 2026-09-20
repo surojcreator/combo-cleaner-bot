@@ -86,17 +86,20 @@ function addLines(chatId, lines, site, options = {}) {
             capped = true;
             break;
         }
-        if (chat.lines.has(line)) {
-            duplicates += 1;
-            continue;
-        }
+        const prevSize = chat.lines.size;
         chat.lines.add(line);
-        added += 1;
+        if (chat.lines.size > prevSize) {
+            added += 1;
+        } else {
+            duplicates += 1;
+        }
     }
 
     chat.totalKept += added;
-    if (options.countFile !== false) chat.files += 1;
-    if (site) {
+    if (options.countFile === true || (options.countFile !== false && lines.length > 0 && !options.isTextResponse)) {
+        chat.files += 1;
+    }
+    if (site && added > 0) {
         // Track *lines* per site (not files) for the /sites breakdown.
         chat.sites.set(site, (chat.sites.get(site) || 0) + added);
     }
@@ -212,6 +215,11 @@ function clear(chatId) {
     const existed = chats.has(chatId);
     chats.delete(chatId);
     return existed;
+}
+
+function clearAll() {
+    chats.clear();
+    lastCombinedCache.clear();
 }
 
 /**
@@ -348,6 +356,38 @@ function setUlpDays(chatId, days) {
     return d;
 }
 
+/**
+ * Remove all lines containing a domain from a chat's batch, and update site counts.
+ * @param {number} chatId
+ * @param {string} domain
+ * @returns {{ removed: number, remaining: number }}
+ */
+function removeDomain(chatId, domain) {
+    const chat = chats.get(chatId);
+    if (!chat) return { removed: 0, remaining: 0 };
+    const target = String(domain || "").trim().toLowerCase();
+    if (!target) return { removed: 0, remaining: chat.lines.size };
+
+    let removed = 0;
+    for (const line of chat.lines) {
+        if (line.toLowerCase().includes(target)) {
+            chat.lines.delete(line);
+            removed++;
+        }
+    }
+
+    // Clean matching site entries
+    for (const [site] of chat.sites.entries()) {
+        if (site.toLowerCase().includes(target) || target.includes(site.toLowerCase())) {
+            chat.sites.delete(site);
+        }
+    }
+
+    chat.totalKept = Math.max(0, chat.totalKept - removed);
+    chat.updatedAt = Date.now();
+    return { removed, remaining: chat.lines.size };
+}
+
 module.exports = {
     addLines,
     getStats,
@@ -357,6 +397,8 @@ module.exports = {
     getRawChat,
     searchLines,
     clear,
+    clearAll,
+    removeDomain,
     setLastCombined,
     getLastCombined,
     clearLastCombined,

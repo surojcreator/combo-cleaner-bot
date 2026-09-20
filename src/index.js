@@ -56,6 +56,7 @@ async function registerCommands() {
             { command: "sites", description: "\uD83C\uDF10 Per-site breakdown" },
             { command: "preview", description: "\uD83D\uDC41 Peek at sample lines" },
             { command: "name", description: "\uD83C\uDFF7\uFE0F Force a custom filename" },
+            { command: "search", description: "\uD83D\uDD0E Search your batch" },
             { command: "clear", description: "\uD83E\uDDF9 Start a fresh batch" },
             { command: "ping", description: "\uD83C\uDFD3 Latency & uptime" },
             { command: "help", description: "\u2753 How to use the bot" },

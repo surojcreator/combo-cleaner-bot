@@ -393,6 +393,32 @@ function renderPreview(sample, total) {
     ].join("\n");
 }
 
+
+/**
+ * /search reply - matching lines from the batch, capped for Telegram limits.
+ * Shows at most 20 hits inline; if there are more, use /combine + search locally.
+ */
+function renderSearch(query, result) {
+    const shown = result.matches.length;
+    if (result.total === 0) {
+        return [
+            "\uD83D\uDD0E  " + B("SEARCH"),
+            RULE,
+            "No matches for " + CODE(escapeHtml(query)) + " \u2014 try another term \uD83D\uDD0D",
+        ].join("\n");
+    }
+    const out = [
+        "\uD83D\uDD0E  " + B("SEARCH") + " \u00B7 " + B(num(result.total)) + " hit" + (result.total === 1 ? "" : "s") + " for " + CODE(escapeHtml(query)),
+        RULE,
+    ];
+    for (const line of result.matches) out.push(CODE(escapeHtml(line)));
+    if (result.total > shown) {
+        out.push("", I("Showing first " + shown + " of " + num(result.total) + " \u2014 /combine for the full file \uD83D\uDCE6"));
+    }
+    out.push("", I("Credentials are sensitive \u2014 delete this message when done \uD83D\uDDD1\uFE0F"));
+    return out.join("\n");
+}
+
 module.exports = {
     renderHelp,
     renderStats,
@@ -400,6 +426,7 @@ module.exports = {
     renderFileReport,
     renderPing,
     renderPreview,
+    renderSearch,
     renderWelcomeBack,
     escapeHtml,
     mainKeyboard,

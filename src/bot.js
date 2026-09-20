@@ -11,6 +11,7 @@ const {
     renderFileReport,
     renderPing,
     renderPreview,
+    renderSearch,
     mainKeyboard,
     confirmClearKeyboard,
     afterCombineKeyboard,
@@ -97,6 +98,29 @@ function createBot(token, meta = {}) {
 
     bot.command("preview", async (ctx) => {
         await sendPreview(ctx);
+    });
+
+    bot.command("search", async (ctx) => {
+        const query = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        if (!query) {
+            await safeReply(
+                ctx,
+                [
+                    `\uD83D\uDD0E  ${B("SEARCH")}`,
+                    "",
+                    `${I("Usage: /search gmail.com \u2014 finds matches in your batch")}`,
+                    `${I("At least 2 characters, searches everything you uploaded \uD83D\uDCE6")}`,
+                ].join("\n"),
+                mainKeyboard(),
+            );
+            return;
+        }
+        if (query.length < 2) {
+            await safeReply(ctx, "\u26A0\uFE0F Query too short \u2014 give me at least 2 characters.", mainKeyboard());
+            return;
+        }
+        const result = store.searchLines(ctx.chat.id, query, 20);
+        await safeReply(ctx, renderSearch(query, result), mainKeyboard());
     });
 
     bot.command("ping", async (ctx) => {
@@ -321,6 +345,7 @@ function createBot(token, meta = {}) {
                 `Forward or upload a ${B(".zip")} \u2014 or a text file`,
                 `(${B(".txt")}, .csv, .log, \u2026) and I'll clean it \uD83E\uDDFC`,
                 "",
+                `${I("Or just type /search your-query to search your batch \uD83D\uDD0E")}`,
                 `${I("Tip: if a forwarded zip arrived as text, download")}`,
                 `${I("it first, then send it as a document \uD83D\uDCC2")}`,
             ].join("\n"),

@@ -146,6 +146,29 @@ function getRawChat(chatId) {
 }
 
 /**
+ * Search a chat's stored lines for a case-insensitive substring match.
+ *
+ * @param {number} chatId
+ * @param {string} query
+ * @param {number} [limit] max matches to return
+ * @returns {{ total: number, matches: string[] }}
+ */
+function searchLines(chatId, query, limit = 20) {
+    const chat = chats.get(chatId);
+    const q = String(query || "").toLowerCase();
+    if (!chat || !q) return { total: 0, matches: [] };
+    const matches = [];
+    let total = 0;
+    for (const line of chat.lines) {
+        if (line.toLowerCase().includes(q)) {
+            total += 1;
+            if (matches.length < limit) matches.push(line);
+        }
+    }
+    return { total, matches };
+}
+
+/**
  * Get all stored lines for a chat.
  * @param {number} chatId
  * @returns {string[]}
@@ -174,6 +197,7 @@ module.exports = {
     getSites,
     getSiteCounts,
     getRawChat,
+    searchLines,
     clear,
     MAX_LINES_PER_CHAT,
 };

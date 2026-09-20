@@ -380,3 +380,36 @@ test("ordinary messages still reach the normal handlers", async () => {
     }
 });
 
+test("ULP flow: userbot day search drives button day-by-day search", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        let searchedDayOptions = null;
+        const peer = {
+            kind: "userbot",
+            isReady: () => true,
+            searcherId: SEARCHER_ID,
+            classify: () => "other",
+            send: async () => ({ message_id: 1, chat: { id: SEARCHER_ID } }),
+            searchDayByDay: async (opts) => {
+                searchedDayOptions = opts;
+                opts.onStatus({ day: "20.09.2026", attempt: 1, totalDays: 5, step: "Clicking folder:20.09.2026:0" });
+                return { status: "done", daysProcessed: 5 };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+        peer.botRef = bot;
+        await bot.handleUpdate(commandUpdate("/ulp testsite.com 20.09.2026"));
+
+        assert.ok(searchedDayOptions, "expected searchDayByDay to be called");
+        assert.equal(searchedDayOptions.query, "testsite.com");
+        assert.equal(searchedDayOptions.startDate instanceof Date, true);
+        assert.equal(searchedDayOptions.startDate.getDate(), 20);
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+

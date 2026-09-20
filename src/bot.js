@@ -10,6 +10,7 @@ const { sanitizeSiteSlug, detectSite } = require("./sites");
 const { cleanLine } = require("./cleaner");
 const searchbot = require("./searchbot");
 const store = require("./store");
+const userbot = require("./userbot");
 const {
     renderStats,
     renderSites,
@@ -99,6 +100,54 @@ function num(n) {
  */
 function buildOutput(lines) {
     return lines.join("\n") + (lines.length ? "\n" : "");
+}
+
+/** Convert MTProto /save failures into actionable, HTML-safe guidance. */
+function renderSaveError(err) {
+    const raw = String((err && (err.errorMessage || err.message)) || err || "Unknown error");
+    if (raw.includes("ACCOUNT_CANNOT_SEE_CHAT")) {
+        return [
+            `\uD83D\uDEAB  ${B("ACCOUNT CANNOT SEE THIS GROUP")}`,
+            RULE,
+            `The Telegram account behind ${B("TELEGRAM_SESSION")} could not resolve this group.`,
+            "",
+            `\u2022 Confirm ${B("@bullxgod")} is still a member of this exact group`,
+            `\u2022 Open the group once from that account so it appears in its chat list`,
+            `\u2022 Forward the file again, then reply with ${CODE("/save@ulpsorter69bot")}`,
+        ].join("\n");
+    }
+    if (raw.includes("MESSAGE_NOT_VISIBLE")) {
+        return [
+            `\uD83D\uDC40  ${B("MESSAGE NOT VISIBLE TO THE ACCOUNT")}`,
+            RULE,
+            `The group is visible, but the MTProto account cannot fetch that replied message.`,
+            "",
+            `Forward the original file into the group again, then reply directly to the new message with`,
+            CODE("/save@ulpsorter69bot"),
+        ].join("\n");
+    }
+    if (raw.includes("REPLIED_MESSAGE_HAS_NO_MEDIA")) {
+        return [
+            `\uD83D\uDCCC  ${B("REPLY HAS NO DOWNLOADABLE FILE")}`,
+            RULE,
+            `Reply directly to a Telegram ${B("document/file")}, not a text message, album caption, or service message.`,
+        ].join("\n");
+    }
+    if (/FILE_TOO_BIG|FILE_PART|LIMIT/i.test(raw)) {
+        return [
+            `\uD83D\uDCE6  ${B("TELEGRAM FILE LIMIT REACHED")}`,
+            RULE,
+            `Telegram refused the account download. This bypasses the bot's 20 MB cap, but not Telegram's own user-file limit.`,
+            `${I("For very large files, upload directly to /var/data and run /process.")}`,
+        ].join("\n");
+    }
+    return [
+        `\uD83D\uDCA5  ${B("TELEGRAM DOWNLOAD FAILED")}`,
+        RULE,
+        `${I(escapeHtml(raw))}`,
+        "",
+        `Confirm the MTProto account is a member of this group, open the group from that account once, and try again.`,
+    ].join("\n");
 }
 
 /**
@@ -327,17 +376,45 @@ function createBot(token, meta = {}) {
     // account can see the replied-to group message and stream its document
     // directly to /var/data, then the existing /process pipeline takes over.
     bot.command("save", async (ctx) => {
-        const replied = ctx.message && ctx.message.reply_to_message;
+        let replied = ctx.message && ctx.message.reply_to_message;
+        let sourceMessageId = replied && replied.message_id;
+        let originalName = replied && replied.document && (replied.document.file_name || `telegram-${sourceMessageId}.bin`);
+        let docSize = replied && replied.document && replied.document.file_size;
+
+        const peer = meta.userbot;
+
+        // If Bot API didn't deliver the replied document (e.g. Telegram Bot Privacy Mode in private groups),
+        // use the MTProto userbot to inspect the chat's actual replied message or recent documents!
+        if ((!replied || !replied.document) && peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.findRepliedOrRecentDocument === "function") {
+            try {
+                const found = await peer.findRepliedOrRecentDocument(
+                    ctx.chat.id,
+                    ctx.message && ctx.message.message_id,
+                    sourceMessageId,
+                );
+                if (found) {
+                    sourceMessageId = found.messageId;
+                    originalName = found.fileName || `telegram-${sourceMessageId}.bin`;
+                    docSize = found.size;
+                    replied = { message_id: found.messageId, document: { file_name: originalName, file_size: found.size } };
+                }
+            } catch (err) {
+                console.error("userbot findRepliedOrRecentDocument failed:", err && err.message ? err.message : err);
+            }
+        }
+
         if (!replied || !replied.document) {
             await safeReply(
                 ctx,
                 [
-                    `\uD83D\uDCCC  ${B("REPLY TO A FILE")}`,
+                    `📌  ${B("REPLY TO A FILE")}`,
                     RULE,
-                    `Forward the document into a private group containing:`,
-                    `  \u2022 your MTProto user account`,
-                    `  \u2022 ${B(meta.botUsername ? `@${escapeHtml(meta.botUsername)}` : "this bot")}`,
-                    `Then reply to the document with ${CODE("/save")}.`,
+                    `Forward or upload the document into a private group containing:`,
+                    `  • your MTProto user account`,
+                    `  • ${B(meta.botUsername ? `@${escapeHtml(meta.botUsername)}` : "this bot")}`,
+                    `Then reply directly to the document with ${CODE("/save")}.`,
+                    "",
+                    `${I("Tip: If you already replied and see this message, make the bot an admin in this group or disable Group Privacy in @BotFather so Telegram sends replies directly.")}`,
                     "",
                     `${I("Direct private forwarding to the bot stays limited to 20 MB. Telegram itself usually caps user files at 2 GB, or 4 GB with Premium.")}`,
                 ].join("\n"),
@@ -345,11 +422,10 @@ function createBot(token, meta = {}) {
             return;
         }
 
-        const peer = meta.userbot;
         if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
             await safeReply(
                 ctx,
-                `\u26A0\uFE0F  ${B("Account downloader is offline")}\nSet TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SESSION, then redeploy.`,
+                `⚠️  ${B("Account downloader is offline")}\nSet TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SESSION, then redeploy.`,
             );
             return;
         }
@@ -358,8 +434,8 @@ function createBot(token, meta = {}) {
             return;
         }
 
-        const sourceMessageId = replied.message_id;
-        const originalName = replied.document.file_name || `telegram-${sourceMessageId}.bin`;
+        sourceMessageId = replied.message_id;
+        originalName = (replied.document && replied.document.file_name) || originalName || `telegram-${sourceMessageId}.bin`;
         const status = await ctx.reply(
             [
                 `\uD83D\uDCE5  ${B("DOWNLOADING FROM TELEGRAM")}`,
@@ -412,13 +488,7 @@ function createBot(token, meta = {}) {
             .catch((err) => safeEdit(
                 ctx,
                 status.message_id,
-                [
-                    `\uD83D\uDCA5  ${B("TELEGRAM DOWNLOAD FAILED")}`,
-                    RULE,
-                    `${I(escapeHtml(err.message || String(err)))}`,
-                    "",
-                    `Make sure the MTProto account is a member of this group and can see the replied-to message.`,
-                ].join("\n"),
+                renderSaveError(err),
             ))
             .finally(() => localJobs.delete(ctx.chat.id));
     });
@@ -559,6 +629,7 @@ function createBot(token, meta = {}) {
         await beginUlpRun(ctx, {
             query: parsed.query,
             scope: parsed.scope,
+            startDate: parsed.startDate || null,
             searchOptions,
             meta,
             ulpStartedAt,
@@ -642,7 +713,7 @@ function createBot(token, meta = {}) {
             return;
         }
         if (ctx.message && isSearcherForward(ctx, meta, searchOptions)) {
-            await ackSharedResult(ctx, { searchOptions });
+            await ackSharedResult(ctx, { searchOptions, meta });
             return;
         }
         return next();
@@ -990,7 +1061,18 @@ function parseUlpArg(raw, fallbackScope = "day") {
     const parts = String(raw || "").split(/\s+/).filter(Boolean);
     if (parts.length === 0) return { query: null, scope: fallbackScope };
 
-    const lastScope = searchbot.normalizeScope(parts[parts.length - 1], null);
+    const lastToken = parts[parts.length - 1];
+    const parsedDate = userbot.parseDmyDate(lastToken);
+    if (parsedDate && parts.length > 1) {
+        const queryParts = parts.slice(0, -1);
+        return {
+            query: searchbot.normalizeQuery(queryParts.join(" ")),
+            scope: "day",
+            startDate: parsedDate,
+        };
+    }
+
+    const lastScope = searchbot.normalizeScope(lastToken, null);
     // "/ulp month" — a scope without a query: show the usage card instead.
     if (lastScope && parts.length === 1) return { query: null, scope: lastScope };
 
@@ -1066,8 +1148,8 @@ function pickTransport(meta, searchOptions, ctx) {
  */
 function isSearcherForward(ctx, meta, searchOptions, marker = "#ulp") {
     const msg = ctx.message;
-    if (!msg || ctx.from.is_bot) return false;
-    const expected = String(searchOptions.botUsername || "").toLowerCase();
+    if (!msg || (ctx.from && ctx.from.is_bot)) return false;
+    const expected = String((searchOptions && searchOptions.botUsername) || "").replace(/^@+/, "").toLowerCase();
 
     const origin =
         msg.forward_origin ||
@@ -1078,8 +1160,15 @@ function isSearcherForward(ctx, meta, searchOptions, marker = "#ulp") {
         const user = origin.sender_user;
         const username = String(user.username || "").toLowerCase();
         const metaId = meta && meta.searcherBotId;
-        if (user.is_bot && expected && username === expected) return true;
-        if (user.is_bot && metaId && user.id === metaId) return true;
+        if (expected && username === expected) return true;
+        if (metaId && Number(user.id) === Number(metaId)) return true;
+    }
+
+    if (origin && (origin.type === "channel" || origin.type === "chat") && origin.chat) {
+        const chatUsername = String(origin.chat.username || "").toLowerCase();
+        const metaId = meta && meta.searcherBotId;
+        if (expected && chatUsername === expected) return true;
+        if (metaId && Number(origin.chat.id) === Number(metaId)) return true;
     }
 
     if (typeof msg.text === "string" && msg.text.startsWith(marker + " ")) return true;
@@ -1117,7 +1206,7 @@ function clearUlpWindow(windows, chatId) {
  * }} params
  */
 async function beginUlpRun(ctx, params) {
-    const { query, scope, searchOptions, meta, ulpStartedAt, ulpWindows, cardMessageId = null } = params;
+    const { query, scope, startDate = null, searchOptions, meta, ulpStartedAt, ulpWindows, cardMessageId = null } = params;
     const chatId = ctx.chat.id;
     const sleep = params.sleep || defaultSleep;
 
@@ -1185,39 +1274,83 @@ async function beginUlpRun(ctx, params) {
     if (timer && typeof timer.unref === "function") timer.unref();
     ulpWindows.set(chatId, timer);
 
-    const result = await searchbot.runSearch({
-        steps,
-        sleep,
-        stepDelayMs: searchOptions.stepDelayMs,
-        resultWaitMs: searchOptions.resultWaitMs,
-        maxTries: searchOptions.maxTries,
-        classify: transport.classify,
-        send: async (step) => {
-            const sent = await transport.send(step.text);
-            if (sent && sent.chat) searchbot.rememberOwner(sent.chat.id, chatId);
-            return sent;
-        },
-        hasResults: () => {
-            const live = searchbot.getRun(chatId);
-            return Boolean(live && live.results.length > 0);
-        },
-        shouldStop: () => !searchbot.isRunning(chatId),
-        onEvent: (event) => {
-            if (event.type !== "sent" || !card) return;
-            safeEdit(
-                ctx,
-                card.message_id,
-                renderUlpProgress({
-                    searcherBot: searchOptions.botUsername,
-                    attempt: event.attempt,
-                    maxTries: searchOptions.maxTries,
-                    sends: event.sends,
-                    stepDelayMs: searchOptions.stepDelayMs,
-                }),
-                ulpKeyboard(scope),
-            );
-        },
-    });
+    let result;
+    if (scope === "day" && transport.kind === "userbot" && typeof transport.userbot.searchDayByDay === "function") {
+        const daysCount = searchOptions.daysCount || 5;
+        const dayRes = await transport.userbot.searchDayByDay({
+            query,
+            daysCount,
+            startDate: startDate || new Date(),
+            chatId,
+            stepDelayMs: searchOptions.stepDelayMs,
+            shouldStop: () => !searchbot.isRunning(chatId),
+            onStatus: (st) => {
+                if (!card) return;
+                safeEdit(
+                    ctx,
+                    card.message_id,
+                    renderUlpProgress({
+                        searcherBot: searchOptions.botUsername,
+                        attempt: st.attempt,
+                        maxTries: st.totalDays,
+                        sends: [`${st.day}: ${st.step}`],
+                        stepDelayMs: searchOptions.stepDelayMs,
+                    }),
+                    ulpKeyboard(scope),
+                );
+            },
+            sleep,
+        });
+
+        const live = searchbot.getRun(chatId);
+        if (live && live.results.length > 0) {
+            result = { status: "results" };
+        } else if (dayRes.status === "stopped") {
+            result = { status: "stopped" };
+        } else {
+            await sleep(Math.min(searchOptions.resultWaitMs || 5000, 5000));
+            const afterWait = searchbot.getRun(chatId);
+            if (afterWait && afterWait.results.length > 0) {
+                result = { status: "results" };
+            } else {
+                result = { status: "exhausted", attempts: dayRes.daysProcessed || daysCount };
+            }
+        }
+    } else {
+        result = await searchbot.runSearch({
+            steps,
+            sleep,
+            stepDelayMs: searchOptions.stepDelayMs,
+            resultWaitMs: searchOptions.resultWaitMs,
+            maxTries: searchOptions.maxTries,
+            classify: transport.classify,
+            send: async (step) => {
+                const sent = await transport.send(step.text);
+                if (sent && sent.chat) searchbot.rememberOwner(sent.chat.id, chatId);
+                return sent;
+            },
+            hasResults: () => {
+                const live = searchbot.getRun(chatId);
+                return Boolean(live && live.results.length > 0);
+            },
+            shouldStop: () => !searchbot.isRunning(chatId),
+            onEvent: (event) => {
+                if (event.type !== "sent" || !card) return;
+                safeEdit(
+                    ctx,
+                    card.message_id,
+                    renderUlpProgress({
+                        searcherBot: searchOptions.botUsername,
+                        attempt: event.attempt,
+                        maxTries: searchOptions.maxTries,
+                        sends: event.sends,
+                        stepDelayMs: searchOptions.stepDelayMs,
+                    }),
+                    ulpKeyboard(scope),
+                );
+            },
+        });
+    }
 
     // Results keep landing in the open window — nothing else to do here.
     if (result.status === "results") return;
@@ -1299,12 +1432,13 @@ async function relaySearcherMessage(ctx, params) {
 /**
  * Acknowledge a result the account bypass already shared into this chat:
  * it is *here*, so only tools are added (header once per run + clean button).
+ * When a document is attached, it is automatically processed and cleaned into the batch.
  *
  * @param {import('telegraf').Context} ctx
- * @param {{ searchOptions: ReturnType<typeof searchbot.loadOptions> }} params
+ * @param {{ searchOptions: ReturnType<typeof searchbot.loadOptions>, meta?: any }} params
  */
 async function ackSharedResult(ctx, params) {
-    const { searchOptions } = params;
+    const { searchOptions, meta = {} } = params;
     const msg = ctx.message;
     const chatId = ctx.chat.id;
     const hasDocument = Boolean(msg.document);
@@ -1345,6 +1479,30 @@ async function ackSharedResult(ctx, params) {
         );
     } catch (err) {
         console.error("shared-result card failed:", err.message);
+    }
+
+    // Auto-clean the document immediately into the batch!
+    if (hasDocument) {
+        const doc = msg.document;
+        const size = doc.file_size || 0;
+        if (size <= MAX_DOWNLOAD_BYTES) {
+            void ingestDocument(ctx, doc).catch((err) => {
+                console.error("auto ingestDocument failed:", err && err.message ? err.message : err);
+            });
+        } else {
+            const peer = meta && meta.userbot;
+            if (peer && typeof peer.isReady === "function" && peer.isReady()) {
+                const name = doc.file_name || `result-${msg.message_id}.txt`;
+                void peer.downloadMessageToDisk(chatId, msg.message_id, {
+                    root: localProcessRoot(),
+                    fileName: name,
+                })
+                    .then((saved) => processFile(ctx, saved.path))
+                    .catch((err) => {
+                        console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
+                    });
+            }
+        }
     }
 }
 
@@ -1710,6 +1868,7 @@ module.exports = {
     resolveLocalInput,
     searchTextFile,
     processedOutputPath,
+    renderSaveError,
 };
 
 

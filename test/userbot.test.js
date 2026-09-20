@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createBot, parseUlpArg, isSearcherMessage, isSearcherForward, pickTransport } = require("../src/bot");
+const { createBot, parseUlpArg, isSearcherMessage, isSearcherForward, pickTransport, renderSaveError } = require("../src/bot");
 const userbot = require("../src/userbot");
 
 test("userbot config reads env and spots missing secrets", () => {
@@ -97,4 +97,39 @@ test("downloadPath always stays under the requested root", () => {
     assert.equal(path.dirname(output), root);
     assert.match(path.basename(output), /^dump_42_.*\.txt$/);
 });
+
+test("renderSaveError gives specific group and message guidance", () => {
+    assert.match(renderSaveError(new Error("ACCOUNT_CANNOT_SEE_CHAT:-100123")), /ACCOUNT CANNOT SEE THIS GROUP/);
+    assert.match(renderSaveError(new Error("MESSAGE_NOT_VISIBLE:42")), /MESSAGE NOT VISIBLE/);
+    assert.match(renderSaveError(new Error("REPLIED_MESSAGE_HAS_NO_MEDIA:42")), /NO DOWNLOADABLE FILE/);
+});
+
+test("date formatting and decrementing utilities work correctly", () => {
+    const d = new Date(2026, 8, 20); // 20.09.2026
+    assert.equal(userbot.formatDateDmy(d), "20.09.2026");
+
+    const prev = userbot.previousDate(d);
+    assert.equal(userbot.formatDateDmy(prev), "19.09.2026");
+
+    const parsed = userbot.parseDmyDate("20.09.2026");
+    assert.equal(parsed.getDate(), 20);
+    assert.equal(parsed.getMonth(), 8);
+    assert.equal(parsed.getFullYear(), 2026);
+});
+
+test("isSearcherForward handles @ in username and chat/channel forwards", () => {
+    const searchOptions = { botUsername: "@DumpNews14Bot" };
+    const meta = { searcherBotId: 8844520471 };
+
+    const chanForward = {
+        from: { is_bot: false, id: 999 },
+        message: {
+            message_id: 10,
+            forward_origin: { type: "channel", chat: { id: 8844520471, username: "DumpNews14Bot" } },
+            document: { file_id: "doc1" },
+        },
+    };
+    assert.equal(isSearcherForward(chanForward, meta, searchOptions), true);
+});
+
 

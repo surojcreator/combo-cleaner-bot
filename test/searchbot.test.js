@@ -259,6 +259,17 @@ test("parseUlpArg reads the query and optional scope", () => {
     assert.deepEqual(parseUlpArg(""), { query: null, scope: "day" });
     assert.deepEqual(parseUlpArg("month"), { query: null, scope: "month" });
     assert.deepEqual(parseUlpArg("a"), { query: null, scope: "day" }); // too short
+
+    const withDate = parseUlpArg("htzone.co.il 20.09.2026");
+    assert.equal(withDate.query, "htzone.co.il");
+    assert.equal(withDate.scope, "day");
+    assert.equal(withDate.startDate instanceof Date, true);
+    assert.equal(withDate.startDate.getDate(), 20);
+    assert.equal(withDate.startDate.getMonth(), 8);
+
+    const withShortDate = parseUlpArg("htzone.co.il 20.9.2026");
+    assert.equal(withShortDate.query, "htzone.co.il");
+    assert.equal(withShortDate.startDate.getDate(), 20);
 });
 
 test("isSearcherMessage only matches the configured searcher bot", () => {

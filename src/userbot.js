@@ -78,12 +78,14 @@ function classifyUserbotError(err) {
  */
 function loadLibs() {
     // eslint-disable-next-line global-require
-    const { TelegramClient } = require("teleproto");
+    const { TelegramClient, Api } = require("teleproto");
     // eslint-disable-next-line global-require
     const { StringSession } = require("teleproto/sessions");
     // eslint-disable-next-line global-require
     const { NewMessage } = require("teleproto/events");
-    return { TelegramClient, StringSession, NewMessage };
+    // eslint-disable-next-line global-require
+    const { getPeerId } = require("teleproto/Utils");
+    return { TelegramClient, Api, StringSession, NewMessage, getPeerId };
 }
 
 /**
@@ -126,6 +128,50 @@ function downloadPath(root, rawName, messageId) {
     return path.join(path.resolve(root), `${stem}_${messageId}_${stamp}${ext}`);
 }
 
+/** Normalize Telegram's marked peer ids (including -100... supergroups). */
+function markedPeerId(value) {
+    return String(value == null ? "" : value).trim();
+}
+
+/**
+ * Format a Date object to "DD.MM.YYYY" (e.g. "20.09.2026").
+ * @param {Date} [date]
+ * @returns {string}
+ */
+function formatDateDmy(date = new Date()) {
+    const d = String(date.getDate()).padStart(2, "0");
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const y = String(date.getFullYear());
+    return `${d}.${m}.${y}`;
+}
+
+/**
+ * Return a new Date representing the previous day.
+ * @param {Date} date
+ * @returns {Date}
+ */
+function previousDate(date) {
+    const prev = new Date(date.getTime());
+    prev.setDate(prev.getDate() - 1);
+    return prev;
+}
+
+/**
+ * Parse "DD.MM.YYYY" or "DD/MM/YYYY" to Date.
+ * @param {string} str
+ * @returns {Date|null}
+ */
+function parseDmyDate(str) {
+    const m = String(str || "").trim().match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+    if (!m) return null;
+    const day = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10) - 1;
+    const year = parseInt(m[3], 10);
+    const d = new Date(year, month, day);
+    if (Number.isNaN(d.getTime())) return null;
+    return d;
+}
+
 module.exports = {
     ULP_MARKER,
     CALL_TIMEOUT_MS,
@@ -136,6 +182,10 @@ module.exports = {
     withTimeout,
     safeDownloadName,
     downloadPath,
+    markedPeerId,
+    formatDateDmy,
+    previousDate,
+    parseDmyDate,
     createUserbot,
 };
 
@@ -145,10 +195,10 @@ module.exports = {
  * @param {ReturnType<typeof loadConfig>} cfg
  * @param {{ log?: Console, timeoutMs?: number }} [opts]
  */
-function createUserbot(cfg, opts = {}) {
+function createUserbot(cfg = loadConfig(), opts = {}) {
     const log = opts.log || console;
     const timeoutMs = opts.timeoutMs || CALL_TIMEOUT_MS;
-    const { TelegramClient, StringSession } = loadLibs();
+    const { TelegramClient, Api, StringSession, getPeerId } = loadLibs();
 
     /** @type {any} */
     let client = null;
@@ -162,6 +212,47 @@ function createUserbot(cfg, opts = {}) {
      * @type {((msg: any) => Promise<void>|void)|null}
      */
     let resultSink = null;
+
+    const peerCache = new Map();
+
+    /**
+     * Resolve a Bot API chat id to the account-specific InputPeer/access hash.
+     * Numeric -100... ids often aren't resolvable until dialogs warm the cache.
+     * @param {number|string} chatId
+     */
+    async function resolveChatPeer(chatId) {
+        const wanted = markedPeerId(chatId);
+        if (peerCache.has(wanted)) {
+            return peerCache.get(wanted);
+        }
+        try {
+            const ent = await client.getInputEntity(chatId);
+            peerCache.set(wanted, ent);
+            return ent;
+        } catch (firstError) {
+            log.log(`userbot peer cache miss for ${wanted}; loading dialogs`);
+            const dialogs = await withTimeout(
+                client.getDialogs({ limit: undefined }),
+                Math.max(timeoutMs, 60_000),
+                "userbot getDialogs",
+            );
+            for (const dialog of dialogs) {
+                let candidate = "";
+                try {
+                    candidate = markedPeerId(getPeerId(dialog.inputEntity, true));
+                } catch {
+                    candidate = dialog.id ? markedPeerId(dialog.id) : "";
+                }
+                if (candidate === wanted || (dialog.id && markedPeerId(dialog.id) === wanted)) {
+                    peerCache.set(wanted, dialog.inputEntity);
+                    return dialog.inputEntity;
+                }
+            }
+            const err = new Error(`ACCOUNT_CANNOT_SEE_CHAT:${wanted}`);
+            err.cause = firstError;
+            throw err;
+        }
+    }
 
     return {
         kind: "userbot",
@@ -253,14 +344,18 @@ function createUserbot(cfg, opts = {}) {
             const root = path.resolve(options.root);
             fs.mkdirSync(root, { recursive: true });
 
+            const inputPeer = await resolveChatPeer(chatId);
             const messages = await withTimeout(
-                client.getMessages(chatId, { ids: Number(messageId) }),
+                client.getMessages(inputPeer, { ids: Number(messageId) }),
                 timeoutMs,
                 "userbot getMessages",
             );
             const message = messages && messages[0];
-            if (!message || !message.media) {
-                throw new Error("REPLIED_MESSAGE_HAS_NO_MEDIA");
+            if (!message) {
+                throw new Error(`MESSAGE_NOT_VISIBLE:${messageId}`);
+            }
+            if (!message.media) {
+                throw new Error(`REPLIED_MESSAGE_HAS_NO_MEDIA:${messageId}`);
             }
 
             const actualName =
@@ -297,9 +392,16 @@ function createUserbot(cfg, opts = {}) {
 
         async forwardResult(toChatId, msg) {
             if (!ready || !client) return "skipped";
+            let targetPeer = toChatId;
+            try {
+                targetPeer = await resolveChatPeer(toChatId);
+            } catch (err) {
+                log.log(`userbot resolveChatPeer fallback for ${toChatId}: ${err && err.message ? err.message : err}`);
+            }
+
             try {
                 await withTimeout(
-                    client.forwardMessages(toChatId, { messages: [msg.id], fromPeer: searcherEntity }),
+                    client.forwardMessages(targetPeer, { messages: [msg.id], fromPeer: searcherEntity }),
                     timeoutMs,
                     "userbot forwardMessages",
                 );
@@ -315,7 +417,7 @@ function createUserbot(cfg, opts = {}) {
                 if (buffer) {
                     const name = (msg.file && msg.file.name) || "ulp-result.bin";
                     await withTimeout(
-                        client.sendFile(toChatId, {
+                        client.sendFile(targetPeer, {
                             file: buffer,
                             caption: `${ULP_MARKER} ${name}`,
                             forceDocument: true,
@@ -328,13 +430,332 @@ function createUserbot(cfg, opts = {}) {
             }
             if (text) {
                 await withTimeout(
-                    client.sendMessage(toChatId, { message: `${ULP_MARKER} ${text}` }),
+                    client.sendMessage(targetPeer, { message: `${ULP_MARKER} ${text}` }),
                     timeoutMs,
                     "userbot copy",
                 );
                 return "copy";
             }
             return "skipped";
+        },
+
+        /**
+         * Find a document from the replied message or the most recent message in the chat.
+         * Resolves the Telegram Privacy Mode issue where Bot API strips reply_to_message.
+         *
+         * @param {number|string} chatId
+         * @param {number} commandMessageId
+         * @param {number} [preferredReplyId]
+         * @returns {Promise<{ messageId: number, fileName: string, size: number, document: any } | null>}
+         */
+        async findRepliedOrRecentDocument(chatId, commandMessageId, preferredReplyId) {
+            if (!ready || !client) throw new Error("USERBOT_NOT_READY");
+            const inputPeer = await resolveChatPeer(chatId);
+
+            let targetReplyId = preferredReplyId ? Number(preferredReplyId) : null;
+
+            if (!targetReplyId && commandMessageId) {
+                try {
+                    const messages = await withTimeout(
+                        client.getMessages(inputPeer, { ids: Number(commandMessageId) }),
+                        timeoutMs,
+                        "userbot getMessages cmd",
+                    );
+                    const cmdMsg = messages && messages[0];
+                    if (cmdMsg && cmdMsg.replyTo && cmdMsg.replyTo.replyToMsgId) {
+                        targetReplyId = cmdMsg.replyTo.replyToMsgId;
+                    }
+                } catch (err) {
+                    log.error("userbot failed to fetch command message:", err && err.message ? err.message : err);
+                }
+            }
+
+            if (targetReplyId) {
+                try {
+                    const messages = await withTimeout(
+                        client.getMessages(inputPeer, { ids: targetReplyId }),
+                        timeoutMs,
+                        "userbot getMessages reply",
+                    );
+                    const msg = messages && messages[0];
+                    if (msg && msg.media) {
+                        const fileName =
+                            (msg.file && msg.file.name) ||
+                            (msg.media.document && msg.media.document.attributes &&
+                                msg.media.document.attributes.find((a) => a && a.fileName) &&
+                                msg.media.document.attributes.find((a) => a && a.fileName).fileName) ||
+                            `telegram-${targetReplyId}.bin`;
+                        const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
+                        return {
+                            messageId: targetReplyId,
+                            fileName: safeDownloadName(fileName),
+                            size,
+                            document: msg.media.document || msg.file,
+                        };
+                    }
+                } catch (err) {
+                    log.error("userbot failed to fetch replied message:", err && err.message ? err.message : err);
+                }
+            }
+
+            // Fallback: Scan recent messages in chat for the newest document
+            try {
+                const recent = await withTimeout(
+                    client.getMessages(inputPeer, { limit: 15 }),
+                    timeoutMs,
+                    "userbot getRecentMessages",
+                );
+                for (const msg of recent || []) {
+                    if (msg.id === Number(commandMessageId)) continue;
+                    if (msg.media && (msg.media.document || msg.file)) {
+                        const fileName =
+                            (msg.file && msg.file.name) ||
+                            (msg.media.document && msg.media.document.attributes &&
+                                msg.media.document.attributes.find((a) => a && a.fileName) &&
+                                msg.media.document.attributes.find((a) => a && a.fileName).fileName) ||
+                            `telegram-${msg.id}.bin`;
+                        const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
+                        return {
+                            messageId: msg.id,
+                            fileName: safeDownloadName(fileName),
+                            size,
+                            document: msg.media.document || msg.file,
+                        };
+                    }
+                }
+            } catch (err) {
+                log.error("userbot failed to scan recent messages:", err && err.message ? err.message : err);
+            }
+
+            return null;
+        },
+
+        /**
+         * Click an inline callback button on a message from the searcher bot.
+         * @param {number} messageId
+         * @param {string|Buffer} callbackData
+         */
+        async clickButton(messageId, callbackData) {
+            if (!ready || !client) throw new Error("USERBOT_NOT_READY");
+            const dataBuf = Buffer.isBuffer(callbackData) ? callbackData : Buffer.from(String(callbackData));
+            return await withTimeout(
+                client.invoke(new Api.messages.GetBotCallbackAnswer({
+                    peer: searcherEntity || cfg.searcher,
+                    msgId: Number(messageId),
+                    data: dataBuf,
+                })),
+                timeoutMs,
+                "userbot clickButton",
+            );
+        },
+
+        /**
+         * Perform automated day-by-day search on @DumpNews14Bot via inline buttons.
+         * Starts with startDate (formatted as DD.MM.YYYY, e.g. 20.09.2026) and steps backward.
+         * Clicks folder:DD.MM.YYYY:P then hist:DD.MM.YYYY.
+         *
+         * @param {{
+         *   query: string,
+         *   daysCount?: number,
+         *   startDate?: Date,
+         *   chatId?: number|string,
+         *   stepDelayMs?: number,
+         *   shouldStop?: () => boolean,
+         *   onStatus?: (status: { day: string, attempt: number, totalDays: number, step: string }) => void,
+         *   sleep?: (ms: number) => Promise<void>,
+         * }} options
+         */
+        async searchDayByDay(options) {
+            if (!ready || !client) throw new Error("USERBOT_NOT_READY");
+            const {
+                query,
+                daysCount = 5,
+                startDate = new Date(),
+                chatId = null,
+                stepDelayMs = 7000,
+                shouldStop = () => false,
+                onStatus = () => {},
+                sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+            } = options;
+
+            const searchTarget = searcherEntity || cfg.searcher;
+
+            // Step 0: Ensure the query is active in the searcher bot
+            if (shouldStop()) return { status: "stopped", daysProcessed: 0 };
+            onStatus({ day: formatDateDmy(startDate), attempt: 1, totalDays: daysCount, step: `Setting query "${query}"` });
+            await withTimeout(
+                client.sendMessage(searchTarget, { message: query }),
+                timeoutMs,
+                "userbot send query",
+            );
+            await sleep(Math.min(stepDelayMs, 3000));
+
+            let currentDate = new Date(startDate.getTime());
+            let daysProcessed = 0;
+
+            for (let dayIdx = 0; dayIdx < daysCount; dayIdx++) {
+                if (shouldStop()) return { status: "stopped", daysProcessed };
+
+                const dateStr = formatDateDmy(currentDate);
+                onStatus({
+                    day: dateStr,
+                    attempt: dayIdx + 1,
+                    totalDays: daysCount,
+                    step: `Opening folder for ${dateStr}`,
+                });
+
+                // Send /start to get the date folder menu
+                await withTimeout(
+                    client.sendMessage(searchTarget, { message: "/start" }),
+                    timeoutMs,
+                    "userbot send /start",
+                );
+                await sleep(2000);
+
+                if (shouldStop()) return { status: "stopped", daysProcessed };
+
+                // Get the menu message with buttons
+                let menuMsg = null;
+                let folderBtn = null;
+                let pageAttempts = 0;
+
+                while (pageAttempts < 4 && !folderBtn) {
+                    const recentMsgs = await withTimeout(
+                        client.getMessages(searchTarget, { limit: 5 }),
+                        timeoutMs,
+                        "userbot getMessages menu",
+                    );
+                    menuMsg = recentMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows);
+                    if (!menuMsg) break;
+
+                    // Search for folder button with dateStr
+                    for (const row of menuMsg.replyMarkup.rows) {
+                        for (const btn of row.buttons) {
+                            const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
+                            if (dataStr.startsWith(`folder:${dateStr}:`) || (btn.text && btn.text.includes(dateStr))) {
+                                folderBtn = { text: btn.text, data: dataStr };
+                                break;
+                            }
+                        }
+                        if (folderBtn) break;
+                    }
+
+                    // If not found on this page, try clicking next page "➡️"
+                    if (!folderBtn) {
+                        let nextPageBtn = null;
+                        for (const row of menuMsg.replyMarkup.rows) {
+                            for (const btn of row.buttons) {
+                                const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
+                                if (dataStr.startsWith("menu:page:") && (btn.text === "➡️" || dataStr !== "menu:page:0")) {
+                                    nextPageBtn = { text: btn.text, data: dataStr };
+                                    break;
+                                }
+                            }
+                            if (nextPageBtn) break;
+                        }
+                        if (nextPageBtn) {
+                            await withTimeout(
+                                client.invoke(new Api.messages.GetBotCallbackAnswer({
+                                    peer: searchTarget,
+                                    msgId: Number(menuMsg.id),
+                                    data: Buffer.from(nextPageBtn.data),
+                                })),
+                                timeoutMs,
+                                "userbot nextPage",
+                            );
+                            await sleep(2000);
+                            pageAttempts++;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                if (!folderBtn || !menuMsg) {
+                    log.log(`userbot could not find date folder for ${dateStr}`);
+                    currentDate = previousDate(currentDate);
+                    continue;
+                }
+
+                // Click folder button
+                onStatus({
+                    day: dateStr,
+                    attempt: dayIdx + 1,
+                    totalDays: daysCount,
+                    step: `Clicking folder:${dateStr}`,
+                });
+                await withTimeout(
+                    client.invoke(new Api.messages.GetBotCallbackAnswer({
+                        peer: searchTarget,
+                        msgId: Number(menuMsg.id),
+                        data: Buffer.from(folderBtn.data),
+                    })),
+                    timeoutMs,
+                    "userbot click folder",
+                );
+                await sleep(2500);
+
+                if (shouldStop()) return { status: "stopped", daysProcessed };
+
+                // Get the updated folder view and find hist button
+                const folderMsgs = await withTimeout(
+                    client.getMessages(searchTarget, { limit: 5 }),
+                    timeoutMs,
+                    "userbot getMessages folder",
+                );
+                const folderView = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuMsg;
+                let histBtn = null;
+
+                if (folderView && folderView.replyMarkup && folderView.replyMarkup.rows) {
+                    for (const row of folderView.replyMarkup.rows) {
+                        for (const btn of row.buttons) {
+                            const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
+                            if (dataStr.startsWith(`hist:${dateStr}`) || dataStr.includes("hist:")) {
+                                histBtn = { text: btn.text, data: dataStr };
+                                break;
+                            }
+                        }
+                        if (histBtn) break;
+                    }
+                }
+
+                if (histBtn) {
+                    onStatus({
+                        day: dateStr,
+                        attempt: dayIdx + 1,
+                        totalDays: daysCount,
+                        step: `Clicking hist:${dateStr}`,
+                    });
+                    await withTimeout(
+                        client.invoke(new Api.messages.GetBotCallbackAnswer({
+                            peer: searchTarget,
+                            msgId: Number(folderView.id),
+                            data: Buffer.from(histBtn.data),
+                        })),
+                        timeoutMs,
+                        "userbot click hist",
+                    );
+                    daysProcessed++;
+                } else {
+                    log.log(`userbot could not find hist button in folder for ${dateStr}`);
+                }
+
+                // Wait before moving to previous day to comply with DumpNews14Bot rate limiter
+                if (dayIdx < daysCount - 1) {
+                    onStatus({
+                        day: dateStr,
+                        attempt: dayIdx + 1,
+                        totalDays: daysCount,
+                        step: `Waiting before next day…`,
+                    });
+                    await sleep(stepDelayMs);
+                }
+
+                // Go down one day at a time
+                currentDate = previousDate(currentDate);
+            }
+
+            return { status: "done", daysProcessed };
         },
     };
 }

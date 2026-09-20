@@ -716,7 +716,7 @@ function renderUlpSharedResult(info) {
         `\uD83D\uDCE6  ${num(info.count)} result message${info.count === 1 ? "" : "s"} in this run \u2014 more may follow \u2B07\uFE0F`,
         "",
         info.hasDocument
-            ? `${I("Tap \uD83E\uDDFC below to sort it into the batch \u2728")}`
+            ? `${I("Auto-processing into batch now \u2728")}`
             : `${I("Long text results: save them as a .txt and I'll take it from there \uD83D\uDCC2")}`,
     ].join("\n");
 }

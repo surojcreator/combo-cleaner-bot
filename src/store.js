@@ -20,7 +20,7 @@ const chats = new Map();
 function getChat(chatId) {
     let chat = chats.get(chatId);
     if (!chat) {
-        chat = { lines: new Set(), totalKept: 0, files: 0, sites: new Map(), updatedAt: Date.now() };
+        chat = { lines: new Set(), totalKept: 0, files: 0, sites: new Map(), customName: null, updatedAt: Date.now() };
         chats.set(chatId, chat);
         evictIfNeeded();
     }
@@ -138,6 +138,14 @@ function getSiteCounts(chatId) {
 }
 
 /**
+ * Direct access to the raw chat object (for customName overrides).
+ * @param {number} chatId
+ */
+function getRawChat(chatId) {
+    return chats.get(chatId) || null;
+}
+
+/**
  * Get all stored lines for a chat.
  * @param {number} chatId
  * @returns {string[]}
@@ -165,6 +173,7 @@ module.exports = {
     getLines,
     getSites,
     getSiteCounts,
+    getRawChat,
     clear,
     MAX_LINES_PER_CHAT,
 };

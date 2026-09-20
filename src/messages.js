@@ -185,7 +185,7 @@ function renderHelp(botUsername, batch = null) {
         "",
         `\uD83D\uDCE5  ${B("How it works")}`,
         `  1\uFE0F\u20E3 Send a ${B(".zip")} or ${B(".txt")} (forwarded is fine!)`,
-        `  2\uFE0F\u20E3 I keep emails \uD83D\uDCE7 & numbers \uD83D\uDC9F \u2014 drop URLs \u274C`,
+        `  2\uFE0F\u20E3 I keep emails, cards & numbers \u2014 drop URLs \u274C`,
         `  3\uFE0F\u20E3 Everything piles into your batch, deduped`,
         `  4\uFE0F\u20E3 Tap ${B("\uD83D\uDCE6 Get combined file")} when ready`,
         "",

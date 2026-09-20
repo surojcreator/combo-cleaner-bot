@@ -107,6 +107,45 @@ function createBot(token, meta = {}) {
         await safeReply(ctx, renderPing({ latencyMs, uptimeSec }));
     });
 
+    bot.command("name", async (ctx) => {
+        const arg = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const chat = store.getRawChat(ctx.chat.id);
+        if (!arg) {
+            const current = chat && chat.customName ? chat.customName : null;
+            await safeReply(
+                ctx,
+                [
+                    `\uD83C\uDFF7\uFE0F  ${B("File naming")}`,
+                    current
+                        ? `Locked to ${B(escapeHtml(current))} \uD83D\uDD12`
+                        : `Auto-detecting the site \uD83E\uDD16`,
+                    "",
+                    `${I("Usage: /name netflix.com \u2014 forces the filename")}`,
+                    `${I("Send /name clear to restore auto-detect")}`,
+                ].join("\n"),
+                mainKeyboard(),
+            );
+            return;
+        }
+        if (arg.toLowerCase() === "clear") {
+            if (chat) chat.customName = null;
+            await safeReply(ctx, "\uD83E\uDDFC Auto-detection restored \u2728", mainKeyboard());
+            return;
+        }
+        const clean = sanitizeSiteSlug(arg) || arg.toLowerCase();
+        if (chat) chat.customName = clean;
+        await safeReply(
+            ctx,
+            [
+                `\uD83C\uDFF7\uFE0F  ${B("Custom name locked!")} \uD83D\uDD12`,
+                `Future files will be named ${B(escapeHtml(clean))}`,
+                "",
+                `${I("Send /name clear to go back to auto-detect")}`,
+            ].join("\n"),
+            mainKeyboard(),
+        );
+    });
+
     bot.command("clear", async (ctx) => {
         const stats = store.getStats(ctx.chat.id);
         if (!stats || stats.size === 0) {
@@ -466,6 +505,9 @@ async function sendCombined(ctx) {
     }
     lastCombineAt.set(chatId, now);
 
+    const chat = store.getRawChat(chatId);
+    const customName = chat && chat.customName ? chat.customName : null;
+
     const lines = store.getLines(chatId);
     if (lines.length === 0) {
         await safeReply(
@@ -480,13 +522,29 @@ async function sendCombined(ctx) {
         return;
     }
 
-    const sites = store.getSites(chatId);
-    const base = sites.length === 1 ? sites[0] : "combolist";
-    const emoji = sites.length === 1 ? siteEmoji(base) : "\uD83C\uDF10";
-    const siteLine =
-        sites.length === 1
-            ? `${emoji}  ${B(escapeHtml(base))}`
-            : `${emoji}  ${B(num(sites.length))} sites mixed`;
+    let base;
+    let siteLine;
+    if (customName) {
+        base = customName;
+        siteLine = `\uD83D\uDD12  ${B(escapeHtml(base))}  ${I("(custom name)")}`;
+    } else {
+        const sites = store.getSites(chatId);
+        if (sites.length === 1) {
+            base = sites[0];
+        } else if (sites.length === 0) {
+            base = "combolist";
+        } else {
+            // Multiple sites: name after the biggest one instead of a generic
+            // "combolist" — keeps the filename meaningful.
+            const counts = store.getSiteCounts(chatId);
+            base = counts.length > 0 ? counts[0].site : "combolist";
+        }
+        const emoji = siteEmoji(base);
+        siteLine =
+            sites.length === 1
+                ? `${emoji}  ${B(escapeHtml(base))}`
+                : `${emoji}  ${B(num(sites.length))} sites mixed`;
+    }
 
     const buffer = Buffer.from(buildOutput(lines), "utf8");
     const stamp = new Date().toISOString().slice(0, 10);

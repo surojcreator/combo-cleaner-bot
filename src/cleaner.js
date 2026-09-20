@@ -7,6 +7,8 @@
  *
  *   user@example.com:password123                 -> user@example.com:password123
  *   15551234567:password123                      -> 15551234567:password123
+ *   4111111111111111|08|27|123|XX/IN| [VISA/CREDIT/NA] {BANK}| Name
+ *                                                -> 4111111111111111|08|27|123
  *   https://site.com/path/:027223395:Wekselma7   -> 027223395:Wekselma7
  *   https://site.com/page 027152230:dani1234     -> 027152230:dani1234
  *   site.com:user@mail.com:pass                  -> user@mail.com:pass
@@ -77,6 +79,72 @@ const IPV4_RE =
  */
 function normalizeLine(line) {
     return line.replace(/^\uFEFF/, "").trim();
+}
+
+/**
+ * Normalize a 2- or 4-digit expiry year down to YY.
+ * @param {string} y raw year field (digits only)
+ * @returns {string|null} two-digit year, or null if invalid
+ */
+function normalizeYear(y) {
+    const d = String(y).replace(/\D/g, "");
+    if (/^\d{2}$/.test(d)) return d;
+    if (/^\d{4}$/.test(d)) return d.slice(2); // 2027 -> 27
+    return null;
+}
+
+/**
+ * Try to extract a card line shaped like:
+ *   number|mm|yy|cvv|XX/IN| [VISA/CREDIT/NA] {BANK ...}| Name ...
+ * and strip it down to just `number|mm|yy|cvv`.
+ *
+ * Tolerates `|` (primary) as well as `:` / `;` separators, stray spaces,
+ * dashes/spaces inside the PAN, a 1-digit month ("3" -> "03") and a
+ * 4-digit year ("2027" -> "27"). Scans every consecutive 4-field window so
+ * URL/domain prefixes or other junk before the card don't break it.
+ *
+ * @param {string} line already-trimmed line
+ * @returns {string|null} normalized `number|mm|yy|cvv`, or null
+ */
+function cleanCcLine(line) {
+    if (!line || !/[|:;]/.test(line)) {
+        return null;
+    }
+    // Split on any of the common separators, keeping the fields in order.
+    const fields = String(line).split(/[|;:]/).map((f) => f.trim());
+    if (fields.length < 4) return null;
+
+    for (let i = 0; i + 3 < fields.length; i++) {
+        const rawPan = fields[i];
+        const rawMm = fields[i + 1];
+        const rawYy = fields[i + 2];
+        const rawCvv = fields[i + 3];
+
+        // PAN: 12-19 digits (allow spaces/dashes inside, e.g. "4111 1111 1111 1111").
+        const pan = rawPan.replace(/[\s-]/g, "");
+        if (!/^\d{12,19}$/.test(pan)) continue;
+
+        // Month: 1-12, 1 or 2 digits.
+        const mmDigits = rawMm.replace(/\D/g, "");
+        if (!/^\d{1,2}$/.test(mmDigits)) continue;
+        const mmNum = parseInt(mmDigits, 10);
+        if (mmNum < 1 || mmNum > 12) continue;
+        const mm = mmDigits.padStart(2, "0");
+
+        // Year: 2 digits, or 4 digits (normalized to last 2).
+        const yy = normalizeYear(rawYy);
+        if (yy === null) continue;
+
+        // CVV: 3-4 digits. Take leading digits so "123 " or "1234" both work,
+        // but reject when the field has no leading 3-4 digit run.
+        const cvvMatch = rawCvv.match(/^(\d{3,4})\b/);
+        if (!cvvMatch) continue;
+        const cvv = cvvMatch[1];
+
+        return `${pan}|${mm}|${yy}|${cvv}`;
+    }
+
+    return null;
 }
 
 /**
@@ -154,6 +222,11 @@ function cleanLine(rawLine) {
     const line = normalizeLine(rawLine);
     if (!line) return null;
 
+    // Pass 0: card dumps like `number|mm|yy|cvv|...extras` strip down to
+    // just the first four fields, normalized to `number|mm|yy|cvv`.
+    const cc = cleanCcLine(line);
+    if (cc !== null) return cc;
+
     const candidates = extractCandidates(line);
 
     // Pass 1: prefer an email or number login anywhere on the line. Scanning the
@@ -225,6 +298,7 @@ function cleanText(text, options = {}) {
 
 module.exports = {
     cleanLine,
+    cleanCcLine,
     cleanText,
     isUrlOrDomain,
     isEmail,

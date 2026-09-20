@@ -179,6 +179,7 @@ function renderSaveError(err) {
  * @param {{ botUsername?: string }} [meta]
  */
 function createBot(token, meta = {}) {
+    botApiCustomEmojiRejected = false;
     const bot = new Telegraf(token, {
         handlerTimeout: 10 * 60 * 1000,
         // meta.telegram lets tests and local Bot API server users override the
@@ -582,14 +583,18 @@ function createBot(token, meta = {}) {
             return;
         }
         const file = rawFiles[idx];
-        const status = await ctx.reply(
-            `⚡️  ${B("MULTI-CORE CLEANING STARTED")}\n📄  ${escapeHtml(file.name)} (${humanSize(file.size)})\n🚀  Saturating all CPU cores…`,
-            { parse_mode: "HTML" },
+        const status = await safeReply(
+            ctx,
+            `⚡️  ${B("MULTI-CORE CLEANING STARTED")}\n📄  ${escapeHtml(file.name)} (${humanSize(file.size)})\n🚀  Saturating all CPU cores…`
         );
         try {
-            await processFile(ctx, file.path, status.message_id);
+            await processFile(ctx, file.path, status && status.message_id);
         } catch (err) {
-            await safeEdit(ctx, status.message_id, `💥  ${B("Cleaning failed")}: ${escapeHtml(err.message)}`, mainKeyboard());
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, `💥  ${B("Cleaning failed")}: ${escapeHtml(err.message)}`, mainKeyboard());
+            } else {
+                await safeReply(ctx, `💥  ${B("Cleaning failed")}: ${escapeHtml(err.message)}`, mainKeyboard());
+            }
         }
     });
 
@@ -600,13 +605,15 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, "📭 No raw files to clean in server vault.", mainKeyboard());
             return;
         }
-        const status = await ctx.reply(
-            `⚡️  ${B("BATCH CLEANING")} ${rawFiles.length} file(s) across all CPU cores…`,
-            { parse_mode: "HTML" },
+        const status = await safeReply(
+            ctx,
+            `⚡️  ${B("BATCH CLEANING")} ${rawFiles.length} file(s) across all CPU cores…`
         );
         for (let i = 0; i < rawFiles.length; i++) {
             const f = rawFiles[i];
-            await safeEdit(ctx, status.message_id, `🧼  ${B(`[${i + 1}/${rawFiles.length}] Cleaning`)} ${escapeHtml(f.name)}…`);
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, `🧼  ${B(`[${i + 1}/${rawFiles.length}] Cleaning`)} ${escapeHtml(f.name)}…`);
+            }
             try {
                 await processFile(ctx, f.path, null);
             } catch (err) {
@@ -664,15 +671,23 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, "⚠️ File not found.", mainKeyboard());
             return;
         }
-        const status = await ctx.reply(
-            `🔎  ${B("MULTI-CORE SEARCH")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`,
-            { parse_mode: "HTML" },
+        const status = await safeReply(
+            ctx,
+            `🔎  ${B("MULTI-CORE SEARCH")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`
         );
         try {
             const result = await searchTextFile(file.path, query, 20);
-            await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+            } else {
+                await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+            }
         } catch (err) {
-            await safeEdit(ctx, status.message_id, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+            } else {
+                await safeReply(ctx, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+            }
         }
     });
 
@@ -687,7 +702,9 @@ function createBot(token, meta = {}) {
         }
         try {
             await ctx.replyWithChatAction("upload_document").catch(() => { });
-            await ctx.replyWithDocument(
+            await safeSendDocument(
+                ctx,
+                ctx.chat && ctx.chat.id,
                 { source: file.path, filename: file.name },
                 {
                     caption: [
@@ -747,15 +764,23 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, "⚠️ Output file not found.", mainKeyboard());
             return;
         }
-        const status = await ctx.reply(
-            `🔎  ${B("SEARCHING OUTPUT")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`,
-            { parse_mode: "HTML" },
+        const status = await safeReply(
+            ctx,
+            `🔎  ${B("SEARCHING OUTPUT")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`
         );
         try {
             const result = await searchTextFile(file.path, query, 20);
-            await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+            } else {
+                await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+            }
         } catch (err) {
-            await safeEdit(ctx, status.message_id, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+            } else {
+                await safeReply(ctx, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+            }
         }
     });
 
@@ -981,7 +1006,9 @@ function createBot(token, meta = {}) {
         const buffer = Buffer.from(matches.join("\n"), "utf8");
         const stamp = new Date().toISOString().slice(0, 10);
         const filename = `search_${sanitizeSiteSlug(query)}_${stamp}.txt`;
-        await ctx.replyWithDocument(
+        await safeSendDocument(
+            ctx,
+            ctx.chat && ctx.chat.id,
             { source: buffer, filename },
             {
                 caption: [
@@ -1039,15 +1066,23 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, `\u26A0\uFE0F  No processed output found under ${CODE(localProcessedRoot())}. Run ${CODE("/process /var/data/file.txt")} first.`);
             return;
         }
-        const status = await ctx.reply(
-            `🔎  ${B("LOCAL SEARCH")}  ⚡️\n${CODE(escapeHtml(query))}\n📂 ${I(escapeHtml(path.basename(file)))}`,
-            { parse_mode: "HTML" },
+        const status = await safeReply(
+            ctx,
+            `🔎  ${B("LOCAL SEARCH")}  ⚡️\n${CODE(escapeHtml(query))}\n📂 ${I(escapeHtml(path.basename(file)))}`
         );
         try {
             const result = await searchTextFile(file, query, 20);
-            await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+            } else {
+                await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+            }
         } catch (err) {
-            await safeEdit(ctx, status.message_id, `💥  ${B("Local search failed")}\n${I(escapeHtml(err.message))}`);
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, `💥  ${B("Local search failed")}\n${I(escapeHtml(err.message))}`);
+            } else {
+                await safeReply(ctx, `💥  ${B("Local search failed")}\n${I(escapeHtml(err.message))}`);
+            }
         }
     });
 
@@ -1250,7 +1285,8 @@ function createBot(token, meta = {}) {
 
         sourceMessageId = replied.message_id;
         originalName = (replied.document && replied.document.file_name) || originalName || `telegram-${sourceMessageId}.bin`;
-        const status = await ctx.reply(
+        const status = await safeReply(
+            ctx,
             [
                 `\uD83D\uDCE5  ${B("DOWNLOADING FROM TELEGRAM")}`,
                 RULE,
@@ -1258,8 +1294,7 @@ function createBot(token, meta = {}) {
                 `\uD83D\uDCBE  destination: ${CODE(escapeHtml(localProcessRoot()))}`,
                 "",
                 `${I("The MTProto account is streaming the file directly to disk\u2026")}`,
-            ].join("\n"),
-            { parse_mode: "HTML" },
+            ].join("\n")
         );
 
         localJobs.set(ctx.chat.id, `telegram:${ctx.chat.id}/${sourceMessageId}`);
@@ -1323,15 +1358,15 @@ function createBot(token, meta = {}) {
         }
 
         const cmdMsgId = ctx.message && ctx.message.message_id;
-        const statusMsg = await ctx.reply(
+        const statusMsg = await safeReply(
+            ctx,
             [
                 `🔍  ${B("SCANNING FOR DOCUMENTS")}  ⏳`,
                 RULE,
                 `Scanning recent chat history for up to ${B(num(limit))} documents…`,
                 "",
                 I("The MTProto userbot is reading recent forwarded documents directly from the chat ⚡️"),
-            ].join("\n"),
-            { parse_mode: "HTML" },
+            ].join("\n")
         );
 
         let docs = [];
@@ -2040,58 +2075,109 @@ function createBot(token, meta = {}) {
  * @param {string} text
  * @param {object} [extra] additional sendMessage options (e.g. keyboard)
  */
+let botApiCustomEmojiRejected = false;
+
+function setBotApiCustomEmojiRejected(val) {
+    botApiCustomEmojiRejected = Boolean(val);
+}
+
+function isBotApiCustomEmojiRejected() {
+    return botApiCustomEmojiRejected;
+}
+
 /**
  * Strips icon_custom_emoji_id from inline keyboard buttons for API fallback.
  * @param {object} extra
  * @returns {object}
  */
 function stripButtonEmojis(extra) {
-    if (!extra || !extra.reply_markup || !extra.reply_markup.inline_keyboard) return extra;
-    const cleanKeyboard = extra.reply_markup.inline_keyboard.map((row) =>
-        Array.isArray(row)
-            ? row.map((btn) => {
-                  if (btn && btn.icon_custom_emoji_id) {
-                      const copy = { ...btn };
-                      delete copy.icon_custom_emoji_id;
-                      return copy;
-                  }
-                  return btn;
-              })
-            : btn
-    );
-    return {
-        ...extra,
-        reply_markup: {
-            ...extra.reply_markup,
-            inline_keyboard: cleanKeyboard,
-        },
-    };
+    if (!extra || typeof extra !== "object") return extra;
+    let clean = { ...extra };
+    if (clean.reply_markup && clean.reply_markup.inline_keyboard) {
+        clean.reply_markup = {
+            ...clean.reply_markup,
+            inline_keyboard: clean.reply_markup.inline_keyboard.map((row) =>
+                Array.isArray(row)
+                    ? row.map((btn) => {
+                          if (btn && typeof btn === "object" && btn.icon_custom_emoji_id) {
+                              const copy = { ...btn };
+                              delete copy.icon_custom_emoji_id;
+                              return copy;
+                          }
+                          return btn;
+                      })
+                    : row
+            ),
+        };
+    }
+    if (clean.inline_keyboard && Array.isArray(clean.inline_keyboard)) {
+        clean.inline_keyboard = clean.inline_keyboard.map((row) =>
+            Array.isArray(row)
+                ? row.map((btn) => {
+                      if (btn && typeof btn === "object" && btn.icon_custom_emoji_id) {
+                          const copy = { ...btn };
+                          delete copy.icon_custom_emoji_id;
+                          return copy;
+                      }
+                      return btn;
+                  })
+                : row
+        );
+    }
+    return clean;
 }
 
 /**
  * Safely send a text message using HTML parse mode, stripping custom emoji tags
- * and button emoji IDs if rejected by the Telegram API.
+ * and button emoji IDs if rejected by the Telegram API (such as DOCUMENT_INVALID).
  * @param {import('telegraf').Context} ctx
  * @param {string} text
  * @param {object} [extra] additional sendMessage options (e.g. keyboard)
  */
 async function safeReply(ctx, text, extra = {}) {
+    let sendText = text;
+    let sendExtra = extra;
+    if (botApiCustomEmojiRejected) {
+        if (sendText && sendText.includes("<tg-emoji")) {
+            sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+        }
+        sendExtra = stripButtonEmojis(extra);
+    }
     try {
-        await ctx.reply(text, {
+        return await ctx.reply(sendText, {
             parse_mode: "HTML",
             disable_web_page_preview: true,
-            ...extra,
+            ...sendExtra,
         });
     } catch (err) {
-        if (err && /custom_emoji|entity|button|icon|markup/i.test(err.message)) {
+        const msg = String((err && err.message) || err || "");
+        const hasEmoji = (text && text.includes("<tg-emoji")) || (extra && extra.reply_markup);
+        if (/custom_emoji|entity|button|icon|markup|document_invalid|bad request/i.test(msg) || hasEmoji) {
+            botApiCustomEmojiRejected = true;
             let fallbackText = text;
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
             }
             const fallbackExtra = stripButtonEmojis(extra);
-            return safeReply(ctx, fallbackText, fallbackExtra);
+            try {
+                return await ctx.reply(fallbackText, {
+                    parse_mode: "HTML",
+                    disable_web_page_preview: true,
+                    ...fallbackExtra,
+                });
+            } catch (fallbackErr) {
+                console.error("safeReply fallback failed:", fallbackErr.message);
+                const plainText = fallbackText.replace(/<[^>]+>/g, "");
+                const cleanExtra = { ...fallbackExtra };
+                delete cleanExtra.reply_markup;
+                return await ctx.reply(plainText, {
+                    disable_web_page_preview: true,
+                    ...cleanExtra,
+                }).catch(() => null);
+            }
         }
         console.error("safeReply failed:", err.message);
+        return null;
     }
 }
 
@@ -2103,20 +2189,39 @@ async function safeReply(ctx, text, extra = {}) {
  * @param {object} [extra]
  */
 async function safeEdit(ctx, messageId, text, extra = {}) {
+    let editText = text;
+    let editExtra = extra;
+    if (botApiCustomEmojiRejected) {
+        if (editText && editText.includes("<tg-emoji")) {
+            editText = editText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+        }
+        editExtra = stripButtonEmojis(extra);
+    }
     try {
-        await ctx.telegram.editMessageText(ctx.chat.id, messageId, undefined, text, {
+        await ctx.telegram.editMessageText(ctx.chat.id, messageId, undefined, editText, {
             parse_mode: "HTML",
             disable_web_page_preview: true,
-            ...extra,
+            ...editExtra,
         });
     } catch (err) {
-        if (err && /custom_emoji|entity|button|icon|markup/i.test(err.message)) {
+        const msg = String((err && err.message) || err || "");
+        const hasEmoji = (text && text.includes("<tg-emoji")) || (extra && extra.reply_markup);
+        if (/custom_emoji|entity|button|icon|markup|document_invalid|bad request/i.test(msg) || hasEmoji) {
+            botApiCustomEmojiRejected = true;
             let fallbackText = text;
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
             }
             const fallbackExtra = stripButtonEmojis(extra);
-            return safeEdit(ctx, messageId, fallbackText, fallbackExtra);
+            try {
+                return await ctx.telegram.editMessageText(ctx.chat.id, messageId, undefined, fallbackText, {
+                    parse_mode: "HTML",
+                    disable_web_page_preview: true,
+                    ...fallbackExtra,
+                });
+            } catch {
+                // ignore other edit errors (e.g. message not modified)
+            }
         }
         // ignore other edit errors (e.g. message not modified)
     }
@@ -2170,12 +2275,12 @@ async function ingestDocument(ctx, doc, options = {}) {
     }
 
     // Stage 1: downloading.
-    const progress = await ctx.reply(
+    const progress = await safeReply(
+        ctx,
         [
             `\uD83D\uDCE5  ${B("Downloading")} ${escapeHtml(name)}`,
             `     \uD83D\uDCC2  ${humanSize(doc.file_size || 0)}  \u00B7  \u23F3 working\u2026`,
-        ].join("\n"),
-        { parse_mode: "HTML" },
+        ].join("\n")
     );
 
     const link = await ctx.telegram.getFileLink(doc.file_id);
@@ -2234,6 +2339,16 @@ async function ingestDocument(ctx, doc, options = {}) {
  * Safely send a document using context or telegram instance, with fallback.
  */
 async function safeSendDocument(ctx, chatId, payload, extra = {}) {
+    let sendExtra = extra;
+    if (botApiCustomEmojiRejected) {
+        sendExtra = stripButtonEmojis(extra);
+        if (sendExtra && sendExtra.caption && sendExtra.caption.includes("<tg-emoji")) {
+            sendExtra = {
+                ...sendExtra,
+                caption: sendExtra.caption.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1"),
+            };
+        }
+    }
     const doSend = async (opts) => {
         if (typeof ctx.replyWithDocument === "function") {
             try {
@@ -2251,14 +2366,26 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
     };
 
     try {
-        return await doSend(extra);
+        return await doSend(sendExtra);
     } catch (err) {
-        if (err && /custom_emoji|entity|button|icon|markup/i.test(err.message)) {
+        const msg = String((err && err.message) || err || "");
+        if (/custom_emoji|entity|button|icon|markup|document_invalid|bad request/i.test(msg)) {
+            botApiCustomEmojiRejected = true;
             const fallbackExtra = stripButtonEmojis(extra);
-            if (fallbackExtra.caption && fallbackExtra.caption.includes("<tg-emoji")) {
+            if (fallbackExtra && fallbackExtra.caption && fallbackExtra.caption.includes("<tg-emoji")) {
                 fallbackExtra.caption = fallbackExtra.caption.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
             }
-            return await doSend(fallbackExtra);
+            try {
+                return await doSend(fallbackExtra);
+            } catch (fallbackErr) {
+                console.error("safeSendDocument fallback failed:", fallbackErr.message);
+                const plainExtra = { ...fallbackExtra };
+                if (plainExtra.caption) {
+                    plainExtra.caption = plainExtra.caption.replace(/<[^>]+>/g, "");
+                }
+                delete plainExtra.reply_markup;
+                return await doSend(plainExtra).catch(() => null);
+            }
         }
         throw err;
     }
@@ -2489,13 +2616,35 @@ async function sendCombined(ctx, force = false) {
  * @param {object} [extra]
  */
 async function sendHtml(ctx, text, extra = {}) {
+    let sendText = text;
+    let sendExtra = extra;
+    if (botApiCustomEmojiRejected) {
+        if (sendText && sendText.includes("<tg-emoji")) {
+            sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+        }
+        sendExtra = stripButtonEmojis(extra);
+    }
     try {
-        return await ctx.reply(text, {
+        return await ctx.reply(sendText, {
             parse_mode: "HTML",
             disable_web_page_preview: true,
-            ...extra,
+            ...sendExtra,
         });
     } catch (err) {
+        const msg = String((err && err.message) || err || "");
+        if (/custom_emoji|entity|button|icon|markup|document_invalid|bad request/i.test(msg)) {
+            botApiCustomEmojiRejected = true;
+            let fallbackText = text;
+            if (text && text.includes("<tg-emoji")) {
+                fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            }
+            const fallbackExtra = stripButtonEmojis(extra);
+            return await ctx.reply(fallbackText, {
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+                ...fallbackExtra,
+            }).catch(() => null);
+        }
         console.error("sendHtml failed:", err.message);
         return null;
     }
@@ -2508,12 +2657,30 @@ async function sendHtml(ctx, text, extra = {}) {
  * @param {string} text
  */
 async function sendHtmlTo(telegram, chatId, text) {
+    let sendText = text;
+    if (botApiCustomEmojiRejected) {
+        if (sendText && sendText.includes("<tg-emoji")) {
+            sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+        }
+    }
     try {
-        return await telegram.sendMessage(chatId, text, {
+        return await telegram.sendMessage(chatId, sendText, {
             parse_mode: "HTML",
             disable_web_page_preview: true,
         });
     } catch (err) {
+        const msg = String((err && err.message) || err || "");
+        if (/custom_emoji|entity|button|icon|markup|document_invalid|bad request/i.test(msg)) {
+            botApiCustomEmojiRejected = true;
+            let fallbackText = text;
+            if (text && text.includes("<tg-emoji")) {
+                fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            }
+            return await telegram.sendMessage(chatId, fallbackText, {
+                parse_mode: "HTML",
+                disable_web_page_preview: true,
+            }).catch(() => null);
+        }
         console.error("sendHtmlTo failed:", err.message);
         return null;
     }
@@ -3191,25 +3358,20 @@ async function ackSharedResult(ctx, params) {
         );
     }
 
-    try {
-        await ctx.reply(
-            renderUlpSharedResult({
-                searcherBot: searchOptions.botUsername,
-                query,
-                scope,
-                count,
-                hasDocument,
-            }),
-            {
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                reply_parameters: { message_id: msg.message_id },
-                ...ulpResultKeyboard(hasDocument),
-            },
-        );
-    } catch (err) {
-        console.error("shared-result card failed:", err.message);
-    }
+    await safeReply(
+        ctx,
+        renderUlpSharedResult({
+            searcherBot: searchOptions.botUsername,
+            query,
+            scope,
+            count,
+            hasDocument,
+        }),
+        {
+            reply_parameters: { message_id: msg.message_id },
+            ...ulpResultKeyboard(hasDocument),
+        },
+    );
 
     // Auto-clean the document immediately into the batch!
     if (hasDocument) {
@@ -3477,13 +3639,13 @@ async function processFile(ctx, inputPath, progressMessageId = null, options = {
             ].join("\n"),
         );
     } else {
-        progress = await ctx.reply(
+        progress = await safeReply(
+            ctx,
             [
                 `📥  ${B("Reading")} ${escapeHtml(name)}`,
                 `     📁  ${humanSize(stat.size)}  ·  ${escapeHtml(path.dirname(fullPath))}`,
                 `     🔒  allowed root: ${escapeHtml(allowedRoot)}`,
-            ].join("\n"),
-            { parse_mode: "HTML" },
+            ].join("\n")
         );
     }
 
@@ -3711,6 +3873,13 @@ module.exports = {
     trackIngestion,
     waitForIngestions,
     stripButtonEmojis,
+    setBotApiCustomEmojiRejected,
+    isBotApiCustomEmojiRejected,
+    safeReply,
+    safeEdit,
+    safeSendDocument,
+    sendHtml,
+    sendHtmlTo,
 };
 
 

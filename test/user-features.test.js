@@ -420,5 +420,71 @@ describe("User Requested Features & Optimizations", () => {
         assert.equal(stripped.reply_markup.inline_keyboard[0][0].text, "🚀 Test", "Text should be preserved");
         assert.equal(stripped.reply_markup.inline_keyboard[0][0].callback_data, "test", "Callback data should be preserved");
     });
+
+    test("11. safeReply and safeSendDocument recover gracefully from 400: Bad Request: DOCUMENT_INVALID and auto-strip custom emojis", async () => {
+        const bot = require("../src/bot");
+        bot.setBotApiCustomEmojiRejected(false);
+
+        const recoveryReplied = [];
+        const mockSafeCtx = {
+            chat: { id: 123456 },
+            reply: async (text, extra) => {
+                recoveryReplied.push({ text, extra });
+                if (text.includes("<tg-emoji") || (extra && extra.reply_markup && extra.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id)) {
+                    throw new Error("400: Bad Request: DOCUMENT_INVALID");
+                }
+                return { message_id: 999 };
+            },
+            replyWithDocument: async (payload, extra) => {
+                if ((extra && extra.caption && extra.caption.includes("<tg-emoji")) || (extra && extra.reply_markup && extra.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id)) {
+                    throw new Error("400: Bad Request: DOCUMENT_INVALID");
+                }
+                return { message_id: 1000, document: payload };
+            },
+        };
+
+        const originalText = '⚡️ <tg-emoji emoji-id="5370779774618703759">⚡️</tg-emoji> Hello World';
+        const originalExtra = {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🚀 Start", callback_data: "start", icon_custom_emoji_id: "5368324170671202287" }],
+                ],
+            },
+        };
+
+        // First call fails with DOCUMENT_INVALID, catches it, strips emoji tags and button icons, sets rejected flag, and succeeds
+        const result = await bot.safeReply(mockSafeCtx, originalText, originalExtra);
+        assert.ok(result, "safeReply should return the delivered message object");
+        assert.equal(result.message_id, 999);
+        assert.strictEqual(bot.isBotApiCustomEmojiRejected(), true, "botApiCustomEmojiRejected flag should be set to true");
+        assert.equal(recoveryReplied.length, 2, "Should have attempted once with emojis and once with fallback");
+        assert.ok(!recoveryReplied[1].text.includes("<tg-emoji"), "Fallback text should not include tg-emoji tags");
+        assert.strictEqual(recoveryReplied[1].extra.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id, undefined, "Fallback button should have icon_custom_emoji_id stripped");
+
+        // Subsequent call is pre-stripped immediately because botApiCustomEmojiRejected is true
+        const secondResult = await bot.safeReply(mockSafeCtx, originalText, originalExtra);
+        assert.ok(secondResult);
+        assert.equal(recoveryReplied.length, 3, "Second call should only send once without failing or retrying");
+        assert.ok(!recoveryReplied[2].text.includes("<tg-emoji"));
+
+        // Test safeSendDocument recovery
+        bot.setBotApiCustomEmojiRejected(false);
+        const docResult = await bot.safeSendDocument(
+            mockSafeCtx,
+            123456,
+            { source: Buffer.from("test"), filename: "test.txt" },
+            {
+                caption: '🎁 <tg-emoji emoji-id="123">🎁</tg-emoji> File',
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: "📥 Download", callback_data: "dl", icon_custom_emoji_id: "456" }],
+                    ],
+                },
+            }
+        );
+        assert.ok(docResult, "safeSendDocument should recover and deliver file");
+        assert.strictEqual(bot.isBotApiCustomEmojiRejected(), true, "botApiCustomEmojiRejected should be set after doc recovery");
+    });
 });
+
 

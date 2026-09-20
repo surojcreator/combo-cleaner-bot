@@ -101,14 +101,14 @@ When you have multiple `.zip` or text files forwarded into a group or chat, you 
 2. Send `/batchsave` (default scans the 10 most recent files, or specify up to 50, e.g. `/batchsave 25`).
 3. The MTProto userbot reads each document in chronological order, streams each directly to `/var/data`, cleans each into the batch, displays live progress with file counts, and summarizes the aggregate results with an instant `[ 📦 Get combined file ]` button!
 
-### Inspect Installed Custom Emoji Packs
+### 💎 Native Bot Visual Dashboard & Emojis
 
-Inspect all custom emoji packs installed on your Telegram account (in addition to the 599 standard animated stickers):
+Access the bot's direct visual dashboard and native emoji features:
 
 ```text
 /emojis
 # or
-/packs
+/features
 ```
 
 ---

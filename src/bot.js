@@ -183,6 +183,8 @@ function createBot(token, meta = {}) {
     const ulpStartedAt = new Map();
     /** chatId -> timeout that closes the result window */
     const ulpWindows = new Map();
+    /** chatId -> user selected search duration in days */
+    const userUlpDays = new Map();
     /** chatId -> absolute path currently being processed */
     const localJobs = new Map();
 
@@ -677,28 +679,51 @@ function createBot(token, meta = {}) {
 
     bot.action("ulp:menu", async (ctx) => {
         await ctx.answerCbQuery("🚀 ULP Target Selector").catch(() => { });
+        const activeDays = userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         const text = [
             `🚀  ${B("SELECT ULP SEARCH TARGET")}  ⚡️`,
             RULE,
             `🤖  Searcher: ${CODE(`@${escapeHtml(searchOptions.botUsername || "DumpNews14Bot")}`)}`,
-            `🎯  Mode: ${B("Automatic Latest Batch Step-Down")}`,
+            `📅  Search Duration: ${B(`${activeDays} Day(s)`)}`,
             "",
-            `👇 ${I("Tap any target button below to start searching immediately:")}`,
+            `👇 ${I("Tap a duration button to change days, or tap a target to start searching:")}`,
         ].join("\n");
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         if (msg) {
-            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard());
+            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(activeDays));
         } else {
-            await safeReply(ctx, text, ulpMenuKeyboard());
+            await safeReply(ctx, text, ulpMenuKeyboard(activeDays));
+        }
+    });
+
+    bot.action(/^ulp:setdays:(\d+)$/, async (ctx) => {
+        const days = Math.max(1, Math.min(90, parseInt(ctx.match[1], 10) || 5));
+        userUlpDays.set(ctx.chat.id, days);
+        await ctx.answerCbQuery(`📅 Duration: ${days} day(s)`).catch(() => { });
+        const text = [
+            `🚀  ${B("SELECT ULP SEARCH TARGET")}  ⚡️`,
+            RULE,
+            `🤖  Searcher: ${CODE(`@${escapeHtml(searchOptions.botUsername || "DumpNews14Bot")}`)}`,
+            `📅  Search Duration: ${B(`${days} Day(s)`)}`,
+            "",
+            `👇 ${I("Tap a duration button to change days, or tap a target to start searching:")}`,
+        ].join("\n");
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(days));
+        } else {
+            await safeReply(ctx, text, ulpMenuKeyboard(days));
         }
     });
 
     bot.action(/^ulp:quick:(.+)$/, async (ctx) => {
         const query = ctx.match[1];
-        await ctx.answerCbQuery(`🚀 Launching ${query}…`).catch(() => { });
+        const activeDays = userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        await ctx.answerCbQuery(`🚀 Launching ${query} (${activeDays}d)…`).catch(() => { });
         await beginUlpRun(ctx, {
             query,
             scope: "day",
+            daysCount: activeDays,
             searchOptions,
             meta,
             ulpStartedAt,
@@ -1405,6 +1430,10 @@ function createBot(token, meta = {}) {
     const ulpCommand = async (ctx) => {
         const raw = (ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
         const parsed = parseUlpArg(raw, searchOptions);
+        if (parsed.daysCount) {
+            userUlpDays.set(ctx.chat.id, parsed.daysCount);
+        }
+        const activeDays = parsed.daysCount || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         if (!parsed.query) {
             await safeReply(
                 ctx,
@@ -1412,8 +1441,9 @@ function createBot(token, meta = {}) {
                     searcherBot: searchOptions.botUsername,
                     stepDelayMs: searchOptions.stepDelayMs,
                     maxTries: searchOptions.maxTries,
+                    daysCount: activeDays,
                 }),
-                ulpKeyboard(parsed.scope),
+                ulpMenuKeyboard(activeDays),
             );
             return;
         }
@@ -1421,6 +1451,7 @@ function createBot(token, meta = {}) {
             query: parsed.query,
             scope: parsed.scope,
             startDate: parsed.startDate || null,
+            daysCount: activeDays,
             searchOptions,
             meta,
             ulpStartedAt,
@@ -1969,13 +2000,26 @@ async function deliverCombinedAndResetBatch(ctx) {
 }
 
 /**
- * Parse "/ulp <query> [day|month|year]" arguments.
- * The scope is optional and may also be written first ("/ulp month htzone.co.il"
- * is *not* supported — scope must be last, like "/ulp htzone.co.il month").
+ * Parse an optional days token like "7", "7d", "7days".
+ * @param {string} token
+ * @returns {number|null}
+ */
+function parseDaysToken(token) {
+    if (!token) return null;
+    const str = String(token).trim();
+    const match = str.match(/^(\d{1,3})(?:d|days?)?$/i);
+    if (!match) return null;
+    const n = parseInt(match[1], 10);
+    if (n >= 1 && n <= 180) return n;
+    return null;
+}
+
+/**
+ * Parse "/ulp <query> [days] [day|month|year] [start_date]" arguments.
  *
  * @param {string} raw text after the command
- * @param {string} [fallbackScope]
- * @returns {{ query: string|null, scope: string }}
+ * @param {string|{ defaultScope?: string }} [fallbackScope]
+ * @returns {{ query: string|null, scope: string, startDate?: Date, daysCount?: number }}
  */
 function parseUlpArg(raw, fallbackScope = "day") {
     const defaultScope =
@@ -1987,24 +2031,74 @@ function parseUlpArg(raw, fallbackScope = "day") {
     const parts = String(raw || "").split(/\s+/).filter(Boolean);
     if (parts.length === 0) return { query: null, scope: defaultScope };
 
-    const lastToken = parts[parts.length - 1];
-    const parsedDate = userbot.parseDmyDate(lastToken);
-    if (parsedDate && parts.length > 1) {
-        const queryParts = parts.slice(0, -1);
-        return {
-            query: searchbot.normalizeQuery(queryParts.join(" ")),
-            scope: "day",
-            startDate: parsedDate,
-        };
+    // Support "/ulp days 7" or "/ulp setdays 7"
+    if (parts.length === 2 && (parts[0].toLowerCase() === "days" || parts[0].toLowerCase() === "setdays")) {
+        const d = parseDaysToken(parts[1]);
+        if (d) return { query: null, scope: defaultScope, daysCount: d };
     }
 
-    const lastScope = searchbot.normalizeScope(lastToken, null);
-    // "/ulp month" — a scope without a query: show the usage card instead.
-    if (lastScope && parts.length === 1) return { query: null, scope: lastScope };
+    let startDate = null;
+    let daysCount = null;
+    let scope = defaultScope;
+    const remaining = [...parts];
 
-    const scope = lastScope && parts.length > 1 ? lastScope : defaultScope;
-    const queryParts = lastScope && parts.length > 1 ? parts.slice(0, -1) : parts;
-    return { query: searchbot.normalizeQuery(queryParts.join(" ")), scope };
+    let modified = true;
+    while (modified && remaining.length > 0) {
+        modified = false;
+        const last = remaining[remaining.length - 1];
+
+        // Is it a date?
+        const parsedDate = userbot.parseDmyDate(last);
+        if (parsedDate && !startDate) {
+            startDate = parsedDate;
+            scope = "day";
+            remaining.pop();
+            modified = true;
+            continue;
+        }
+
+        // Is it a days count? (e.g. 7, 14d, 30days)
+        const parsedDays = parseDaysToken(last);
+        if (parsedDays && !daysCount) {
+            daysCount = parsedDays;
+            remaining.pop();
+            modified = true;
+            continue;
+        }
+
+        // Is it a scope? (day, month, year)
+        const lastScope = searchbot.normalizeScope(last, null);
+        if (lastScope && remaining.length > 1 && scope === defaultScope) {
+            scope = lastScope;
+            remaining.pop();
+            modified = true;
+            continue;
+        }
+    }
+
+    // Check if only scope remains: e.g. "/ulp month"
+    if (remaining.length === 1) {
+        const soloScope = searchbot.normalizeScope(remaining[0], null);
+        if (soloScope) {
+            const out = { query: null, scope: soloScope };
+            if (daysCount) out.daysCount = daysCount;
+            return out;
+        }
+    }
+
+    // If all tokens were consumed by date/days modifiers without a query: e.g. "/ulp 7"
+    if (remaining.length === 0) {
+        const out = { query: null, scope };
+        if (startDate) out.startDate = startDate;
+        if (daysCount) out.daysCount = daysCount;
+        return out;
+    }
+
+    const query = searchbot.normalizeQuery(remaining.join(" "));
+    const out = { query, scope };
+    if (startDate) out.startDate = startDate;
+    if (daysCount) out.daysCount = daysCount;
+    return out;
 }
 
 /**
@@ -2149,6 +2243,8 @@ async function beginUlpRun(ctx, params) {
     const { query, scope, startDate = null, searchOptions, meta, ulpStartedAt, ulpWindows, cardMessageId = null } = params;
     const chatId = ctx.chat.id;
     const sleep = params.sleep || defaultSleep;
+    const daysCount = Math.max(1, Math.min(90, Number(params.daysCount || (userUlpDays && userUlpDays.get(chatId)) || (searchOptions && searchOptions.daysCount) || 5)));
+    const calculatedWindowMs = Math.max(searchOptions.windowMs || 300000, (daysCount * (searchOptions.stepDelayMs + 10000)) + 60000);
 
     if (searchbot.isRunning(chatId)) {
         await safeReply(ctx, "\u23F3 A search is already running \u2014 tap \uD83D\uDED1 Stop first, or let it finish.");
@@ -2174,7 +2270,7 @@ async function beginUlpRun(ctx, params) {
     const transport = pickTransport(meta, searchOptions, ctx);
 
     const steps = searchbot.buildSteps(query, scope, searchOptions.histTemplate);
-    const run = searchbot.startRun(chatId, { query, scope, windowMs: searchOptions.windowMs });
+    const run = searchbot.startRun(chatId, { query, scope, windowMs: calculatedWindowMs });
 
     // In the bypass path the answers arrive through the account, so remember
     // where they belong even before the first send.
@@ -2190,6 +2286,8 @@ async function beginUlpRun(ctx, params) {
         stepDelayMs: searchOptions.stepDelayMs,
         maxTries: searchOptions.maxTries,
         transport: transport.kind,
+        daysCount,
+        startDate: startDate ? userbot.formatDateDmy(startDate) : null,
     });
 
     let card;
@@ -2219,17 +2317,16 @@ async function beginUlpRun(ctx, params) {
             );
         }
         await deliverCombinedAndResetBatch(ctx);
-    }, searchOptions.windowMs);
+    }, calculatedWindowMs);
     if (timer && typeof timer.unref === "function") timer.unref();
     ulpWindows.set(chatId, timer);
 
     let result;
     if (scope === "day" && transport.kind === "userbot" && typeof transport.userbot.searchDayByDay === "function") {
-        const daysCount = searchOptions.daysCount || 5;
         const dayRes = await transport.userbot.searchDayByDay({
             query,
             daysCount,
-            startDate: startDate || new Date(),
+            startDate: startDate || null,
             chatId,
             botUsername: meta && meta.botUsername,
             stepDelayMs: searchOptions.stepDelayMs,
@@ -2253,10 +2350,15 @@ async function beginUlpRun(ctx, params) {
                 const p = ingestUserbotMessage(chatId, m, transport.userbot, query);
                 trackIngestion(chatId, p);
                 await p;
+                searchbot.noteResult(transport.userbot && transport.userbot.searcherId ? transport.userbot.searcherId : 0, {
+                    messageId: m && m.id,
+                    kind: m && (m.media || m.document) ? "document" : "text",
+                });
             },
             sleep,
         });
 
+        await waitForIngestions(chatId);
         clearUlpWindow(ulpWindows, chatId);
         if (dayRes.status === "stopped") {
             return;
@@ -2482,9 +2584,16 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
 async function ackSharedResult(ctx, params) {
     const { searchOptions, meta = {} } = params;
     const msg = ctx.message;
-    const chatId = ctx.chat.id;
+    let chatId = ctx.chat.id;
+    let run = searchbot.getRun(chatId);
+    if (!run && typeof searchbot.mostRecentRun === "function") {
+        const live = searchbot.mostRecentRun();
+        if (live && live.status === "running") {
+            chatId = live.chatId;
+            run = live;
+        }
+    }
     const hasDocument = Boolean(msg.document);
-    const run = searchbot.getRun(chatId);
     const query = run ? run.query : "";
     const scope = run ? run.scope : "day";
     const count = run ? run.results.length : 1;

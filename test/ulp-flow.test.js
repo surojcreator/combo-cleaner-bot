@@ -534,6 +534,148 @@ test("ULP flow: removes URL prefixes from credentials and query when searching",
     }
 });
 
+test("ULP flow: allows user to specify days in command and passes daysCount to searchDayByDay", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        let searchedOpts = null;
+        const peer = {
+            kind: "userbot",
+            isReady: () => true,
+            searcherId: SEARCHER_ID,
+            classify: () => "other",
+            send: async () => ({ message_id: 1, chat: { id: SEARCHER_ID } }),
+            downloadMedia: async () => Buffer.from("user@netflix.com:pass123\n", "utf8"),
+            searchDayByDay: async (opts) => {
+                searchedOpts = opts;
+                if (opts.onResult) {
+                    await opts.onResult({
+                        id: 101,
+                        media: true,
+                        file: { name: "netflix.com_dump.txt" },
+                    });
+                }
+                return { status: "done", daysProcessed: opts.daysCount };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+        peer.botRef = bot;
+        await bot.handleUpdate(commandUpdate("/ulp netflix.com 7"));
+
+        assert.ok(searchedOpts, "expected searchDayByDay to be called");
+        assert.equal(searchedOpts.query, "netflix.com");
+        assert.equal(searchedOpts.daysCount, 7, "expected daysCount to be 7");
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+test("ULP flow: parseUlpArg supports diverse day count and date combinations", () => {
+    const { parseUlpArg } = require("../src/bot");
+
+    // Standard days
+    const res7 = parseUlpArg("spotify.com 7");
+    assert.equal(res7.query, "spotify.com");
+    assert.equal(res7.daysCount, 7);
+    assert.equal(res7.scope, "day");
+
+    // Trailing 'd' or 'days'
+    const res14d = parseUlpArg("spotify.com 14d");
+    assert.equal(res14d.query, "spotify.com");
+    assert.equal(res14d.daysCount, 14);
+
+    const res30days = parseUlpArg("spotify.com 30days");
+    assert.equal(res30days.query, "spotify.com");
+    assert.equal(res30days.daysCount, 30);
+
+    // Date + Days
+    const resDateDays = parseUlpArg("spotify.com 20.09.2026 10");
+    assert.equal(resDateDays.query, "spotify.com");
+    assert.equal(resDateDays.daysCount, 10);
+    assert.ok(resDateDays.startDate instanceof Date);
+    assert.equal(resDateDays.startDate.getDate(), 20);
+
+    // Days + Date reversed order
+    const resDaysDate = parseUlpArg("spotify.com 10 20.09.2026");
+    assert.equal(resDaysDate.query, "spotify.com");
+    assert.equal(resDaysDate.daysCount, 10);
+    assert.ok(resDaysDate.startDate instanceof Date);
+
+    // Solo days modifier
+    const resSolo = parseUlpArg("7");
+    assert.equal(resSolo.query, null);
+    assert.equal(resSolo.daysCount, 7);
+
+    const resDaysCmd = parseUlpArg("days 14");
+    assert.equal(resDaysCmd.query, null);
+    assert.equal(resDaysCmd.daysCount, 14);
+});
+
+test("ULP flow: interactive days selection buttons update menu and launch quick search with chosen days", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        let searchedOpts = null;
+        const peer = {
+            kind: "userbot",
+            isReady: () => true,
+            searcherId: SEARCHER_ID,
+            classify: () => "other",
+            send: async () => ({ message_id: 1, chat: { id: SEARCHER_ID } }),
+            downloadMedia: async () => Buffer.from("user@steam.com:pass123\n", "utf8"),
+            searchDayByDay: async (opts) => {
+                searchedOpts = opts;
+                return { status: "done", daysProcessed: opts.daysCount };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+        peer.botRef = bot;
+
+        // Open ULP menu
+        await bot.handleUpdate({
+            update_id: 201,
+            callback_query: {
+                id: "cb_menu",
+                from: { id: OWNER_CHAT, is_bot: false, first_name: "Owner" },
+                message: { message_id: 50, chat: { id: OWNER_CHAT, type: "private" } },
+                data: "ulp:menu",
+            },
+        });
+
+        // Tap 14 days button
+        await bot.handleUpdate({
+            update_id: 202,
+            callback_query: {
+                id: "cb_setdays",
+                from: { id: OWNER_CHAT, is_bot: false, first_name: "Owner" },
+                message: { message_id: 50, chat: { id: OWNER_CHAT, type: "private" } },
+                data: "ulp:setdays:14",
+            },
+        });
+
+        // Tap Netflix quick search
+        await bot.handleUpdate({
+            update_id: 203,
+            callback_query: {
+                id: "cb_quick",
+                from: { id: OWNER_CHAT, is_bot: false, first_name: "Owner" },
+                message: { message_id: 50, chat: { id: OWNER_CHAT, type: "private" } },
+                data: "ulp:quick:netflix.com",
+            },
+        });
+
+        assert.ok(searchedOpts, "expected searchDayByDay to be launched");
+        assert.equal(searchedOpts.query, "netflix.com");
+        assert.equal(searchedOpts.daysCount, 14, "expected quick search to inherit the 14 days duration");
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
 test.after(() => {
     const { getSharedPool } = require("../src/worker-pool");
     getSharedPool().close();

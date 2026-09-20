@@ -258,9 +258,18 @@ function confirmFileDeleteKeyboard(actionType, targetId, fileName = "") {
 }
 
 /**
- * Keyboard for ULP preset searches.
+ * Keyboard for ULP preset searches and days duration selection.
+ * @param {number} [selectedDays]
  */
-function ulpMenuKeyboard() {
+function ulpMenuKeyboard(selectedDays = 5) {
+    const days = Math.max(1, Math.min(90, Number(selectedDays) || 5));
+    const daysRow1 = [1, 3, 5].map((d) =>
+        Markup.button.callback(d === days ? `📅 ${d}d ✅` : `📅 ${d} Day${d > 1 ? "s" : ""}`, `ulp:setdays:${d}`)
+    );
+    const daysRow2 = [7, 14, 30].map((d) =>
+        Markup.button.callback(d === days ? `📅 ${d}d ✅` : `📅 ${d} Day${d > 1 ? "s" : ""}`, `ulp:setdays:${d}`)
+    );
+
     return Markup.inlineKeyboard([
         [
             Markup.button.callback("🎬 Netflix", "ulp:quick:netflix.com"),
@@ -278,6 +287,8 @@ function ulpMenuKeyboard() {
             Markup.button.callback("💳 PayPal", "ulp:quick:paypal.com"),
             Markup.button.callback("🪙 Crypto", "ulp:quick:binance.com"),
         ],
+        daysRow1,
+        daysRow2,
         [
             Markup.button.callback("🔙 Main Menu", "help"),
         ],
@@ -658,24 +669,31 @@ function ulpResultKeyboard(hasDocument = false) {
 
 /**
  * /ulp usage card.
- * @param {{ searcherBot: string, stepDelayMs: number, maxTries: number }} info
+ * @param {{ searcherBot: string, stepDelayMs: number, maxTries: number, daysCount?: number }} info
  */
 function renderUlpHint(info) {
+    const daysLabel = info && info.daysCount ? `${info.daysCount} days active` : "5 days default";
     return [
         `🚀  ${B("ULP SEARCH RELAY")}  ⚡️`,
         RULE,
-        `${I("Usage:")} ${CODE(escapeHtml("/ulp <query> [start_date]"))}`,
+        `${I("Usage:")} ${CODE(escapeHtml("/ulp <query> [days] [start_date]"))}`,
         "",
-        `  1️⃣ ${B("Target")} \u2014 Sent to ${B(mentionOf(info.searcherBot))}`,
-        `  2️⃣ ${B("Smart Batch")} \u2014 Auto-detects latest batch date & steps down day-by-day`,
-        `  3️⃣ ${B("Live Forward")} \u2014 All dump results are forwarded & auto-cleaned into batch`,
-        `  4️⃣ ${B("Auto-Delivery")} \u2014 Delivers combined file and resets batch when finished 💎`,
+        `  📅 ${B("Duration:")} ${CODE(daysLabel)} · Select 1 to 90 days`,
+        `  💡 ${B("Examples:")}`,
+        `     • ${CODE("/ulp netflix.com 7")} ${I("(search last 7 days)")}`,
+        `     • ${CODE("/ulp netflix.com 20.09.2026 14")} ${I("(14 days from date)")}`,
+        `     • ${CODE("/ulp 14")} ${I("(set default duration to 14 days)")}`,
+        "",
+        `  1️⃣ ${B("Target")} — Sent to ${B(mentionOf(info.searcherBot))}`,
+        `  2️⃣ ${B("Smart Batch")} — Auto-detects latest batch date & steps down day-by-day`,
+        `  3️⃣ ${B("Live Forward")} — All dump results are forwarded & auto-cleaned into batch`,
+        `  4️⃣ ${B("Auto-Delivery")} — Delivers combined file and resets batch when finished 💎`,
     ].join("\n");
 }
 
 /**
  * /ulp launch card: the exact sequence that will be sent to the searcher bot.
- * @param {{ query: string, scope: string, searcherBot: string, steps: Array<{ id: string, text: string }>, stepDelayMs: number, maxTries: number, transport?: string }} info
+ * @param {{ query: string, scope: string, searcherBot: string, steps: Array<{ id: string, text: string }>, stepDelayMs: number, maxTries: number, transport?: string, daysCount?: number, startDate?: string }} info
  */
 function renderUlpStart(info) {
     const whoRow =
@@ -685,11 +703,15 @@ function renderUlpStart(info) {
                 `🤖  Searcher  ${B(mentionOf(info.searcherBot))}`,
             ]
             : [`🤖  Searcher  ${B(mentionOf(info.searcherBot))}`];
+    const daysCount = info.daysCount || 5;
+    const dateLabel = info.startDate
+        ? `Last ${daysCount} days from ${info.startDate}`
+        : `Last ${daysCount} days (Auto-detecting latest batch)`;
     return [
         `🚀  ${B("ULP SEARCH INITIALIZED")}  ⚡️`,
         RULE,
         `🎯  Query     ${B(escapeHtml(info.query))}`,
-        `📅  Mode      ${B("Day-by-Day (Auto-detecting latest batch)")}`,
+        `📅  Mode      ${B(`Day-by-Day (${dateLabel})`)}`,
         ...whoRow,
         `⏳  Pacing    ${B(pacingLabel(info.stepDelayMs))} anti-flood delay`,
         "",
@@ -703,10 +725,13 @@ function renderUlpStart(info) {
  * @param {{ searcherBot: string, attempt: number, maxTries: number, sends: number, stepDelayMs: number }} info
  */
 function renderUlpProgress(info) {
+    const sendsLine = Array.isArray(info.sends)
+        ? escapeHtml(info.sends.join(" · "))
+        : `${num(info.sends)} step(s) sent`;
     return [
         `📡  ${B("SEARCH IN PROGRESS")} \u00B7 ${B(`${info.attempt}/${info.maxTries}`)}  ⏳`,
         RULE,
-        `🤖  ${B(mentionOf(info.searcherBot))} \u00B7 ${num(info.sends)} step(s) sent`,
+        `🤖  ${B(mentionOf(info.searcherBot))} \u00B7 ${sendsLine}`,
         `⏳  ${I(`Pacing ${pacingLabel(info.stepDelayMs)} for safe anti-flood execution…`)}`,
     ].join("\n");
 }

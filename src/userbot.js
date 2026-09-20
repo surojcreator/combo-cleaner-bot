@@ -465,9 +465,10 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
          */
         async downloadMedia(msg, options = {}) {
             if (!ready || !client) throw new Error("USERBOT_NOT_READY");
+            const downloadTimeoutMs = options.timeoutMs || 120000;
             return await withTimeout(
                 client.downloadMedia(msg, options),
-                timeoutMs,
+                downloadTimeoutMs,
                 "userbot downloadMedia",
             );
         },
@@ -790,14 +791,16 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
             } = options;
 
+            const totalDays = Math.max(1, Math.min(90, Number(daysCount) || 5));
             const searchTarget = searcherEntity || cfg.searcher;
+            const seenResultIds = new Set();
 
             // Step 0: Ensure the query is active in the searcher bot
             if (shouldStop()) return { status: "stopped", daysProcessed: 0 };
             onStatus({
                 day: startDate ? formatDateDmy(startDate) : "latest",
                 attempt: 1,
-                totalDays: daysCount,
+                totalDays,
                 step: `Setting query "${query}"`,
             });
             await withTimeout(
@@ -814,7 +817,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 onStatus({
                     day: "latest",
                     attempt: 1,
-                    totalDays: daysCount,
+                    totalDays,
                     step: "Detecting latest batch date…",
                 });
                 const sentStart = await withTimeout(
@@ -844,14 +847,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             let daysProcessed = 0;
             let consecutiveMisses = 0;
 
-            for (let dayIdx = 0; dayIdx < daysCount; dayIdx++) {
+            for (let dayIdx = 0; dayIdx < totalDays; dayIdx++) {
                 if (shouldStop()) return { status: "stopped", daysProcessed };
 
                 const dateStr = formatDateDmy(currentDate);
                 onStatus({
                     day: dateStr,
                     attempt: dayIdx + 1,
-                    totalDays: daysCount,
+                    totalDays,
                     step: `Opening folder for ${dateStr}`,
                 });
 
@@ -899,8 +902,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         for (const row of menuMsg.replyMarkup.rows) {
                             for (const btn of row.buttons) {
                                 const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
-                                if (dataStr.startsWith("menu:page:") && (btn.text === "➡️" || dataStr !== "menu:page:0")) {
-                                    nextPageBtn = { text: btn.text, data: dataStr };
+                                const text = btn.text || "";
+                                const isNext = (text.includes("➡️") || text.includes("Next") || text.includes("▶️") || text === "»") ||
+                                               (dataStr.startsWith("menu:page:") && !text.includes("⬅️") && !text.includes("Prev") && !text.includes("◀️") && dataStr !== "menu:page:0");
+                                if (isNext) {
+                                    nextPageBtn = { text, data: dataStr };
                                     break;
                                 }
                             }
@@ -949,7 +955,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 onStatus({
                     day: dateStr,
                     attempt: dayIdx + 1,
-                    totalDays: daysCount,
+                    totalDays,
                     step: `Clicking folder:${dateStr}`,
                 });
                 await withTimeout(
@@ -1002,7 +1008,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     onStatus({
                         day: dateStr,
                         attempt: dayIdx + 1,
-                        totalDays: daysCount,
+                        totalDays,
                         step: `Clicking hist:${dateStr}`,
                     });
                     await withTimeout(
@@ -1024,7 +1030,10 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             try {
                                 const latest = await client.getMessages(searchTarget, { limit: 5 });
                                 for (const m of latest) {
-                                    if (!m.out && (m.id > (folderView.id || 0) || m.media || m.document)) {
+                                    const isTargetMsg = !m.out && !seenResultIds.has(m.id) &&
+                                        (m.id > (folderView.id || 0) || m.id > (sentStart.id || 0) || (waitAttempt > 0 && (m.media || m.document)));
+                                    if (isTargetMsg) {
+                                        seenResultIds.add(m.id);
                                         foundNewResult = true;
                                         if (resultSink) {
                                             await resultSink(m);
@@ -1046,11 +1055,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 }
 
                 // Wait before moving to previous day to comply with DumpNews14Bot rate limiter
-                if (dayIdx < daysCount - 1) {
+                if (dayIdx < totalDays - 1) {
                     onStatus({
                         day: dateStr,
                         attempt: dayIdx + 1,
-                        totalDays: daysCount,
+                        totalDays,
                         step: `Pacing before next day…`,
                     });
                     await sleep(stepDelayMs);

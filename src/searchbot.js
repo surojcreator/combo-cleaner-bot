@@ -131,6 +131,7 @@ function loadOptions(env = process.env) {
         resultWaitMs: positiveInt(env.SEARCH_RESULT_WAIT_MS, DEFAULT_RESULT_WAIT_MS),
         maxTries: positiveInt(env.SEARCH_MAX_TRIES, DEFAULT_MAX_TRIES),
         windowMs: positiveInt(env.SEARCH_WINDOW_MS, DEFAULT_WINDOW_MS),
+        daysCount: positiveInt(env.SEARCH_DAYS_COUNT, 5),
     };
 }
 
@@ -468,6 +469,7 @@ module.exports = {
     noteResult,
     rememberOwner,
     lastOwner,
+    mostRecentRun,
     pruneRuns,
     resetRuns,
 };

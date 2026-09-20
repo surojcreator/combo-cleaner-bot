@@ -1223,7 +1223,7 @@ function renderUlpBlocked(info) {
     const header = ulpErrorHeader(info.kind, transport);
     const own = info.ownBot ? mentionOf(info.ownBot) : "this bot";
     const lines = [
-        `${header.emoji}  ${B(header.title)}`,
+        `${tgEmoji(header.emoji)}  ${B(header.title)}`,
         RULE,
         header.detail,
     ];
@@ -1231,36 +1231,36 @@ function renderUlpBlocked(info) {
     if (transport === "userbot") {
         lines.push(
             "",
-            `\uD83D\uDD27  ${B("Fix the account transport")}`,
-            `  1\uFE0F\u20E3 run ${B(CODE("npm run userbot:login"))} and follow the prompts`,
-            `  2\uFE0F\u20E3 copy the printed ${B("TELEGRAM_SESSION")} into your env`,
-            `  3\uFE0F\u20E3 restart the bot, then tap \uD83D\uDD01 Run again`,
+            `${tgEmoji("🔧")}  ${B("Fix the account transport")}`,
+            `  1️⃣ run ${B(CODE("npm run userbot:login"))} and follow the prompts`,
+            `  2️⃣ copy the printed ${B("TELEGRAM_SESSION")} into your env`,
+            `  3️⃣ restart the bot, then tap ${tgEmoji("🔄")} Run again`,
         );
         if (info.kind !== "userbot_auth" && info.kind !== "userbot_not_ready") {
             lines.push(
                 "",
-                `\uD83D\uDC64  ${B("Remember")}: results only land here once ${B(own)} can use your login`,
+                `${tgEmoji("👤")}  ${B("Remember")}: results only land here once ${B(own)} can use your login`,
             );
         }
     } else {
         lines.push(
             "",
-            `\uD83D\uDD27  ${B("Unlock bot-to-bot messaging")}`,
-            `  1\uFE0F\u20E3 ${B("@BotFather")} \u2192 ${B("/mybots")} \u2192 ${B(own)}`,
-            `  2\uFE0F\u20E3 ${B("Bot Settings")} \u2192 ${B("Bot-to-Bot Communication")} \u2192 ${B("Enable")}`,
-            `  3\uFE0F\u20E3 the owner of ${B(mentionOf(info.searcherBot))} must enable it too`,
-            `  4\uFE0F\u20E3 tap \uD83D\uDD01 Run again \u2014 Telegram allows bot \u2194 bot chats only when both agree`,
+            `${tgEmoji("🔧")}  ${B("Unlock bot-to-bot messaging")}`,
+            `  1️⃣ ${B("@BotFather")} → ${B("/mybots")} → ${B(own)}`,
+            `  2️⃣ ${B("Bot Settings")} → ${B("Bot-to-Bot Communication")} → ${B("Enable")}`,
+            `  3️⃣ the owner of ${B(mentionOf(info.searcherBot))} must enable it too`,
+            `  4️⃣ tap ${tgEmoji("🔄")} Run again — Telegram allows bot ↔ bot chats only when both agree`,
             "",
-            `\uD83E\uDD16  ${B("Better bypass")}: log in with your own account (${B(CODE("SEARCH_TRANSPORT=userbot"))}),`,
-            `  so the relay talks to ${B(mentionOf(info.searcherBot))} as a user \u2014 no owner needed.`,
+            `${tgEmoji("🤖")}  ${B("Better bypass")}: log in with your own account (${B(CODE("SEARCH_TRANSPORT=userbot"))}),`,
+            `  so the relay talks to ${B(mentionOf(info.searcherBot))} as a user — no owner needed.`,
         );
     }
     lines.push(
         "",
-        `\uD83D\uDEE0\uFE0F  ${B("By hand, right now")}`,
-        ...info.steps.map((step, i) => `  ${i + 1}\uFE0F\u20E3 ${CODE(escapeHtml(step.text))}`),
-        `  \u21B3 send these to ${B(mentionOf(info.searcherBot))} yourself, ${B(pacingLabel(info.stepDelayMs))} apart`,
-        `  \u21B3 forward its answers here \u2014 files get cleaned \uD83E\uDDFC`,
+        `${tgEmoji("🛠️")}  ${B("By hand, right now")}`,
+        ...info.steps.map((step, i) => `  ${i + 1}️⃣ ${CODE(escapeHtml(step.text))}`),
+        `  ↳ send these to ${B(mentionOf(info.searcherBot))} yourself, ${B(pacingLabel(info.stepDelayMs))} apart`,
+        `  ↳ forward its answers here — files get cleaned ${tgEmoji("🧼")}`,
     );
     return lines.join("\n");
 }

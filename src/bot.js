@@ -2416,9 +2416,9 @@ async function deliverCombinedAndResetBatch(ctx) {
         if (lines.length > 0) {
             await sendCombined(ctx, true);
             store.clear(chatId);
-            await safeReply(ctx, "\uD83E\uDDF9 Batch automatically cleaned and reset.");
+            await safeReply(ctx, `${tgEmoji("🧹")} Batch automatically cleaned and reset.`);
         } else {
-            await safeReply(ctx, "\uD83D\uDCED Search completed, but no credentials were found in the batch.");
+            await safeReply(ctx, `${tgEmoji("📭")} Search completed, but no credentials were found in the batch.`);
         }
     } catch (err) {
         console.error("deliverCombinedAndResetBatch failed:", err);

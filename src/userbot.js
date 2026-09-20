@@ -874,7 +874,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 timeoutMs,
                 "userbot send query",
             );
-            await sleep(Math.min(stepDelayMs, 1000));
+            await sleep(Math.max(1500, Math.min(stepDelayMs, 2500)));
 
             let currentDate = startDate ? new Date(startDate.getTime()) : null;
 
@@ -891,7 +891,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     timeoutMs,
                     "userbot send /start for latest batch",
                 );
-                await sleep(1000);
+                await sleep(1200);
                 const recentMsgs = await withTimeout(
                     client.getMessages(searchTarget, { limit: 5 }),
                     timeoutMs,
@@ -1057,17 +1057,29 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 }
 
                 let histBtn = null;
-                if (folderView && folderView.replyMarkup && folderView.replyMarkup.rows) {
-                    for (const row of folderView.replyMarkup.rows) {
-                        for (const btn of row.buttons) {
-                            const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
-                            if (dataStr.startsWith(`hist:${dateStr}`) || dataStr.includes("hist:")) {
-                                histBtn = { text: btn.text, data: dataStr };
-                                break;
+                for (let histAttempt = 0; histAttempt < 3; histAttempt++) {
+                    if (histAttempt > 0) {
+                        await sleep(1000);
+                        try {
+                            const byId = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
+                            if (byId && byId[0] && byId[0].replyMarkup && byId[0].replyMarkup.rows) {
+                                folderView = byId[0];
                             }
-                        }
-                        if (histBtn) break;
+                        } catch {}
                     }
+                    if (folderView && folderView.replyMarkup && folderView.replyMarkup.rows) {
+                        for (const row of folderView.replyMarkup.rows) {
+                            for (const btn of row.buttons) {
+                                const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
+                                if (dataStr.startsWith(`hist:${dateStr}`) || dataStr.includes("hist:") || (btn.text && (btn.text.includes("hist") || btn.text.includes("Full")))) {
+                                    histBtn = { text: btn.text, data: dataStr };
+                                    break;
+                                }
+                            }
+                            if (histBtn) break;
+                        }
+                    }
+                    if (histBtn) break;
                 }
 
                 if (histBtn) {
@@ -1089,18 +1101,23 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     daysProcessed++;
 
                     // Wait for result message from DumpNews14Bot and forward
-                    let foundNewResult = false;
-                    for (let waitAttempt = 0; waitAttempt < 4; waitAttempt++) {
+                    let foundDoc = false;
+                    let foundAny = false;
+                    const maxWaitAttempts = 6;
+                    for (let waitAttempt = 0; waitAttempt < maxWaitAttempts; waitAttempt++) {
                         await sleep(waitAttempt === 0 ? 1800 : 1500);
                         if (chatId) {
                             try {
-                                const latest = await client.getMessages(searchTarget, { limit: 5 });
+                                const latest = await client.getMessages(searchTarget, { limit: 10 });
                                 for (const m of latest) {
                                     const isTargetMsg = !m.out && !seenResultIds.has(m.id) &&
                                         (m.id > (folderView.id || 0) || m.id > (sentStart.id || 0) || (waitAttempt > 0 && (m.media || m.document)));
                                     if (isTargetMsg) {
                                         seenResultIds.add(m.id);
-                                        foundNewResult = true;
+                                        foundAny = true;
+                                        if (m.media || m.document || m.file) {
+                                            foundDoc = true;
+                                        }
                                         if (resultSink) {
                                             await resultSink(m);
                                         }
@@ -1114,7 +1131,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                 log.log(`userbot post-hist message fetch error: ${err && err.message ? err.message : err}`);
                             }
                         }
-                        if (foundNewResult) break;
+                        if (foundDoc) {
+                            await sleep(500);
+                            break;
+                        }
+                        if (foundAny && waitAttempt >= 3) break;
                     }
                 } else {
                     log.log(`userbot could not find hist button in folder for ${dateStr}`);

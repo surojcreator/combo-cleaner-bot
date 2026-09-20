@@ -45,9 +45,10 @@ function evictIfNeeded() {
  * @param {number} chatId
  * @param {string[]} lines
  * @param {string} [site] detected site slug this batch of lines belongs to
+ * @param {{ countFile?: boolean }} [options]
  * @returns {{ added: number, duplicates: number, capped: boolean, size: number }}
  */
-function addLines(chatId, lines, site) {
+function addLines(chatId, lines, site, options = {}) {
     const chat = getChat(chatId);
     let added = 0;
     let duplicates = 0;
@@ -67,7 +68,7 @@ function addLines(chatId, lines, site) {
     }
 
     chat.totalKept += added;
-    chat.files += 1;
+    if (options.countFile !== false) chat.files += 1;
     if (site) {
         // Track *lines* per site (not files) for the /sites breakdown.
         chat.sites.set(site, (chat.sites.get(site) || 0) + added);

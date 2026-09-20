@@ -166,11 +166,12 @@ function confirmClearKeyboard() {
 }
 
 /**
- * The /start and /help message — full branded welcome.
+ * /start and /help message — full branded welcome.
  * @param {string} [botUsername]
  * @param {{ size: number, files: number }|null} [batch] existing batch summary
+ * @param {string|null} [searcherBot] configured ULP searcher bot username
  */
-function renderHelp(botUsername, batch = null) {
+function renderHelp(botUsername, batch = null, searcherBot = null) {
     const mention = botUsername ? `@${escapeHtml(botUsername)}` : "this bot";
     const lines = [
         `\uD83E\uDDFC  ${B("COMBO CLEANER")}`,
@@ -194,6 +195,10 @@ function renderHelp(botUsername, batch = null) {
         `  /stats \u2014 \uD83D\uDCCA batch dashboard`,
         `  /sites \u2014 \uD83D\uDCE1 per-site breakdown`,
         `  /preview \u2014 \uD83D\uDC41 peek at sample lines`,
+        `  /search \u2014 \uD83D\uDD0E search your batch`,
+        `  /lsearch \u2014 \uD83D\uDCBE search the newest full disk output`,
+        `  /ulp \u2014 \uD83D\uDD0E relay a ULP search (query + hist:full)`,
+        `  /process \u2014 \uD83D\uDCC2 clean a file already on the server (e.g. /var/data/...)`,
         `  /clear \u2014 \uD83E\uDDF9 fresh batch`,
         `  /ping \u2014 \uD83C\uDFD3 latency & uptime`,
         `  /help \u2014 \u2753 this message`,
@@ -204,6 +209,16 @@ function renderHelp(botUsername, batch = null) {
         lines.push(
             `\uD83D\uDCE3  ${B("Welcome back!")} You have ${B(num(batch.size))}` +
                 ` unique line${batch.size === 1 ? "" : "s"} waiting \uD83C\uDF81`,
+            "",
+        );
+    }
+
+    if (searcherBot) {
+        lines.push(
+            `\uD83E\uDD16  ${B("ULP search relay")}`,
+            `  /ulp htzone.co.il ${I("[day|month|year]")}`,
+            `  \u21B3 sends ${B("query")} + ${B("hist:full")} to ${B(`@${escapeHtml(searcherBot)}`)}`,
+            `  \u21B3 waits ${B("7s")} before every try, forwards results here`,
             "",
         );
     }
@@ -419,6 +434,292 @@ function renderSearch(query, result) {
     return out.join("\n");
 }
 
+/**
+ * Seconds label for the send pacing, e.g. 7000 -> "7s".
+ * @param {number} ms
+ */
+function pacingLabel(ms) {
+    const s = Number(ms || 0) / 1000;
+    return `${Number.isInteger(s) ? s : s.toFixed(1)}s`;
+}
+
+/**
+ * @param {string} username
+ */
+function mentionOf(username) {
+    return `@${escapeHtml(String(username || "").replace(/^@+/, ""))}`;
+}
+
+/**
+ * Scope buttons for the ULP relay.
+ * @param {string} [scope]
+ */
+function ulpKeyboard(scope = "day") {
+    const mark = (s) => (s === scope ? "\u25CF " : "");
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback(`${mark("day")}\uD83D\uDDD3\uFE0F Day`, "ulp:day"),
+            Markup.button.callback(`${mark("month")}\uD83D\uDDD3\uFE0F Month`, "ulp:month"),
+            Markup.button.callback(`${mark("year")}\uD83D\uDDD3\uFE0F Year`, "ulp:year"),
+        ],
+        [
+            Markup.button.callback("\uD83D\uDD01 Run again", "ulp:again"),
+            Markup.button.callback("\uD83D\uDED1 Stop", "ulp:stop"),
+        ],
+    ]);
+}
+
+/**
+ * Keyboard attached to a relayed result (documents can be cleaned straight away).
+ * @param {boolean} [hasDocument]
+ */
+function ulpResultKeyboard(hasDocument = false) {
+    const rows = [];
+    if (hasDocument) {
+        rows.push([Markup.button.callback("\uD83E\uDDFC Clean into batch", "ulp:clean")]);
+    }
+    rows.push([
+        Markup.button.callback("\uD83D\uDCE6 Get combined file", "combine"),
+        Markup.button.callback("\uD83D\uDCCA Stats", "stats"),
+    ]);
+    return Markup.inlineKeyboard(rows);
+}
+
+/**
+ * /ulp usage card.
+ * @param {{ searcherBot: string, stepDelayMs: number, maxTries: number }} info
+ */
+function renderUlpHint(info) {
+    return [
+        `\uD83D\uDD0E  ${B("ULP SEARCH RELAY")}`,
+        RULE,
+        `${I("Usage:")} ${CODE("/ulp htzone.co.il [day|month|year]")}`,
+        "",
+        `  1\uFE0F\u20E3 ${B("query")} \u2014 sent to ${B(mentionOf(info.searcherBot))} exactly as you typed it`,
+        `  2\uFE0F\u20E3 ${B("hist:full")} \u2014 right after, for the scope you pick`,
+        `  3\uFE0F\u20E3 ${B("wait")} \u2014 ${B(pacingLabel(info.stepDelayMs))} before every try, up to ${B(String(info.maxTries))} tries`,
+        `  4\uFE0F\u20E3 ${B("forward")} \u2014 every answer comes back here \u2B07\uFE0F`,
+        "",
+        `${I("Documents land with a \uD83E\uDDFC Clean into batch button \u2728")}`,
+    ].join("\n");
+}
+
+/**
+ * /ulp launch card: the exact sequence that will be sent to the searcher bot.
+ * @param {{ query: string, scope: string, searcherBot: string, steps: Array<{ id: string, text: string }>, stepDelayMs: number, maxTries: number, transport?: string }} info
+ */
+function renderUlpStart(info) {
+    const histStep = info.steps.find((s) => s.id === "hist");
+    const whoRow =
+        info.transport === "userbot"
+            ? [
+                `\uD83D\uDC64  Sender    ${B("your account")} ${I("(MTProto bypass)")}`,
+                `\uD83E\uDD16  Via       ${B(mentionOf(info.searcherBot))}`,
+            ]
+            : [`\uD83E\uDD16  Searcher  ${B(mentionOf(info.searcherBot))}`];
+    return [
+        `\uD83D\uDD0E  ${B("ULP SEARCH")}`,
+        RULE,
+        `\uD83C\uDFAF  Query     ${B(escapeHtml(info.query))}`,
+        `\uD83D\uDDD3\uFE0F  History   ${B(escapeHtml(histStep ? histStep.text : `hist:full:${info.scope}`))}`,
+        ...whoRow,
+        `\u23F1\uFE0F  Pacing    ${B(pacingLabel(info.stepDelayMs))} before every try \u00B7 up to ${B(String(info.maxTries))}`,
+        "",
+        `\uD83D\uDCE4  ${B("Sending")}`,
+        ...info.steps.map((step, i) => `  ${i + 1}\uFE0F\u20E3 ${CODE(escapeHtml(step.text))}`),
+        "",
+        `${I("Results are forwarded here as they arrive \u2B07\uFE0F")}`,
+    ].join("\n");
+}
+
+/**
+ * Progress card after each paced send.
+ * @param {{ searcherBot: string, attempt: number, maxTries: number, sends: number, stepDelayMs: number }} info
+ */
+function renderUlpProgress(info) {
+    return [
+        `\uD83D\uDCE1  ${B("SENT")} \u00B7 try ${B(`${info.attempt}/${info.maxTries}`)}`,
+        RULE,
+        `\uD83E\uDD16  ${B(mentionOf(info.searcherBot))} \u00B7 ${num(info.sends)} message${info.sends === 1 ? "" : "s"} sent`,
+        `\u23F3  ${I(`Waiting up to ${pacingLabel(info.stepDelayMs)} for an answer\u2026`)}`,
+    ].join("\n");
+}
+
+/**
+ * Header posted once, right before results are forwarded.
+ * @param {{ searcherBot: string, query: string, scope: string, count: number }} info
+ */
+function renderUlpResults(info) {
+    return [
+        `\uD83D\uDCE5  ${B("RESULTS INCOMING")}`,
+        RULE,
+        `\uD83E\uDD16  ${B(mentionOf(info.searcherBot))} answered \u2014 forwarding ${B(num(info.count))} message${info.count === 1 ? "" : "s"} \u2B07\uFE0F`,
+        `\uD83D\uDD0E  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        "",
+        `${I("Documents get a \uD83E\uDDFC Clean into batch button \u2728")}`,
+    ].join("\n");
+}
+
+/**
+ * Nothing came back after all paced tries.
+ * @param {{ searcherBot: string, query: string, scope: string, attempts: number, stepDelayMs: number }} info
+ */
+function renderUlpEmpty(info) {
+    return [
+        `\uD83D\uDD73\uFE0F  ${B("NO RESULTS")}`,
+        RULE,
+        `Tried ${B(`${info.attempts}\u00D7`)} with ${B(pacingLabel(info.stepDelayMs))} pacing \u2014 ${B(mentionOf(info.searcherBot))} stayed quiet \uD83D\uDE36`,
+        `\uD83D\uDD0E  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        "",
+        `${I("Tap another scope \u2B07\uFE0F or run /ulp with a new query")}`,
+    ].join("\n");
+}
+
+/**
+ * Run stopped by the user (or the result window expired).
+ * @param {{ query: string, scope: string, count: number }} info
+ */
+function renderUlpStopped(info) {
+    return [
+        `\uD83D\uDED1  ${B("SEARCH STOPPED")}`,
+        RULE,
+        `\uD83D\uDD0E  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        `${num(info.count)} result message${info.count === 1 ? "" : "s"} relayed this run`,
+        "",
+        `${I("Start another one with /ulp \uD83D\uDD01")}`,
+    ].join("\n");
+}
+
+/**
+ * Short headline for each blocked/failed send reason.
+ * @param {string} kind
+ * @param {string} [transport] "userbot" when the MTProto transport sent it
+ */
+function ulpErrorHeader(kind, transport = "bot") {
+    switch (kind) {
+        case "bot_to_bot_disabled":
+            return {
+                emoji: "\uD83D\uDEA7",
+                title: "BOT-TO-BOT IS OFF",
+                detail: "Telegram refused the send \u2014 bots may message each other only when both sides switch it on.",
+            };
+        case "not_started":
+            return {
+                emoji: "\uD83D\uDC4B",
+                title: "SEARCHER NEEDS A START",
+                detail: "Open the searcher bot and press START once, then run the relay again.",
+            };
+        case "not_found":
+            return {
+                emoji: "\uD83E\uDDED",
+                title: "SEARCHER NOT FOUND",
+                detail: "Telegram couldn't resolve that username \u2014 check SEARCH_BOT_USERNAME.",
+            };
+        case "blocked":
+            return {
+                emoji: "\uD83D\uDEAB",
+                title: "SEARCHER BLOCKED US",
+                detail: "That bot blocked this one, so messages can't be delivered.",
+            };
+        case "flood_wait":
+            return {
+                emoji: "\u23F3",
+                title: "SLOW DOWN",
+                detail: "Telegram rate-limited the send \u2014 wait a few seconds, then try again.",
+            };
+        case "userbot_auth":
+            return {
+                emoji: "\uD83D\uDD11",
+                title: "USERBOT SESSION DEAD",
+                detail: "Your account session no longer logs in. Fix it with a fresh login, then restart the bot.",
+            };
+        case "userbot_not_ready":
+            return {
+                emoji: "\uD83E\uDD16",
+                title: "USERBOT NOT READY",
+                detail: "The account transport isn't connected yet — start it, then try again, or run the relay by hand below.",
+            };
+        default:
+            return {
+                emoji: "\uD83D\uDCA5",
+                title: "SEND FAILED",
+                detail: "Telegram rejected the message to the searcher bot.",
+            };
+    }
+}
+
+/**
+ * Explains why the relay couldn't send, how to fix it, and how to run the
+ * very same search by hand in the meantime.
+ *
+ * @param {{ kind: string, searcherBot: string, ownBot?: string|null, steps: Array<{ id: string, text: string }>, stepDelayMs: number, reason?: string|null, transport?: string }} info
+ */
+function renderUlpBlocked(info) {
+    const transport = info.transport === "userbot" ? "userbot" : "bot";
+    const header = ulpErrorHeader(info.kind, transport);
+    const own = info.ownBot ? mentionOf(info.ownBot) : "this bot";
+    const lines = [
+        `${header.emoji}  ${B(header.title)}`,
+        RULE,
+        header.detail,
+    ];
+    if (info.reason) lines.push(`${I(escapeHtml(info.reason))}`);
+    if (transport === "userbot") {
+        lines.push(
+            "",
+            `\uD83D\uDD27  ${B("Fix the account transport")}`,
+            `  1\uFE0F\u20E3 run ${B(CODE("npm run userbot:login"))} and follow the prompts`,
+            `  2\uFE0F\u20E3 copy the printed ${B("TELEGRAM_SESSION")} into your env`,
+            `  3\uFE0F\u20E3 restart the bot, then tap \uD83D\uDD01 Run again`,
+        );
+        if (info.kind !== "userbot_auth" && info.kind !== "userbot_not_ready") {
+            lines.push(
+                "",
+                `\uD83D\uDC64  ${B("Remember")}: results only land here once ${B(own)} can use your login`,
+            );
+        }
+    } else {
+        lines.push(
+            "",
+            `\uD83D\uDD27  ${B("Unlock bot-to-bot messaging")}`,
+            `  1\uFE0F\u20E3 ${B("@BotFather")} \u2192 ${B("/mybots")} \u2192 ${B(own)}`,
+            `  2\uFE0F\u20E3 ${B("Bot Settings")} \u2192 ${B("Bot-to-Bot Communication")} \u2192 ${B("Enable")}`,
+            `  3\uFE0F\u20E3 the owner of ${B(mentionOf(info.searcherBot))} must enable it too`,
+            `  4\uFE0F\u20E3 tap \uD83D\uDD01 Run again \u2014 Telegram allows bot \u2194 bot chats only when both agree`,
+            "",
+            `\uD83E\uDD16  ${B("Better bypass")}: log in with your own account (${B(CODE("SEARCH_TRANSPORT=userbot"))}),`,
+            `  so the relay talks to ${B(mentionOf(info.searcherBot))} as a user \u2014 no owner needed.`,
+        );
+    }
+    lines.push(
+        "",
+        `\uD83D\uDEE0\uFE0F  ${B("By hand, right now")}`,
+        ...info.steps.map((step, i) => `  ${i + 1}\uFE0F\u20E3 ${CODE(escapeHtml(step.text))}`),
+        `  \u21B3 send these to ${B(mentionOf(info.searcherBot))} yourself, ${B(pacingLabel(info.stepDelayMs))} apart`,
+        `  \u21B3 forward its answers here \u2014 files get cleaned \uD83E\uDDFC`,
+    );
+    return lines.join("\n");
+}
+
+/**
+ * Card posted on a result that the userbot shared into this chat (already
+ * there as a forward or a marked copy — this just adds the tools).
+ * Applies to documents (with a clean button) and to everything else.
+ * @param {{ searcherBot: string, query: string, scope: string, count: number, hasDocument: boolean }} info
+ */
+function renderUlpSharedResult(info) {
+    return [
+        `\uD83D\uDCE5  ${B("RESULT IN")} \u00B7 ${B(mentionOf(info.searcherBot))}`,
+        RULE,
+        `\uD83D\uDD0E  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        `\uD83D\uDCE6  ${num(info.count)} result message${info.count === 1 ? "" : "s"} in this run \u2014 more may follow \u2B07\uFE0F`,
+        "",
+        info.hasDocument
+            ? `${I("Tap \uD83E\uDDFC below to sort it into the batch \u2728")}`
+            : `${I("Long text results: save them as a .txt and I'll take it from there \uD83D\uDCC2")}`,
+    ].join("\n");
+}
+
 module.exports = {
     renderHelp,
     renderStats,
@@ -428,15 +729,26 @@ module.exports = {
     renderPreview,
     renderSearch,
     renderWelcomeBack,
+    renderUlpHint,
+    renderUlpStart,
+    renderUlpProgress,
+    renderUlpResults,
+    renderUlpEmpty,
+    renderUlpStopped,
+    renderUlpBlocked,
+    renderUlpSharedResult,
     escapeHtml,
     mainKeyboard,
     confirmClearKeyboard,
     afterCombineKeyboard,
     emptyBatchKeyboard,
+    ulpKeyboard,
+    ulpResultKeyboard,
     B,
     I,
     U,
     CODE,
+    RULE,
     bar,
     num,
     compact,

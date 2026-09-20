@@ -6,7 +6,9 @@
     "main": "src/index.js",
     "scripts": {
         "start": "node src/index.js",
-        "test": "node --test"
+        "test": "node --test",
+        "userbot:login": "node scripts/userbot-login.js",
+        "userbot:login:noninteractive": "node scripts/userbot-login-noninteractive.js"
     },
     "engines": {
         "node": ">=18"
@@ -14,6 +16,7 @@
     "dependencies": {
         "adm-zip": "^0.5.16",
         "dotenv": "^16.4.7",
-        "telegraf": "^4.16.3"
+        "telegraf": "^4.16.3",
+        "teleproto": "^1.229.0"
     }
 }

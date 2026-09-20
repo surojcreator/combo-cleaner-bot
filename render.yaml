@@ -18,3 +18,34 @@ services:
         sync: false # set to https://<your-service>.onrender.com (no trailing slash)
       - key: PORT
         value: 8080
+      # ULP search relay (/ulp) — requires Bot-to-Bot Communication enabled for
+      # both bots in @BotFather, otherwise the relay explains how to fix it.
+      - key: SEARCH_BOT_USERNAME
+        value: DumpNews14Bot
+      - key: SEARCH_STEP_DELAY_MS
+        value: "7000"
+      - key: SEARCH_RESULT_WAIT_MS
+        value: "20000"
+      - key: SEARCH_MAX_TRIES
+        value: "3"
+      - key: SEARCH_HIST_TEMPLATE
+        value: "hist:full:{scope}"
+      - key: SEARCH_WINDOW_MS
+        value: "300000"
+      # Account bypass for sealed search bots: /ulp talks to the searcher bot
+      # from your own account instead of bot-to-bot. Set the three TELEGRAM_*
+      # values as secrets in the Render dashboard (never committed).
+      - key: SEARCH_TRANSPORT
+        value: auto
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: TELEGRAM_SESSION
+        sync: false
+      - key: LOCAL_PROCESS_ROOT
+        value: /var/data
+      - key: PROCESS_MAX_ZIP_BYTES
+        value: "4294967296"
+      - key: LOCAL_PROCESSED_ROOT
+        value: /var/data/processed

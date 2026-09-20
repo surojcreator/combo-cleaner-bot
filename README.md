@@ -22,6 +22,9 @@ want the download. `/clear` starts a fresh batch.
 | Feature | Details |
 | --- | --- |
 | Forward or upload | Send `.zip`, `.txt`, `.csv`, `.log`, etc. as a document |
+| **Large local files** | Put files on the mounted disk and run `/process /var/data/file.txt`; text files stream without Telegram's 20 MB limit |
+| **Persistent output/search** | Complete cleaned output goes to `/var/data/processed`; `/lsearch term` searches the newest output without loading it into RAM |
+| **ULP search relay** | `/ulp htzone.co.il [day\|month\|year]` drives an external searcher bot (`@DumpNews14Bot` by default): query → `hist:full:<scope>`, **7 s before every try**, answers forwarded back |
 | **On-demand combined file** | Uploads accumulate in the batch; tap **📦 Get combined file** (or `/combine`) to download |
 | **Site-named output** | Detects the website from URLs/emails in the dump or the file name → `netflix.com_combined_2026-09-19.txt` |
 | Nested zips | Automatically walks zips-inside-zips (up to 3 levels) |
@@ -36,10 +39,147 @@ want the download. `/clear` starts a fresh batch.
 
 ## Commands
 
+- `/ulp <query> [day|month|year]` — 🔎 relay a search to the searcher bot, results forwarded back
+- `/process /var/data/file.txt` — process a server-side file without uploading through Telegram
+- `/process local` — process the newest file directly under `/var/data`
+- `/lsearch <query>` — search the newest full output under `/var/data/processed`
 - `/combine` — download the combined, deduped file
 - `/stats` — how many unique lines are stored for this chat
 - `/clear` — wipe this chat's stored lines
 - `/help` — usage help
+
+---
+
+## 📂 Large files on `/var/data`
+
+Telegram bots can only download files up to 20 MB. For a large file, upload it
+to the server by SCP, SFTP, your host's file manager, or another direct transfer,
+then tell the bot to read it locally:
+
+```text
+/process /var/data/big-dump.txt
+```
+
+Or process the newest file directly under the mount:
+
+```text
+/process local
+```
+
+Plain `.txt`, `.csv`, `.tsv`, `.log`, `.lst`, `.list`, and `.dat` files are
+streamed line-by-line, so a 50 GB input does not need 50 GB of RAM. The complete
+cleaned stream is written persistently to `/var/data/processed/*.txt`. The bot's
+RAM batch remains capped and deduplicated for `/combine`, while the disk output
+keeps the full cleaned stream. Search the newest disk output with:
+
+```text
+/lsearch htzone.co.il
+```
+
+`/process` runs as a background job so a multi-hour file does not hold a webhook
+request open. Only one local job may run per Telegram chat at a time.
+
+> **Large zip warning:** the current zip reader (`adm-zip`) loads the archive in
+> memory and is capped at 4 GB. For a 50 GB archive, extract it into `/var/data`
+> first, then `/process` the resulting text file. The 50 GB streaming path is for
+> plain text data, not a single giant zip.
+
+Environment paths:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LOCAL_PROCESS_ROOT` | `/var/data` | directory used by `/process local` |
+| `LOCAL_PROCESSED_ROOT` | `/var/data/processed` | persistent cleaned outputs searched by `/lsearch` |
+| `PROCESS_MAX_ZIP_BYTES` | `4294967296` (4 GiB) | admission cap for RAM-bound zip processing; does not affect streamed text |
+
+For safety, `/process` refuses paths outside `LOCAL_PROCESS_ROOT`, including
+symlink or `..` escapes. Set `ALLOWED_USER_ID` as well, because this command
+gives its authorized user controlled access to files inside the mounted root.
+
+---
+
+## 🔎 ULP search relay — `/ulp`
+
+Ask this bot to run a search on an external **ULP searcher bot** (default
+`@DumpNews14Bot`) and relay everything that bot answers back into your chat:
+
+```text
+/ulp htzone.co.il          # query only — scope defaults to day
+/ulp htzone.co.il month    # scopes: day | month | year
+```
+
+Exactly what happens, in order — all of it paced:
+
+| # | Step | Detail |
+| --- | --- | --- |
+| 1 | **write the query** | `htzone.co.il` is sent to the searcher bot exactly as you typed it |
+| 2 | **history request** | right after, `hist:full:<scope>` goes out (`hist:full:day`, `:month`, `:year`) |
+| 3 | **wait 7 s before every try** | every message — and every retry — waits `SEARCH_STEP_DELAY_MS` (default `7000`) first |
+| 4 | **forward the results** | every answer the searcher sends back is forwarded into the chat that asked; files arrive with a **🧼 Clean into batch** button |
+
+The launch card carries scope buttons (**🗓 Day / 🗓 Month / 🗓 Year**, re-run the
+same query) plus **🔁 Run again** and **🛑 Stop**. A run keeps relaying for
+`SEARCH_WINDOW_MS` (5 min) and closes itself; result messages are de-duplicated
+by message id and capped per run, retries are capped too, and late answers are
+still routed to whoever searched last.
+
+### ⚠️ One-time setup — bot-to-bot messaging
+
+Telegram only delivers *private* messages between bots when **Bot-to-Bot
+Communication** is enabled for **both** bots in @BotFather. Until then the API
+answers `USER_BOT_TO_BOT_DISABLED` and the relay replies with the exact fix:
+
+1. @BotFather → `/mybots` → **your bot** → **Bot Settings** → **Bot-to-Bot Communication** → **Enable**
+2. the owner of `@DumpNews14Bot` must enable it for that bot too
+3. tap **🔁 Run again**
+
+If it stays off, the same message tells you how to do it **by hand**: send the
+query, wait 7 s, send `hist:full:<scope>`, then forward the answers to this bot —
+files are cleaned into the batch as usual, so nothing is lost.
+
+### 🐇 The bypass when the other owner can't be reached
+
+This is the normal case for third-party search bots: their owner will never flip
+the switch, so bot-to-bot stays sealed forever. The relay can instead go through
+**your own account** (MTProto, via the `teleproto` package): the query and the
+history request are sent to the searcher as *you*, with the same 7 s pacing and
+the same caps — and every answer is shared back into the chat that asked, where
+it lands with the usual **🧼 Clean into batch** button. No other owner needed.
+
+Setup (one time, ~5 minutes):
+
+1. Create an app at [my.telegram.org](https://my.telegram.org) → copy `api_id` and `api_hash`.
+2. Run `npm run userbot:login`, follow the prompts (phone number, login code, 2FA
+   password if set). It prints a `TELEGRAM_SESSION=...` line.
+3. Add the three secrets to your environment — locally in `.env`, on Render in the
+   dashboard (**Environment → Secrets**):
+   `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION`.
+4. Restart. The logs show `Userbot: connected as your account, listening to @DumpNews14Bot …`
+   and the launch card reads 👤 **Sender — your account**.
+
+Keep `SEARCH_TRANSPORT=auto` (uses the account whenever it's connected, Bot API
+otherwise), or force a path with `userbot` / `bot`. Forwarded results keep their
+original author; if a result can't be forwarded (protected content) it arrives as
+a marked `#ulp` copy instead.
+
+> ⚠️ **Be honest with yourself here:** an account session is a full login as you —
+> never commit it, and lock the bot with `ALLOWED_USER_ID`. Automating your own
+> account also sits in a grey zone of Telegram's rules, so keep pacing human
+> (the relay does: 7 s between tries, capped retries) and consider a **secondary
+> account** just for the relay instead of your main one.
+
+### Relay settings
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `SEARCH_BOT_USERNAME` | `DumpNews14Bot` | searcher bot that receives the query |
+| `SEARCH_STEP_DELAY_MS` | `7000` | wait before **every** try — the 7 s rule |
+| `SEARCH_RESULT_WAIT_MS` | `20000` | how long to wait for an answer before retrying |
+| `SEARCH_MAX_TRIES` | `3` | how often the query + history pair may repeat |
+| `SEARCH_HIST_TEMPLATE` | `hist:full:{scope}` | history request; `{scope}` = `day`/`month`/`year` |
+| `SEARCH_WINDOW_MS` | `300000` | how long a run keeps relaying results |
+| `SEARCH_TRANSPORT` | `auto` | `auto` / `userbot` / `bot` — the account bypass or Bot API only |
+| `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_SESSION` | — | account bypass login (`npm run userbot:login`) |
 
 ---
 
@@ -149,7 +289,7 @@ site name on their own. If nothing is detected, the original file name is used.
 ## Development
 
 ```bash
-npm test        # runs the cleaner, extractor and site-detection unit tests (node:test)
+npm test        # cleaner, extractor, sites, store, search-relay and end-to-end ULP flow tests (node:test)
 ```
 
 Project layout:
@@ -157,17 +297,22 @@ Project layout:
 ```
 src/
   index.js      entrypoint: polling/webhook + health server, access control
-  bot.js        Telegram handlers (documents, /combine, /stats, /clear)
+  bot.js        Telegram handlers (documents, /combine, /stats, /clear, /ulp relay)
+  searchbot.js  ULP search relay: query + hist:full steps, 7s pacing, retries, run state
+  userbot.js    MTProto account bypass (teleproto): sends as you, shares results back
   cleaner.js    line-level keep/drop + normalization + dedupe
   extractor.js  zip walking (incl. nested) + safety caps -> cleanText
   sites.js      website detection + output-file naming
   store.js      per-chat in-memory accumulation with caps
-  messages.js   HTML-safe message templates (banners, progress bars)
+  messages.js   HTML-safe message templates (banners, progress bars, relay cards)
 test/
   cleaner.test.js
   extractor.test.js
   sites.test.js
   store.test.js
+  searchbot.test.js   relay logic: scopes, steps, pacing, retries, run state
+  ulp-flow.test.js    end-to-end /ulp flow against a fake Bot API server
+  userbot.test.js     account transport: config, error mapping, result routing
 ```
 
 ---

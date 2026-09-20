@@ -1,0 +1,86 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { createBot, parseUlpArg, isSearcherMessage, isSearcherForward, pickTransport } = require("../src/bot");
+const userbot = require("../src/userbot");
+
+test("userbot config reads env and spots missing secrets", () => {
+    const full = userbot.loadConfig({
+        TELEGRAM_API_ID: "12345",
+        TELEGRAM_API_HASH: "abc",
+        TELEGRAM_SESSION: "1xxxxx",
+        SEARCH_BOT_USERNAME: "@DumpNews14Bot",
+        SEARCH_TRANSPORT: "UserBot",
+    });
+    assert.equal(full.apiId, 12345);
+    assert.equal(full.apiHash, "abc");
+    assert.equal(full.searcher, "DumpNews14Bot");
+    assert.equal(full.transport, "userbot");
+    assert.equal(userbot.isConfigured(full), true);
+
+    const missing = userbot.loadConfig({ SEARCH_BOT_USERNAME: "DumpNews14Bot" });
+    assert.equal(userbot.isConfigured(missing), false);
+});
+
+test("classifyUserbotError maps MTProto failures to relay kinds", () => {
+    assert.equal(userbot.classifyUserbotError({ errorMessage: "SESSION_REVOKED" }), "userbot_auth");
+    assert.equal(userbot.classifyUserbotError({ message: "SESSION_INVALID: run login again" }), "userbot_auth");
+    assert.equal(userbot.classifyUserbotError({ errorMessage: "USERBOT_NOT_READY" }), "userbot_auth");
+    assert.equal(userbot.classifyUserbotError({ errorMessage: "USERNAME_NOT_OCCUPIED" }), "not_found");
+    assert.equal(userbot.classifyUserbotError({ errorMessage: "FLOOD_WAIT_30" }), "flood_wait");
+    assert.equal(userbot.classifyUserbotError({ errorMessage: "YOU_BLOCKED_USER" }), "blocked");
+    assert.equal(userbot.classifyUserbotError(new Error("socket hang up")), "other");
+});
+
+test("pickTransport prefers the connected account, else the Bot API", () => {
+    const ctx = { telegram: { sendMessage: async () => true } };
+    const searchOptions = { botUsername: "DumpNews14Bot", transport: "auto" };
+
+    const ready = { isReady: () => true, send: async (t) => ({ message_id: 1, chat: { id: 7 } }), classify: () => "other" };
+    assert.equal(pickTransport({ userbot: ready }, searchOptions, ctx).kind, "userbot");
+
+    const down = { isReady: () => false, send: async () => true, classify: () => "other" };
+    assert.equal(pickTransport({ userbot: down }, searchOptions, ctx).kind, "bot");
+    assert.equal(pickTransport({}, searchOptions, ctx).kind, "bot");
+
+    const forcedDown = pickTransport({ userbot: down }, { botUsername: "DumpNews14Bot", transport: "userbot" }, ctx);
+    assert.equal(forcedDown.kind, "userbot");
+    assert.equal(forcedDown.classify(new Error("x")), "userbot_not_ready");
+});
+
+test("isSearcherForward spots results shared by the bypass", () => {
+    const searchOptions = { botUsername: "DumpNews14Bot" };
+    const meta = { searcherBotId: 8844520471 };
+
+    const modern = {
+        from: { is_bot: false, id: 999 },
+        message: { message_id: 1, forward_origin: { type: "user", sender_user: { id: 8844520471, is_bot: true, username: "DumpNews14Bot" } }, document: { file_id: "x" } },
+    };
+    assert.equal(isSearcherForward(modern, meta, searchOptions), true);
+
+    const legacy = {
+        from: { is_bot: false, id: 999 },
+        message: { message_id: 2, forward_from: { id: 8844520471, is_bot: true, username: "DumpNews14Bot" }, text: "hi" },
+    };
+    assert.equal(isSearcherForward(legacy, meta, searchOptions), true);
+
+    const markedCopy = {
+        from: { is_bot: false, id: 999 },
+        message: { message_id: 3, text: "#ulp htzone.co.il:a@b.com:pass" },
+    };
+    assert.equal(isSearcherForward(markedCopy, meta, searchOptions), true);
+
+    const otherForward = {
+        from: { is_bot: false, id: 999 },
+        message: { message_id: 4, forward_origin: { type: "user", sender_user: { id: 5, is_bot: true, username: "OtherBot" } }, text: "hi" },
+    };
+    assert.equal(isSearcherForward(otherForward, meta, searchOptions), false);
+
+    const plainText = {
+        from: { is_bot: false, id: 999 },
+        message: { message_id: 5, text: "hello" },
+    };
+    assert.equal(isSearcherForward(plainText, meta, searchOptions), false);
+});
+

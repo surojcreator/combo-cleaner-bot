@@ -198,6 +198,39 @@ function detectLatestBatchDate(menuMsg) {
     return null;
 }
 
+async function syncCustomEmojis(peer) {
+    if (!peer) return 0;
+    if (typeof peer.syncCustomEmojis === "function") {
+        const res = await peer.syncCustomEmojis();
+        return (res && typeof res.synced === "number") ? res.synced : (typeof res === "number" ? res : 0);
+    }
+    if (typeof peer.getInstalledEmojiPacks === "function") {
+        const data = await peer.getInstalledEmojiPacks();
+        const { registerCustomEmojis } = require("./messages");
+        let count = 0;
+        if (data && data.emojiMap) {
+            registerCustomEmojis(data.emojiMap);
+            count += Object.keys(data.emojiMap).length;
+        }
+        if (data && Array.isArray(data.packs)) {
+            for (const pack of data.packs) {
+                if (pack && Array.isArray(pack.documents)) {
+                    const mapped = {};
+                    for (const doc of pack.documents) {
+                        if (doc && doc.id && doc.alt) {
+                            mapped[doc.alt] = String(doc.id);
+                        }
+                    }
+                    registerCustomEmojis(mapped);
+                    count += Object.keys(mapped).length;
+                }
+            }
+        }
+        return count;
+    }
+    return 0;
+}
+
 module.exports = {
     ULP_MARKER,
     CALL_TIMEOUT_MS,
@@ -214,6 +247,7 @@ module.exports = {
     parseDmyDate,
     detectLatestBatchDate,
     createUserbot,
+    syncCustomEmojis,
 };
 
 /**
@@ -704,6 +738,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     "userbot GetEmojiStickers",
                 );
                 const packs = [];
+                const emojiMap = {};
                 let totalEmojis = 0;
                 for (const s of (res && res.sets) || []) {
                     try {
@@ -718,6 +753,24 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         const sample = (full.packs || []).slice(0, 10).map((p) => p.emoticon);
                         const count = full.documents ? full.documents.length : (s.count || 0);
                         totalEmojis += count;
+
+                        if (Array.isArray(full.documents)) {
+                            for (const doc of full.documents) {
+                                let alt = "";
+                                if (doc.attributes) {
+                                    for (const a of doc.attributes) {
+                                        if (a && a.alt) {
+                                            alt = a.alt;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (alt && doc.id) {
+                                    emojiMap[alt] = doc.id.toString();
+                                }
+                            }
+                        }
+
                         packs.push({
                             title: s.title || s.shortName,
                             shortName: s.shortName,
@@ -736,11 +789,24 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         totalEmojis += s.count || 0;
                     }
                 }
-                return { packs, totalEmojis };
+                return { packs, totalEmojis, emojiMap };
             } catch (err) {
                 log.error("userbot getInstalledEmojiPacks error:", err && err.message ? err.message : err);
-                return { packs: [], totalEmojis: 0, error: err.message };
+                return { packs: [], totalEmojis: 0, emojiMap: {}, error: err.message };
             }
+        },
+
+        /**
+         * Sync account installed custom animated emojis directly into messages.js registry.
+         */
+        async syncCustomEmojis() {
+            if (!ready || !client) return { synced: 0, error: "USERBOT_NOT_READY" };
+            const { emojiMap, totalEmojis } = await this.getInstalledEmojiPacks();
+            const { registerCustomEmojis } = require("./messages");
+            if (emojiMap && typeof registerCustomEmojis === "function") {
+                registerCustomEmojis(emojiMap);
+            }
+            return { synced: Object.keys(emojiMap || {}).length, totalEmojis };
         },
 
         /**

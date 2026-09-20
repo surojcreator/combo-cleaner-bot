@@ -11,6 +11,119 @@ const B = (s) => `${LT}b${GT}${s}${LT}/b${GT}`;
 const I = (s) => `${LT}i${GT}${s}${LT}/i${GT}`;
 const CODE = (s) => `${LT}code${GT}${s}${LT}/code${GT}`;
 
+// Registry for Telegram custom animated emojis (symbol/name -> custom_emoji_id)
+const customAnimatedEmojis = new Map();
+
+// Optional seed from environment variable CUSTOM_ANIMATED_EMOJIS
+try {
+    if (process.env.CUSTOM_ANIMATED_EMOJIS) {
+        const parsed = JSON.parse(process.env.CUSTOM_ANIMATED_EMOJIS);
+        if (parsed && typeof parsed === "object") {
+            for (const [k, v] of Object.entries(parsed)) {
+                if (k && v) customAnimatedEmojis.set(String(k).trim(), String(v).trim());
+            }
+        }
+    }
+} catch (_) {}
+
+const EMOJI_KEY_MAP = {
+    "💎": "diamond",
+    "🚀": "rocket",
+    "✨": "sparkles",
+    "⚡️": "zap",
+    "⚡": "zap",
+    "🧼": "soap",
+    "📦": "package",
+    "📊": "chart",
+    "🌐": "globe",
+    "🔎": "search",
+    "🔍": "search",
+    "🛡️": "shield",
+    "🛡": "shield",
+    "🔥": "fire",
+    "🗑️": "trash",
+    "🗑": "trash",
+    "👤": "user",
+    "🤖": "bot",
+    "⏳": "hourglass",
+    "📅": "calendar",
+    "🎯": "target",
+    "✅": "check",
+    "⚠️": "warning",
+    "💥": "boom",
+    "🔄": "refresh",
+};
+
+const REVERSE_EMOJI_KEY_MAP = Object.fromEntries(
+    Object.entries(EMOJI_KEY_MAP).map(([symbol, name]) => [name, symbol])
+);
+
+/**
+ * Register custom animated emoji IDs from user account or config.
+ * @param {Record<string, string> | Map<string, string> | Array<{ id: string, alt?: string, name?: string }>} mapping
+ */
+function registerCustomEmojis(mapping) {
+    if (!mapping) return;
+    const addEntry = (key, val) => {
+        if (!key || !val) return;
+        const k = String(key).trim();
+        const v = String(val).trim();
+        customAnimatedEmojis.set(k, v);
+        if (EMOJI_KEY_MAP[k]) customAnimatedEmojis.set(EMOJI_KEY_MAP[k], v);
+        if (REVERSE_EMOJI_KEY_MAP[k]) customAnimatedEmojis.set(REVERSE_EMOJI_KEY_MAP[k], v);
+    };
+
+    if (mapping instanceof Map) {
+        for (const [k, v] of mapping.entries()) {
+            addEntry(k, v);
+        }
+    } else if (Array.isArray(mapping)) {
+        for (const item of mapping) {
+            if (item && item.id) {
+                const key = item.alt || item.name || item.emoji;
+                if (key) addEntry(key, item.id);
+            }
+        }
+    } else if (typeof mapping === "object") {
+        for (const [k, v] of Object.entries(mapping)) {
+            addEntry(k, v);
+        }
+    }
+}
+
+/**
+ * Get the current registry of custom animated emojis.
+ * @returns {Record<string, string>}
+ */
+function getCustomEmojis() {
+    return Object.fromEntries(customAnimatedEmojis);
+}
+
+/**
+ * Clear custom animated emojis registry.
+ */
+function clearCustomEmojis() {
+    customAnimatedEmojis.clear();
+}
+
+/**
+ * Render a custom animated emoji tag if available, or fall back to native unicode emoji.
+ * @param {string} symbol unicode fallback emoji, e.g. "🚀"
+ * @param {string} [nameKey] optional semantic name key, e.g. "rocket", "diamond"
+ * @returns {string} HTML string with <tg-emoji> or fallback unicode
+ */
+function tgEmoji(symbol, nameKey) {
+    const key = nameKey || EMOJI_KEY_MAP[symbol] || symbol;
+    const id =
+        customAnimatedEmojis.get(symbol) ||
+        (nameKey ? customAnimatedEmojis.get(nameKey) : null) ||
+        customAnimatedEmojis.get(key);
+    if (id) {
+        return `${LT}tg-emoji emoji-id="${escapeHtml(id)}"${GT}${symbol}${LT}/tg-emoji${GT}`;
+    }
+    return symbol;
+}
+
 // Escape entities (for escaping user text), built from the ampersand char code.
 const AMP = String.fromCharCode(38); // &
 
@@ -481,20 +594,20 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
     const cpus = require("os").cpus().length || 8;
 
     return [
-        `🔥  ${B("COMBO CLEANER ULTIMATE")}  🔥`,
-        `⚡️  ${I("Multi-Core Turbo Cleaning & ULP Relay Engine")}  ⚡️`,
+        `${tgEmoji("🔥")}  ${B("COMBO CLEANER ULTIMATE")}  ${tgEmoji("🔥")}`,
+        `${tgEmoji("⚡️")}  ${I("Multi-Core Turbo Cleaning & ULP Relay Engine")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `💎  ${B("SYSTEM ENGINE STATUS")}`,
-        `  ⚡️ ${B("Multi-Core Workers:")} ${CODE(`${cpus}x Parallel CPU Cores Active`)}`,
-        `  📦 ${B("Active Batch Vault:")} ${B(num(batchSize))} unique lines (${num(batchFiles)} files)`,
-        `  🤖 ${B("Connected ULP Searcher:")} ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
-        `  🚀 ${B("Engine Mode:")} ${B("TURBO 100% CPU SATURATION")}`,
+        `${tgEmoji("💎")}  ${B("SYSTEM ENGINE STATUS")}`,
+        `  ${tgEmoji("⚡️")} ${B("Multi-Core Workers:")} ${CODE(`${cpus}x Parallel CPU Cores Active`)}`,
+        `  ${tgEmoji("📦")} ${B("Active Batch Vault:")} ${B(num(batchSize))} unique lines (${num(batchFiles)} files)`,
+        `  ${tgEmoji("🤖")} ${B("Connected ULP Searcher:")} ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
+        `  ${tgEmoji("🚀")} ${B("Engine Mode:")} ${B("TURBO 100% CPU SATURATION")}`,
         RULE,
         "",
-        `✨  ${B("INTERACTIVE ACTION DASHBOARD")}`,
+        `${tgEmoji("✨")}  ${B("INTERACTIVE ACTION DASHBOARD")}`,
         `👇 ${I("Tap any button below to execute instantly without typing commands:")}`,
         "",
-        `🛡️ ${mention} · Ultimate Pro Edition`,
+        `${tgEmoji("🛡️")} ${mention} · Ultimate Pro Edition`,
     ].join("\n");
 }
 
@@ -1150,26 +1263,35 @@ function humanSize(bytes) {
 function renderEmojiPacks(data = {}) {
     const packs = (data && data.packs) || [];
     const totalEmojis = (data && data.totalEmojis) || 0;
+    const customCount = Object.keys(getCustomEmojis()).length;
     const lines = [
-        `💎  ${B("BOT NATIVE EMOJI DASHBOARD")}  ✨`,
+        `${tgEmoji("💎")}  ${B("BOT ANIMATED EMOJI DASHBOARD")}  ${tgEmoji("✨")}`,
         RULE,
-        `🎨  ${B("Direct Native Unicode Icons & Visual Palette")}`,
+        `🎨  ${B("Custom Animated Account Emojis & Visual Palette")}`,
         "",
-        `  🚀  ${B("ULP Search Relay:")} Automated day-by-day searches & URL-stripped outputs`,
-        `  🧼  ${B("Credential Sanitizer:")} Email, User, Phone & CC normalizer`,
-        `  📦  ${B("Storage & Vault:")} Combined files, disk raw dumps & bulk wiping`,
-        `  📊  ${B("Live Metrics:")} Real-time capacity gauges & duplicate counters`,
-        `  🌐  ${B("Site Recon:")} Automated domain detection & per-site stats`,
-        `  🔎  ${B("Deep Search:")} Rapid indexed keyword lookup in batch`,
-        `  ⚡️  ${B("Multi-Core Turbo:")} Parallel CPU processing across all cores`,
-        `  🛡️  ${B("Anti-Flood Shield:")} Paced message queues & safety limits`,
+        `  ${tgEmoji("🚀")}  ${B("ULP Search Relay:")} Automated day-by-day searches & URL-stripped outputs`,
+        `  ${tgEmoji("🧼")}  ${B("Credential Sanitizer:")} Email, User, Phone & CC normalizer`,
+        `  ${tgEmoji("📦")}  ${B("Storage & Vault:")} Combined files, disk raw dumps & bulk wiping`,
+        `  ${tgEmoji("📊")}  ${B("Live Metrics:")} Real-time capacity gauges & duplicate counters`,
+        `  ${tgEmoji("🌐")}  ${B("Site Recon:")} Automated domain detection & per-site stats`,
+        `  ${tgEmoji("🔎")}  ${B("Deep Search:")} Rapid indexed keyword lookup in batch`,
+        `  ${tgEmoji("⚡️")}  ${B("Multi-Core Turbo:")} Parallel CPU processing across all cores`,
+        `  ${tgEmoji("🛡️")}  ${B("Anti-Flood Shield:")} Paced message queues & safety limits`,
     ];
+
+    if (customCount > 0) {
+        lines.push(
+            "",
+            RULE,
+            `✨  ${B("Active Custom Animated Icons:")} ${B(num(customCount))} mapped to bot UI/UX`,
+        );
+    }
 
     if (packs.length > 0) {
         lines.push(
             "",
             RULE,
-            `📂  ${B("Custom Packs:")} ${packs.length}  ·  🎨  ${B("Total Emojis:")} ${num(totalEmojis)}`,
+            `📂  ${B("Installed Account Packs:")} ${packs.length}  ·  🎨  ${B("Total Emojis:")} ${num(totalEmojis)}`,
         );
         packs.forEach((p, idx) => {
             const sampleStr = (p.sample && p.sample.length > 0) ? `  ${p.sample.slice(0, 6).join(" ")}` : "";
@@ -1183,10 +1305,24 @@ function renderEmojiPacks(data = {}) {
     lines.push(
         "",
         RULE,
-        I("All visual icons and emojis are rendered natively directly on this bot! ⚡️"),
+        I("Custom animated emojis on your account are automatically synchronized into the UI! ⚡️"),
     );
 
     return lines.join("\n");
+}
+
+/**
+ * Keyboard for emojis dashboard with 1-tap account sync button.
+ */
+function emojisKeyboard() {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback("🔄 Sync Account Emojis", "emojis:sync"),
+        ],
+        [
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
 }
 
 /**
@@ -1280,6 +1416,11 @@ module.exports = {
     compact,
     siteEmoji,
     humanSize,
+    tgEmoji,
+    registerCustomEmojis,
+    getCustomEmojis,
+    clearCustomEmojis,
+    emojisKeyboard,
 };
 
 

@@ -44,6 +44,8 @@ const {
     renderUlpMenuText,
     saveGuideKeyboard,
     searchPromptKeyboard,
+    emojisKeyboard,
+    registerCustomEmojis,
     mainKeyboard,
     confirmClearKeyboard,
     afterCombineKeyboard,
@@ -199,28 +201,34 @@ function createBot(token, meta = {}) {
     } catch (_) {}
 
     bot.start(async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         const batch = store.getStats(ctx.chat.id);
         await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard());
     });
 
     bot.help(async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         const batch = store.getStats(ctx.chat.id);
         await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard());
     });
 
     bot.command("stats", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         await safeReply(ctx, renderStats(store.getStats(ctx.chat.id)), mainKeyboard());
     });
 
     bot.command("sites", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         await safeReply(ctx, renderSites(store.getSiteCounts(ctx.chat.id)), mainKeyboard());
     });
 
     bot.command("preview", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         await sendPreview(ctx);
     });
 
     bot.command("search", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         const query = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
         if (!query) {
             await safeReply(
@@ -250,6 +258,7 @@ function createBot(token, meta = {}) {
     });
 
     const showServerFiles = async (ctx, editMessageId = null, page = 0) => {
+        userPromptState.delete(ctx.chat.id);
         const rawRoot = localProcessRoot();
         const processedRoot = localProcessedRoot();
         const rawFiles = scanDirFiles(rawRoot);
@@ -1022,6 +1031,7 @@ function createBot(token, meta = {}) {
     });
 
     bot.command("clear", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         const stats = store.getStats(ctx.chat.id);
         if (!stats || stats.size === 0) {
             await safeReply(ctx, "\uD83D\uDCED Nothing stored for this chat \u2014 all clean \u2728");
@@ -1041,6 +1051,7 @@ function createBot(token, meta = {}) {
     });
 
     bot.command("combine", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         await ctx.replyWithChatAction("upload_document").catch(() => { });
         await sendCombined(ctx);
     });
@@ -1057,6 +1068,7 @@ function createBot(token, meta = {}) {
     //   /process /var/data/dump.txt
     //   /process local          -> pick the latest file under /var/data (optional)
     bot.command("process", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         const raw = (ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
         if (!raw) {
             await safeReply(
@@ -1107,6 +1119,7 @@ function createBot(token, meta = {}) {
     // account can see the replied-to group message and stream its document
     // directly to /var/data, then the existing /process pipeline takes over.
     bot.command("save", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         let replied = ctx.message && ctx.message.reply_to_message;
         let sourceMessageId = replied && replied.message_id;
         let originalName = replied && replied.document && (replied.document.file_name || `telegram-${sourceMessageId}.bin`);
@@ -1219,6 +1232,7 @@ function createBot(token, meta = {}) {
     // Finds recent documents in the chat using the MTProto userbot, downloads each to disk,
     // cleans them sequentially into the batch, and reports aggregate results.
     const batchSaveHandler = async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
         const peer = meta.userbot;
         if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
             await safeReply(
@@ -1392,18 +1406,50 @@ function createBot(token, meta = {}) {
     bot.command("batchsave", batchSaveHandler);
     bot.command("savebatch", batchSaveHandler);
 
-    // ---- /emojis & /packs: inspect all custom emoji packs installed on the user account
+    // ---- /emojis & /packs: inspect and sync all custom animated emoji packs from the user account
     const emojisHandler = async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const arg = (ctx.message && ctx.message.text ? ctx.message.text : "").replace(/^\S+\s*/, "").trim().toLowerCase();
+        const peer = meta.userbot || userbot;
         let data = { packs: [], totalEmojis: 0 };
-        const peer = meta.userbot;
+
+        if (arg === "sync") {
+            let count = 0;
+            if (peer && typeof peer.syncCustomEmojis === "function") {
+                try {
+                    count = await peer.syncCustomEmojis();
+                } catch {
+                    // ignore
+                }
+            }
+            if (peer && typeof peer.getInstalledEmojiPacks === "function") {
+                try {
+                    data = await peer.getInstalledEmojiPacks();
+                } catch {
+                    // ignore
+                }
+            }
+            const syncNotice = count > 0
+                ? `✨ Successfully synced ${count} custom animated emojis from your account into the bot UI/UX!`
+                : `ℹ️ Account emojis synchronized. Bot native visual palette active!`;
+            await safeReply(ctx, `${syncNotice}\n\n${renderEmojiPacks(data)}`, emojisKeyboard());
+            return;
+        }
+
         if (peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.getInstalledEmojiPacks === "function") {
             try {
                 data = await peer.getInstalledEmojiPacks();
             } catch {
                 // ignore
             }
+        } else if (peer && typeof peer.getInstalledEmojiPacks === "function") {
+            try {
+                data = await peer.getInstalledEmojiPacks();
+            } catch {
+                // ignore
+            }
         }
-        await safeReply(ctx, renderEmojiPacks(data), mainKeyboard());
+        await safeReply(ctx, renderEmojiPacks(data), emojisKeyboard());
     };
 
     bot.command("emojis", emojisHandler);
@@ -1411,24 +1457,49 @@ function createBot(token, meta = {}) {
     bot.command("features", emojisHandler);
 
     bot.action("emojis:view", async (ctx) => {
-        await ctx.answerCbQuery("💎 Bot Native Emojis").catch(() => {});
+        await ctx.answerCbQuery("💎 Animated Emojis").catch(() => {});
         let data = { packs: [], totalEmojis: 0 };
-        const peer = meta.userbot;
-        if (peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.getInstalledEmojiPacks === "function") {
+        const peer = meta.userbot || userbot;
+        if (peer && typeof peer.getInstalledEmojiPacks === "function") {
             try {
                 data = await peer.getInstalledEmojiPacks();
             } catch {
                 // ignore
             }
         }
-        try {
-            await ctx.editMessageText(renderEmojiPacks(data), {
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                ...mainKeyboard(),
-            });
-        } catch {
-            await safeReply(ctx, renderEmojiPacks(data), mainKeyboard());
+        const text = renderEmojiPacks(data);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, emojisKeyboard());
+        } else {
+            await safeReply(ctx, text, emojisKeyboard());
+        }
+    });
+
+    bot.action("emojis:sync", async (ctx) => {
+        await ctx.answerCbQuery("🔄 Syncing account emojis…").catch(() => {});
+        const peer = meta.userbot || userbot;
+        if (peer && typeof peer.syncCustomEmojis === "function") {
+            try {
+                await peer.syncCustomEmojis();
+            } catch {
+                // ignore
+            }
+        }
+        let data = { packs: [], totalEmojis: 0 };
+        if (peer && typeof peer.getInstalledEmojiPacks === "function") {
+            try {
+                data = await peer.getInstalledEmojiPacks();
+            } catch {
+                // ignore
+            }
+        }
+        const text = renderEmojiPacks(data);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, emojisKeyboard());
+        } else {
+            await safeReply(ctx, text, emojisKeyboard());
         }
     });
 
@@ -1808,6 +1879,10 @@ async function safeReply(ctx, text, extra = {}) {
             ...extra,
         });
     } catch (err) {
+        if (err && /custom_emoji|entity/i.test(err.message) && text && text.includes("<tg-emoji")) {
+            const fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            return safeReply(ctx, fallbackText, extra);
+        }
         console.error("safeReply failed:", err.message);
     }
 }
@@ -1826,8 +1901,12 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
             disable_web_page_preview: true,
             ...extra,
         });
-    } catch {
-        // ignore
+    } catch (err) {
+        if (err && /custom_emoji|entity/i.test(err.message) && text && text.includes("<tg-emoji")) {
+            const fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            return safeEdit(ctx, messageId, fallbackText, extra);
+        }
+        // ignore other edit errors (e.g. message not modified)
     }
 }
 

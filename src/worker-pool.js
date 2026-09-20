@@ -7,6 +7,10 @@ const fs = require("node:fs");
 
 class WorkerPool {
     constructor(workerPath, numWorkers) {
+        if (typeof workerPath === "number") {
+            numWorkers = workerPath;
+            workerPath = null;
+        }
         this.workerPath = workerPath || path.join(__dirname, "clean-worker.js");
         const availableCpus = os.cpus().length || 4;
         // Default to all available CPU cores (saturates 100% of available cores)
@@ -60,6 +64,12 @@ class WorkerPool {
                 if (idx !== -1) this.workers.splice(idx, 1);
                 const fIdx = this.freeWorkers.indexOf(worker);
                 if (fIdx !== -1) this.freeWorkers.splice(fIdx, 1);
+                for (const [id, task] of this.pending.entries()) {
+                    if (task.worker === worker) {
+                        this.pending.delete(id);
+                        task.reject(err || new Error("WORKER_ERROR"));
+                    }
+                }
                 worker.terminate().catch(() => {});
                 if (!this.isClosed && this.queue.length > 0) this._spawnWorker();
             });
@@ -70,6 +80,12 @@ class WorkerPool {
                     if (idx !== -1) this.workers.splice(idx, 1);
                     const fIdx = this.freeWorkers.indexOf(worker);
                     if (fIdx !== -1) this.freeWorkers.splice(fIdx, 1);
+                    for (const [id, task] of this.pending.entries()) {
+                        if (task.worker === worker) {
+                            this.pending.delete(id);
+                            task.reject(new Error(`WORKER_EXITED_CODE_${code}`));
+                        }
+                    }
                     if (this.queue.length > 0) this._spawnWorker();
                 }
             });
@@ -101,6 +117,7 @@ class WorkerPool {
             const worker = this.freeWorkers.pop();
             const task = this.queue.shift();
             const id = ++this.msgId;
+            task.worker = worker;
             this.pending.set(id, task);
             worker.postMessage({ id, ...task.payload });
         }
@@ -334,6 +351,12 @@ class WorkerPool {
         }
         for (const w of this.workers) {
             w.terminate().catch(() => {});
+        }
+        for (const task of this.queue) {
+            task.reject(new Error("WORKER_POOL_CLOSED"));
+        }
+        for (const task of this.pending.values()) {
+            task.reject(new Error("WORKER_POOL_CLOSED"));
         }
         this.workers = [];
         this.freeWorkers = [];

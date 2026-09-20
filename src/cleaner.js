@@ -78,7 +78,11 @@ const IPV4_RE =
  * @returns {string}
  */
 function normalizeLine(line) {
-    return line.replace(/^\uFEFF/, "").trim();
+    return String(line || "")
+        .replace(/^\uFEFF/, "")
+        .replace(/[\u200B-\u200D\uFEFF]/g, "")
+        .replace(/\u00A0/g, " ")
+        .trim();
 }
 
 /**
@@ -96,6 +100,7 @@ function normalizeYear(y) {
 /**
  * Try to extract a card line shaped like:
  *   number|mm|yy|cvv|XX/IN| [VISA/CREDIT/NA] {BANK ...}| Name ...
+ *   or number|mm/yy|cvv|...
  * and strip it down to just `number|mm|yy|cvv`.
  *
  * Tolerates `|` (primary) as well as `:` / `;` separators, stray spaces,
@@ -112,6 +117,35 @@ function cleanCcLine(line) {
     }
     // Split on any of the common separators, keeping the fields in order.
     const fields = String(line).split(/[|;:]/).map((f) => f.trim());
+    if (fields.length < 3) return null;
+
+    // Check for 3-field format where expiry is combined as MM/YY: pan | mm/yy | cvv
+    for (let i = 0; i + 2 < fields.length; i++) {
+        const rawPan = fields[i];
+        const rawExpiry = fields[i + 1];
+        const rawCvv = fields[i + 2];
+
+        if (rawExpiry && rawExpiry.includes("/")) {
+            const pan = rawPan.replace(/[\s-]/g, "");
+            if (/^\d{12,19}$/.test(pan)) {
+                const parts = rawExpiry.split("/");
+                const mmDigits = parts[0].replace(/\D/g, "");
+                const mmNum = parseInt(mmDigits, 10);
+                if (mmNum >= 1 && mmNum <= 12) {
+                    const mm = mmDigits.padStart(2, "0");
+                    const yy = normalizeYear(parts[1]);
+                    if (yy !== null) {
+                        const cvvMatch = rawCvv.match(/^(\d{3,4})\b/);
+                        if (cvvMatch) {
+                            return `${pan}|${mm}|${yy}|${cvvMatch[1]}`;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Standard 4-field format: pan | mm | yy | cvv
     if (fields.length < 4) return null;
 
     for (let i = 0; i + 3 < fields.length; i++) {
@@ -336,9 +370,15 @@ function cleanText(text, options = {}) {
     };
 }
 
+function isCcLine(line) {
+    return cleanCcLine(line) !== null;
+}
+
 module.exports = {
     cleanLine,
     cleanCcLine,
+    isCcLine,
+    isCreditCardLine: isCcLine,
     cleanText,
     isUrlOrDomain,
     isEmail,

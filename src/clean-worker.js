@@ -117,14 +117,15 @@ if (parentPort) {
                 const CHUNK = 4 * 1024 * 1024; // 4MB buffer for maximum I/O throughput
                 const buf = Buffer.allocUnsafe(CHUNK);
                 let curFilePos = lineStartPos;
-                let remainder = "";
+                let remainder = Buffer.alloc(0);
                 let active = lineStartPos < end;
 
                 while (active) {
                     const bytesRead = fs.readSync(fd, buf, 0, CHUNK, curFilePos);
                     if (bytesRead === 0) {
                         if (remainder.length > 0 && lineStartPos < end) {
-                            const line = remainder.endsWith("\r") ? remainder.slice(0, -1) : remainder;
+                            let line = remainder.toString("utf8");
+                            if (line.endsWith("\r")) line = line.slice(0, -1);
                             if (line.toLowerCase().includes(qLower)) {
                                 total++;
                                 if (matches.length < maxMatches) matches.push(line);
@@ -133,23 +134,24 @@ if (parentPort) {
                         break;
                     }
 
-                    const chunkStr = buf.toString("utf8", 0, bytesRead);
                     let chunkOffset = 0;
 
                     while (chunkOffset < bytesRead) {
-                        const nlIdx = chunkStr.indexOf("\n", chunkOffset);
-                        if (nlIdx === -1) {
-                            remainder += chunkStr.slice(chunkOffset);
+                        const nlIdx = buf.indexOf(0x0a, chunkOffset);
+                        if (nlIdx === -1 || nlIdx >= bytesRead) {
+                            const unread = buf.subarray(chunkOffset, bytesRead);
+                            remainder = remainder.length > 0 ? Buffer.concat([remainder, unread]) : Buffer.from(unread);
                             curFilePos += bytesRead;
                             break;
                         }
 
-                        const lineSegment = chunkStr.slice(chunkOffset, nlIdx);
-                        const fullLine = remainder + lineSegment;
-                        remainder = "";
+                        const lineSegment = buf.subarray(chunkOffset, nlIdx);
+                        const fullLineBuf = remainder.length > 0 ? Buffer.concat([remainder, lineSegment]) : lineSegment;
+                        remainder = Buffer.alloc(0);
 
                         if (lineStartPos < end) {
-                            const line = fullLine.endsWith("\r") ? fullLine.slice(0, -1) : fullLine;
+                            let line = fullLineBuf.toString("utf8");
+                            if (line.endsWith("\r")) line = line.slice(0, -1);
                             if (line.toLowerCase().includes(qLower)) {
                                 total++;
                                 if (matches.length < maxMatches) matches.push(line);

@@ -2235,7 +2235,13 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
  * @param {import('telegraf').Types.Document} doc
  */
 async function ingestDocument(ctx, doc, options = {}) {
-    const name = doc.file_name || "file";
+    let name = doc && (doc.file_name || doc.fileName);
+    if (!name || typeof name !== "string" || !name.trim()) {
+        const mime = (doc && (doc.mime_type || doc.mimeType)) || "";
+        const defExt = mime.includes("zip") ? ".zip" : mime.includes("csv") ? ".csv" : ".txt";
+        name = `dump_${(doc && (doc.file_unique_id || doc.file_id)) || Date.now()}${defExt}`;
+    }
+    name = userbot.safeDownloadName(name);
     const lower = name.toLowerCase();
     const isZip = lower.endsWith(".zip");
     const isText =

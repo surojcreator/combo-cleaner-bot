@@ -485,6 +485,45 @@ describe("User Requested Features & Optimizations", () => {
         assert.ok(docResult, "safeSendDocument should recover and deliver file");
         assert.strictEqual(bot.isBotApiCustomEmojiRejected(), true, "botApiCustomEmojiRejected should be set after doc recovery");
     });
+
+    test("12. Cyber-ops modern UI overhaul and unnamed document protection", () => {
+        // 1. Check UI templates for modern cyber-ops styling and formatting
+        const helpText = messages.renderHelp("ComboBot");
+        assert.match(helpText, /<b>COMBO CLEANER ULTIMATE<\/b>/);
+        assert.match(helpText, /────────────────────────────/);
+        assert.match(helpText, /Parallel CPU Cores Active/);
+        assert.match(helpText, /TURBO 100% CPU SATURATION/i);
+
+        const statsText = messages.renderStats({ size: 1000, files: 5, totalKept: 1200, sites: 3 });
+        assert.match(statsText, /<b>BATCH METRICS DASHBOARD<\/b>/);
+        assert.match(statsText, /────────────────────────────/);
+        assert.match(statsText, /Unique Credentials/);
+        assert.match(statsText, /Storage Capacity/);
+
+        const ulpProg = messages.renderUlpProgress({
+            searcherBot: "DumpNews14Bot",
+            attempt: 2,
+            maxTries: 5,
+            sends: 2,
+            stepDelayMs: 12000,
+        });
+        assert.match(ulpProg, /<b>ULP SEARCH IN PROGRESS<\/b>/);
+        assert.match(ulpProg, /\[Day 2\/5\]/);
+        assert.match(ulpProg, /40%/);
+
+        const keyboard = messages.mainKeyboard();
+        const buttons = keyboard.reply_markup.inline_keyboard.flat().map(b => b.text);
+        assert.ok(buttons.some(b => b.includes("ULP")));
+        assert.ok(buttons.some(b => b.includes("Server Vault")));
+        assert.ok(buttons.some(b => b.includes("Get Combined File")));
+
+        // 2. Check unnamed document sanitization
+        const userbotMod = require("../src/userbot");
+        assert.equal(userbotMod.safeDownloadName(""), "telegram-file.bin");
+        assert.equal(userbotMod.safeDownloadName("../../evil:name?.txt"), "evil_name_.txt");
+        assert.equal(userbotMod.safeDownloadName("clean_dump.txt"), "clean_dump.txt");
+    });
 });
+
 
 

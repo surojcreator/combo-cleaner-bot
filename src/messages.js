@@ -496,36 +496,37 @@ function siteEmoji(slug) {
 }
 
 /**
- * Decorative rule line.
+ * Decorative rule line - modern sleek full-width cyber bar.
  */
-const RULE = "\u2501".repeat(22); // ━━━━━━━━━━━━━━━━━━━━━━
+const RULE = "─".repeat(28); // ────────────────────────────
 
 /**
- * Reusable inline keyboards.
+ * Reusable inline keyboards with modern cyber-dashboard grid.
  */
 function mainKeyboard() {
     return createInlineKeyboard([
         [
             Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
-            Markup.button.callback("📂 Server Vault", "server_files"),
+            Markup.button.callback("📦 Get Combined File", "combine"),
         ],
         [
-            Markup.button.callback("📦 Get Combined File", "combine"),
-            Markup.button.callback("📊 System Stats", "stats"),
+            Markup.button.callback("📂 Server Vault (Tabs)", "server_files"),
+            Markup.button.callback("📊 Batch Analytics", "stats"),
+        ],
+        [
+            Markup.button.callback("🌐 Manage Domains", "sites"),
+            Markup.button.callback("⚙️ Storage & Wipes", "files:tab:tools"),
+        ],
+        [
+            Markup.button.callback("❓ Fast /save Guide", "help:save"),
+            Markup.button.callback("🏓 Ping Health Check", "ping"),
         ],
         [
             Markup.button.callback("🔎 Search Batch", "batch:search:prompt"),
             Markup.button.callback("👁 Line Preview", "preview"),
         ],
         [
-            Markup.button.callback("🌐 Detected Sites", "sites"),
             Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
-        ],
-        [
-            Markup.button.callback("⚡️ Fast /save Guide", "help:save"),
-            Markup.button.callback("💎 Bot Features", "emojis:view"),
-        ],
-        [
             Markup.button.callback("🔄 Refresh Menu", "help"),
         ],
     ]);
@@ -978,16 +979,19 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
     const batchSize = batch ? Number(batch.size || 0) : 0;
     const batchFiles = batch ? Number(batch.files || 0) : 0;
     const cpus = require("os").cpus().length || 8;
+    const mem = process.memoryUsage ? process.memoryUsage() : {};
+    const ramMb = mem.rss ? Math.round(mem.rss / (1024 * 1024)) : 64;
 
     return [
-        `${tgEmoji("🔥")}  ${B("COMBO CLEANER ULTIMATE")}  ${tgEmoji("🔥")}`,
-        `${tgEmoji("⚡️")}  ${I("Multi-Core Turbo Cleaning & ULP Relay Engine")}  ${tgEmoji("⚡️")}`,
+        `${tgEmoji("💎")}  ${B("COMBO CLEANER ULTIMATE")}  ${tgEmoji("⚡️")}`,
+        `${tgEmoji("🚀")}  ${I("Multi-Core Turbo Cleaning & ULP Relay Engine")}  ${tgEmoji("🛡️")}`,
         RULE,
-        `${tgEmoji("💎")}  ${B("SYSTEM ENGINE STATUS")}`,
-        `  ${tgEmoji("⚡️")} ${B("Multi-Core Workers:")} ${CODE(`${cpus}x Parallel CPU Cores Active`)}`,
-        `  ${tgEmoji("📦")} ${B("Active Batch Vault:")} ${B(num(batchSize))} unique lines (${num(batchFiles)} files)`,
-        `  ${tgEmoji("🤖")} ${B("Connected ULP Searcher:")} ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
-        `  ${tgEmoji("🚀")} ${B("Engine Mode:")} ${B("TURBO 100% CPU SATURATION")}`,
+        `${tgEmoji("📊")}  ${B("SYSTEM ENGINE METRICS")}`,
+        `  • ${tgEmoji("⚡️")} ${B("Multi-Core Workers:")}  ${CODE(`${cpus}x Parallel CPU Cores Active`)}`,
+        `  • ${tgEmoji("💽")} ${B("Process Memory:")}     ${CODE(`${ramMb} MB RSS Allocated`)}`,
+        `  • ${tgEmoji("📦")} ${B("Active Batch Vault:")}  ${B(num(batchSize))} unique lines (${num(batchFiles)} files)`,
+        `  • ${tgEmoji("🤖")} ${B("Connected ULP Bot:")}   ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
+        `  • ${tgEmoji("🚀")} ${B("Engine Mode:")}         ${B("TURBO 100% CPU SATURATION")}`,
         RULE,
         "",
         `${tgEmoji("✨")}  ${B("INTERACTIVE ACTION DASHBOARD")}`,
@@ -1006,7 +1010,7 @@ function renderStats(stats) {
         return [
             `${tgEmoji("📊")}  ${B("BATCH METRICS DASHBOARD")}  ${tgEmoji("⚡️")}`,
             RULE,
-            `${tgEmoji("📭")} Empty batch \u2014 nothing stored yet.`,
+            `  • ${tgEmoji("📭")} ${B("Status:")} Empty batch \u2014 nothing stored yet.`,
             "",
             `${I(`Send me a .zip or .txt dump to get started ${tgEmoji("🚀")}`)}`,
         ].join("\n");
@@ -1016,14 +1020,14 @@ function renderStats(stats) {
     return [
         `${tgEmoji("📊")}  ${B("BATCH METRICS DASHBOARD")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `${tgEmoji("💎")}  ${B("Unique Credentials")}   ${B(compact(stats.size))}`,
-        `${tgEmoji("📂")}  Files Processed         ${num(stats.files)}`,
-        `${tgEmoji("✂️")}  Lines Accepted          ${num(stats.totalKept)}`,
-        stats.sites ? `${tgEmoji("🌐")}  Sites Detected          ${B(num(stats.sites))}` : null,
+        `  • ${tgEmoji("💎")} ${B("Unique Credentials:")}  ${B(compact(stats.size))} (${num(stats.size)} lines)`,
+        `  • ${tgEmoji("📂")} ${B("Files Ingested:")}      ${num(stats.files)} archive(s)`,
+        `  • ${tgEmoji("✂️")} ${B("Lines Accepted:")}      ${num(stats.totalKept)} lines`,
+        stats.sites ? `  • ${tgEmoji("🌐")} ${B("Sites Detected:")}      ${B(num(stats.sites))} domain(s)` : null,
         "",
-        `${tgEmoji("📦")}  Capacity  ${bar(stats.size, cap, 14)}  ${pct}%`,
+        `  • ${tgEmoji("📦")} ${B("Storage Capacity:")}    ${CODE(`[${bar(stats.size, cap, 10)}]`)} ${B(`${pct}%`)}`,
         RULE,
-        `${I(`Tap ${tgEmoji("📦")} Get combined file below to download ${tgEmoji("📥")}`)}`,
+        `👇 ${I(`Tap ${tgEmoji("📦")} Get Combined File below to download clean credentials!`)}`,
     ]
         .filter((l) => l !== null)
         .join("\n");
@@ -1038,7 +1042,7 @@ function renderSites(siteCounts) {
         return [
             `${tgEmoji("📡")}  ${B("SITE RECONNAISSANCE")}  ${tgEmoji("⚡️")}`,
             RULE,
-            `${tgEmoji("🌐")} No sites detected yet \u2014 send a dump file first ${tgEmoji("📤")}`,
+            `  • ${tgEmoji("🌐")} ${B("Status:")} No domains detected yet \u2014 send a dump file first ${tgEmoji("📤")}`,
         ].join("\n");
     }
     const max = Math.max(...siteCounts.map((s) => s.count));
@@ -1049,11 +1053,11 @@ function renderSites(siteCounts) {
     for (const { site, count } of siteCounts) {
         const emoji = siteEmoji(site);
         lines.push(
-            `${tgEmoji(emoji)} ${B(escapeHtml(site))}`,
-            `   ${bar(count, max, 14)} ${B(compact(count))}`,
+            `  • ${tgEmoji(emoji)} ${B(escapeHtml(site))}`,
+            `    └ ${CODE(`[${bar(count, max, 12)}]`)} ${B(compact(count))} lines`,
         );
     }
-    lines.push("", RULE, `${I(`Tap ${tgEmoji("📦")} Get combined file below or tap ❌ to remove a domain:`)}`);
+    lines.push("", RULE, `👇 ${I(`Tap ${tgEmoji("📦")} Get Combined File or tap 🗑 to delete a domain below:`)}`);
     return lines.join("\n");
 }
 
@@ -1070,11 +1074,13 @@ function renderPing(info) {
     const speed =
         info.latencyMs < 100 ? `${tgEmoji("🚀")} Blazing Fast` : info.latencyMs < 300 ? `${tgEmoji("⚡️")} Optimal` : `${tgEmoji("⏳")} Normal`;
     return [
-        `${tgEmoji("🏓")}  ${B("SYSTEM STATUS: PONG")}  ${tgEmoji("⚡️")}`,
+        `${tgEmoji("🏓")}  ${B("SYSTEM ENGINE STATUS: PONG")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `${tgEmoji("📡")}  Telegram Latency   ${B(`${info.latencyMs} ms`)} \u00B7 ${speed}`,
-        `${tgEmoji("⏱️")}  Uptime             ${B(uptime)}`,
-        `${tgEmoji("🟢")}  Core Engine        ${B("Online & Polling")}`,
+        `  • ${tgEmoji("📡")} ${B("Network Latency:")}  ${B(`${info.latencyMs} ms`)} · ${speed}`,
+        `  • ${tgEmoji("⏱️")} ${B("System Uptime:")}    ${B(uptime)}`,
+        `  • ${tgEmoji("🟢")} ${B("Engine State:")}     ${B("Online & Saturating CPU")}`,
+        `  • ${tgEmoji("🛡️")} ${B("Bot Protection:")}   ${B("Active Anti-Flood & Fallback Safe")}`,
+        RULE,
     ].join("\n");
 }
 
@@ -1090,23 +1096,23 @@ function renderFileReport(name, stats, added, chatStats, site) {
     const ratio = stats.total > 0 ? Math.round((stats.kept / stats.total) * 100) : 0;
     const siteEmojiOut = site ? siteEmoji(site) : "🌐";
     const lines = [
-        `${tgEmoji("✨")}  ${B("CLEAN REPORT")}  ${tgEmoji("⚡️")}`,
+        `${tgEmoji("✨")}  ${B("MULTI-CORE CLEAN REPORT")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `${tgEmoji("📄")}  ${escapeHtml(name)}`,
+        `  • ${tgEmoji("📄")} ${B("Source File:")}     ${B(escapeHtml(name))}`,
     ];
     if (site) {
-        lines.push(`${tgEmoji(siteEmojiOut)}  Site Detected       ${B(escapeHtml(site))}`);
+        lines.push(`  • ${tgEmoji(siteEmojiOut)} ${B("Site Detected:")}   ${B(escapeHtml(site))}`);
     }
     lines.push(
         RULE,
-        `${tgEmoji("📂")}  Files Read          ${num(stats.files)}`,
-        `${tgEmoji("📑")}  Lines Seen          ${num(stats.total)}`,
-        `${tgEmoji("💎")}  Kept                ${B(num(stats.kept))}  ${bar(stats.kept, stats.total)} ${ratio}%`,
-        `${tgEmoji("🗑️")}  Dropped             ${num(stats.dropped)}`,
-        `${tgEmoji("🔄")}  Duplicates          ${num(stats.duplicates)}`,
+        `  • ${tgEmoji("📂")} ${B("Files Read:")}       ${num(stats.files)}`,
+        `  • ${tgEmoji("📑")} ${B("Lines Seen:")}       ${num(stats.total)}`,
+        `  • ${tgEmoji("💎")} ${B("Kept:")}             ${B(num(stats.kept))}  ${bar(stats.kept, stats.total)} ${ratio}%`,
+        `  • ${tgEmoji("🔄")} Duplicates          ${num(stats.duplicates)}`,
+        `  • ${tgEmoji("🗑️")} ${B("Dropped:")}          ${num(stats.dropped)}`,
         RULE,
-        `${tgEmoji("➕")}  Added to batch      ${B(num(added.added))}`,
-        `${tgEmoji("↩️")}  Already Had         ${num(added.duplicates)}`,
+        `  • ${tgEmoji("➕")} ${B("Added to batch:")}   ${B(num(added.added))}`,
+        `  • ${tgEmoji("↩️")} ${B("Already Had:")}      ${num(added.duplicates)}`,
     );
 
     if (chatStats) {
@@ -1304,10 +1310,10 @@ function renderUlpStart(info) {
     const whoRow =
         info.transport === "userbot"
             ? [
-                `${tgEmoji("👤")}  Sender    ${B("your account")} ${I("(MTProto bypass)")} ${tgEmoji("⚡️")}`,
-                `${tgEmoji("🤖")}  Searcher  ${B(mentionOf(info.searcherBot))}`,
+                `  • ${tgEmoji("👤")} ${B("Transport Relay:")} ${B("MTProto Account")} ${I("(MTProto bypass)")} ${tgEmoji("⚡️")}`,
+                `  • ${tgEmoji("🤖")} ${B("Target Bot:")}      ${B(mentionOf(info.searcherBot))}`,
             ]
-            : [`${tgEmoji("🤖")}  Searcher  ${B(mentionOf(info.searcherBot))}`];
+            : [`  • ${tgEmoji("🤖")} ${B("Target Bot:")}      ${B(mentionOf(info.searcherBot))}`];
     const daysCount = info.daysCount || 5;
     const dateLabel = info.startDate
         ? `Last ${daysCount} days from ${info.startDate}`
@@ -1315,11 +1321,11 @@ function renderUlpStart(info) {
     return [
         `${tgEmoji("🚀")}  ${B("ULP SEARCH INITIALIZED")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `${tgEmoji("🎯")}  Query     ${B(escapeHtml(info.query))}`,
-        `${tgEmoji("📅")}  Mode      ${B(`Day-by-Day (${dateLabel})`)}`,
+        `  • ${tgEmoji("🎯")} ${B("Target Query:")}   ${B(escapeHtml(info.query))}`,
+        `  • ${tgEmoji("📅")} ${B("Search Scope:")}   ${B(`Day-by-Day (${dateLabel})`)}`,
         ...whoRow,
-        `${tgEmoji("⏳")}  Pacing    ${B(pacingLabel(info.stepDelayMs))} anti-flood delay`,
-        "",
+        `  • ${tgEmoji("⏳")} ${B("Flood Safety:")}   ${CODE(`${pacingLabel(info.stepDelayMs)} delay`)}`,
+        RULE,
         `${I(`Incoming dump files will be auto-downloaded & cleaned into batch ${tgEmoji("⬇️")}`)}`,
         `${I(`When done or stopped, the combined file is delivered automatically ${tgEmoji("✨")}`)}`,
     ].join("\n");
@@ -1327,17 +1333,25 @@ function renderUlpStart(info) {
 
 /**
  * Progress card after each paced send.
- * @param {{ searcherBot: string, attempt: number, maxTries: number, sends: number, stepDelayMs: number }} info
+ * @param {{ searcherBot: string, attempt: number, maxTries: number, sends: number, stepDelayMs: number, query?: string }} info
  */
 function renderUlpProgress(info) {
     const sendsLine = Array.isArray(info.sends)
         ? escapeHtml(info.sends.join(" · "))
         : `${num(info.sends)} step(s) sent`;
+    const attempt = Number(info.attempt || 1);
+    const maxTries = Number(info.maxTries || 5);
+    const pct = Math.min(100, Math.round((attempt / maxTries) * 100));
     return [
-        `${tgEmoji("📡")}  ${B("SEARCH IN PROGRESS")} \u00B7 ${B(`${info.attempt}/${info.maxTries}`)}  ${tgEmoji("⏳")}`,
+        `${tgEmoji("📡")}  ${B("ULP SEARCH IN PROGRESS")} · ${B(`[Day ${attempt}/${maxTries}]`)}  ${tgEmoji("⏳")}`,
         RULE,
-        `${tgEmoji("🤖")}  ${B(mentionOf(info.searcherBot))} \u00B7 ${sendsLine}`,
-        `${tgEmoji("⏳")}  ${I(`Pacing ${pacingLabel(info.stepDelayMs)} for safe anti-flood execution…`)}`,
+        `  • ${tgEmoji("🤖")} ${B("Searcher:")} ${CODE(mentionOf(info.searcherBot))} · ${sendsLine}`,
+        `  • ${tgEmoji("📊")} ${B("Progress:")} ${bar(attempt, maxTries, 10)} ${B(`${pct}%`)}`,
+        `  • ${tgEmoji("⏳")} ${B("Pacing:")}   ${CODE(`${pacingLabel(info.stepDelayMs)} anti-flood safe`)}`,
+        RULE,
+        `${I("Incoming dump files are continuously ingested, deduped & sanitized 🧼")}`,
+        "",
+        `👇 ${I("Tap below to grab credentials gathered so far, or let it complete:")}`,
     ].join("\n");
 }
 
@@ -1349,9 +1363,9 @@ function renderUlpResults(info) {
     return [
         `${tgEmoji("📥")}  ${B("RESULTS INCOMING")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `${tgEmoji("🤖")}  ${B(mentionOf(info.searcherBot))} answered \u2014 forwarding ${B(num(info.count))} message${info.count === 1 ? "" : "s"} ${tgEmoji("⬇️")}`,
-        `${tgEmoji("🎯")}  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
-        "",
+        `  • ${tgEmoji("🤖")} ${B(mentionOf(info.searcherBot))} answered \u2014 forwarding ${B(num(info.count))} message${info.count === 1 ? "" : "s"} ${tgEmoji("⬇️")}`,
+        `  • ${tgEmoji("🎯")} ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        RULE,
         `${I(`Documents are automatically ingested and deduped into your batch ${tgEmoji("💎")}`)}`,
     ].join("\n");
 }
@@ -1362,11 +1376,11 @@ function renderUlpResults(info) {
  */
 function renderUlpEmpty(info) {
     return [
-        `${tgEmoji("🕳")}  ${B("NO RESULTS")}  ${tgEmoji("🕳")}`,
+        `${tgEmoji("🕳")}  ${B("NO RESULTS FOUND")}  ${tgEmoji("🕳")}`,
         RULE,
         `Tried ${B(`${info.attempts}×`)} with ${B(pacingLabel(info.stepDelayMs))} pacing \u2014 ${B(mentionOf(info.searcherBot))} returned no dumps.`,
-        `${tgEmoji("🎯")}  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
-        "",
+        `  • ${tgEmoji("🎯")} ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        RULE,
         `${I(`Try another query with ${CODE(escapeHtml("/ulp <query>"))} ${tgEmoji("🔄")}`)}`,
     ].join("\n");
 }
@@ -1379,11 +1393,11 @@ function renderUlpDone(info) {
     return [
         `${tgEmoji("✨")}  ${B("ULP SEARCH COMPLETED")}  ${tgEmoji("🚀")}`,
         RULE,
-        `${tgEmoji("🎯")}  Target      ${B(escapeHtml(info.query))}`,
-        `${tgEmoji("📊")}  Relayed     ${B(num(info.count))} message${info.count === 1 ? "" : "s"}`,
-        `${tgEmoji("📦")}  Status      ${B("Combined file generated & batch reset")} ${tgEmoji("💎")}`,
-        "",
-        `${I(`Start another one anytime with /ulp ${tgEmoji("⚡️")}`)}`,
+        `  • ${tgEmoji("🎯")}  Target:      ${B(escapeHtml(info.query))}`,
+        `  • ${tgEmoji("📊")}  Relayed:     ${B(num(info.count))} message${info.count === 1 ? "" : "s"}`,
+        `  • ${tgEmoji("📦")}  Status:      ${B("Combined file generated & batch reset")} ${tgEmoji("💎")}`,
+        RULE,
+        `${I(`Start another search anytime with /ulp ${tgEmoji("⚡️")}`)}`,
     ].join("\n");
 }
 
@@ -1800,10 +1814,10 @@ function renderBatchSaveProgress({ current, total, currentName, linesAdded, tota
     return [
         `${tgEmoji("📦")}  ${B("BATCH SAVE & PROCESS")}  ${tgEmoji("⏳")}`,
         RULE,
-        `${tgEmoji("📊")}  ${B("Progress:")} ${bar(current, total, 10)} ${pct}% (${current}/${total} files)`,
-        `${tgEmoji("📄")}  ${B("Current:")} ${CODE(escapeHtml(currentName))}`,
-        `${tgEmoji("✨")}  ${B("Lines added so far:")} ${num(totalLines)} (+${num(linesAdded)})`,
-        "",
+        `  • ${tgEmoji("📊")} ${B("Progress:")}            ${bar(current, total, 10)} ${pct}% (${current}/${total} files)`,
+        `  • ${tgEmoji("📄")} ${B("Current:")}             ${CODE(escapeHtml(currentName))}`,
+        `  • ${tgEmoji("✨")} ${B("Lines added so far:")}  ${num(totalLines)} (+${num(linesAdded)})`,
+        RULE,
         I(`Streaming via MTProto bypass directly into /var/data and cleaning… ${tgEmoji("🧼")}`),
     ].join("\n");
 }
@@ -1816,9 +1830,9 @@ function renderBatchSaveComplete({ totalFiles, totalLines, files = [], durationM
     const out = [
         `${tgEmoji("✅")}  ${B("BATCH SAVE COMPLETE")}  ${tgEmoji("💎")}`,
         RULE,
-        `${tgEmoji("📦")}  ${B("Files Processed:")} ${num(totalFiles)} in ${s}s`,
-        `${tgEmoji("🧼")}  ${B("Total Credentials in Batch:")} ${num(totalLines)}`,
-        "",
+        `  • ${tgEmoji("📦")} ${B("Files Processed:")}     ${num(totalFiles)} in ${s}s`,
+        `  • ${tgEmoji("🧼")} ${B("Total Credentials in Batch:")} ${num(totalLines)}`,
+        RULE,
         `${B("Processed Documents:")}`,
     ];
     files.slice(0, 8).forEach((f, i) => {

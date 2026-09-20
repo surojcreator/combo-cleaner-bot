@@ -619,12 +619,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     );
                     const msg = messages && messages[0];
                     if (msg && msg.media) {
+                        const attr = msg.media.document && msg.media.document.attributes &&
+                            msg.media.document.attributes.find((a) => a && (a.fileName || a.file_name));
+                        const mime = (msg.media.document && msg.media.document.mimeType) || "";
+                        const defExt = mime.includes("zip") ? ".zip" : mime.includes("csv") ? ".csv" : ".txt";
                         const fileName =
                             (msg.file && msg.file.name) ||
-                            (msg.media.document && msg.media.document.attributes &&
-                                msg.media.document.attributes.find((a) => a && a.fileName) &&
-                                msg.media.document.attributes.find((a) => a && a.fileName).fileName) ||
-                            `telegram-${targetReplyId}.bin`;
+                            (attr && (attr.fileName || attr.file_name)) ||
+                            `dump_${targetReplyId}${defExt}`;
                         const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
                         return {
                             messageId: targetReplyId,
@@ -649,12 +651,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 for (const msg of recent || []) {
                     if (msg.id === Number(commandMessageId)) continue;
                     if (msg.media && (msg.media.document || msg.file)) {
+                        const attr = msg.media.document && msg.media.document.attributes &&
+                            msg.media.document.attributes.find((a) => a && (a.fileName || a.file_name));
+                        const mime = (msg.media.document && msg.media.document.mimeType) || "";
+                        const defExt = mime.includes("zip") ? ".zip" : mime.includes("csv") ? ".csv" : ".txt";
                         const fileName =
                             (msg.file && msg.file.name) ||
-                            (msg.media.document && msg.media.document.attributes &&
-                                msg.media.document.attributes.find((a) => a && a.fileName) &&
-                                msg.media.document.attributes.find((a) => a && a.fileName).fileName) ||
-                            `telegram-${msg.id}.bin`;
+                            (attr && (attr.fileName || attr.file_name)) ||
+                            `dump_${msg.id}${defExt}`;
                         const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
                         return {
                             messageId: msg.id,
@@ -699,12 +703,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     if (commandMessageId && msg.id === Number(commandMessageId)) continue;
                     if (found.length >= limit) break;
                     if (msg.media && (msg.media.document || msg.file)) {
+                        const attr = msg.media.document && msg.media.document.attributes &&
+                            msg.media.document.attributes.find((a) => a && (a.fileName || a.file_name));
+                        const mime = (msg.media.document && msg.media.document.mimeType) || "";
+                        const defExt = mime.includes("zip") ? ".zip" : mime.includes("csv") ? ".csv" : ".txt";
                         const fileName =
                             (msg.file && msg.file.name) ||
-                            (msg.media.document && msg.media.document.attributes &&
-                                msg.media.document.attributes.find((a) => a && a.fileName) &&
-                                msg.media.document.attributes.find((a) => a && a.fileName).fileName) ||
-                            `telegram-${msg.id}.bin`;
+                            (attr && (attr.fileName || attr.file_name)) ||
+                            `dump_${msg.id}${defExt}`;
                         const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
                         found.push({
                             messageId: msg.id,

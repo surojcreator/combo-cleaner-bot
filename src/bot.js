@@ -20,6 +20,10 @@ const {
     renderPing,
     renderPreview,
     renderSearch,
+    searchResultKeyboard,
+    renderEmojiPacks,
+    renderBatchSaveProgress,
+    renderBatchSaveComplete,
     renderUlpHint,
     renderUlpStart,
     renderUlpProgress,
@@ -32,6 +36,8 @@ const {
     renderServerFiles,
     renderSaveGuide,
     serverFilesKeyboard,
+    confirmFileDeleteKeyboard,
+    formatFileDate,
     ulpMenuKeyboard,
     saveGuideKeyboard,
     searchPromptKeyboard,
@@ -180,6 +186,11 @@ function createBot(token, meta = {}) {
     /** chatId -> absolute path currently being processed */
     const localJobs = new Map();
 
+    // Pre-warm multi-core worker pool for instantaneous zero-latency searches
+    try {
+        getSharedPool().warmup();
+    } catch (_) {}
+
     bot.start(async (ctx) => {
         const batch = store.getStats(ctx.chat.id);
         await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard());
@@ -218,29 +229,40 @@ function createBot(token, meta = {}) {
             return;
         }
         if (query.length < 2) {
-            await safeReply(ctx, "\u26A0\uFE0F Query too short \u2014 give me at least 2 characters.", mainKeyboard());
+            await safeReply(ctx, "⚠️ Query too short — give me at least 2 characters.", mainKeyboard());
             return;
         }
-        const result = store.searchLines(ctx.chat.id, query, 20);
-        await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+        const chatStats = store.getStats(ctx.chat.id);
+        let result;
+        if (chatStats && chatStats.size > 5000) {
+            result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
+        } else {
+            result = store.searchLines(ctx.chat.id, query, 20);
+        }
+        await safeReply(ctx, renderSearch(query, result), searchResultKeyboard(query, result.total));
     });
 
-    const showServerFiles = async (ctx, editMessageId = null) => {
+    const showServerFiles = async (ctx, editMessageId = null, page = 0) => {
         const rawRoot = localProcessRoot();
         const processedRoot = localProcessedRoot();
         const rawFiles = scanDirFiles(rawRoot);
         const processedFiles = scanDirFiles(processedRoot);
+        const diskStats = getDiskStats(rawRoot);
+        const batchStats = store.getStats(ctx.chat.id);
         const text = renderServerFiles({
             rawFiles,
             processedFiles,
             rawRoot,
             processedRoot,
             humanSize,
+            diskStats,
+            batchStats,
         });
+        const keyboard = serverFilesKeyboard(rawFiles, processedFiles, { page, pageSize: 3 });
         if (editMessageId) {
-            await safeEdit(ctx, editMessageId, text, serverFilesKeyboard(rawFiles, processedFiles));
+            await safeEdit(ctx, editMessageId, text, keyboard);
         } else {
-            await safeReply(ctx, text, serverFilesKeyboard(rawFiles, processedFiles));
+            await safeReply(ctx, text, keyboard);
         }
     };
 
@@ -256,16 +278,215 @@ function createBot(token, meta = {}) {
         await showServerFiles(ctx);
     });
 
+    bot.command("storage", async (ctx) => {
+        await showServerFiles(ctx);
+    });
+
+    bot.command("disk", async (ctx) => {
+        await showServerFiles(ctx);
+    });
+
+    bot.command("vault", async (ctx) => {
+        await showServerFiles(ctx);
+    });
+
     bot.action("server_files", async (ctx) => {
         await ctx.answerCbQuery("📂 Opening server vault…").catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
-        await showServerFiles(ctx, msg ? msg.message_id : null);
+        await showServerFiles(ctx, msg ? msg.message_id : null, 0);
     });
 
     bot.action("files:refresh", async (ctx) => {
         await ctx.answerCbQuery("🔄 Files refreshed").catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
-        await showServerFiles(ctx, msg ? msg.message_id : null);
+        await showServerFiles(ctx, msg ? msg.message_id : null, 0);
+    });
+
+    bot.action(/^files:page:(\d+)$/, async (ctx) => {
+        const page = parseInt(ctx.match[1], 10) || 0;
+        await ctx.answerCbQuery(`Page ${page + 1}`).catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showServerFiles(ctx, msg ? msg.message_id : null, page);
+    });
+
+    // Delete confirmation prompt for single raw file
+    bot.action(/^file:del:raw:ask:(\d+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const file = rawFiles[idx];
+        if (!file) {
+            await ctx.answerCbQuery("⚠️ File not found").catch(() => { });
+            return;
+        }
+        await ctx.answerCbQuery().catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        const confirmText = [
+            `🗑  ${B("DELETE RAW FILE?")}`,
+            RULE,
+            `📄  ${B(escapeHtml(file.name))} (${humanSize(file.size)})`,
+            `📁  Location: ${CODE(escapeHtml(file.path))}`,
+            "",
+            `⚠️  ${I("Are you sure you want to permanently delete this file from server disk?")}`,
+        ].join("\n");
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, confirmText, confirmFileDeleteKeyboard("raw", idx, file.name));
+        } else {
+            await safeReply(ctx, confirmText, confirmFileDeleteKeyboard("raw", idx, file.name));
+        }
+    });
+
+    // Delete confirmation prompt for single processed output file
+    bot.action(/^file:del:proc:ask:(\d+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        const processedFiles = scanDirFiles(localProcessedRoot());
+        const file = processedFiles[idx];
+        if (!file) {
+            await ctx.answerCbQuery("⚠️ Output not found").catch(() => { });
+            return;
+        }
+        await ctx.answerCbQuery().catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        const confirmText = [
+            `🗑  ${B("DELETE CLEANED OUTPUT?")}`,
+            RULE,
+            `💎  ${B(escapeHtml(file.name))} (${humanSize(file.size)})`,
+            `📁  Location: ${CODE(escapeHtml(file.path))}`,
+            "",
+            `⚠️  ${I("Are you sure you want to permanently delete this cleaned file from server disk?")}`,
+        ].join("\n");
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, confirmText, confirmFileDeleteKeyboard("proc", idx, file.name));
+        } else {
+            await safeReply(ctx, confirmText, confirmFileDeleteKeyboard("proc", idx, file.name));
+        }
+    });
+
+    // Perform confirmed deletion of individual file
+    bot.action(/^file:del:confirm:(raw|proc):(\d+)$/, async (ctx) => {
+        const type = ctx.match[1];
+        const idx = parseInt(ctx.match[2], 10);
+        const rootDir = type === "raw" ? localProcessRoot() : localProcessedRoot();
+        const files = scanDirFiles(rootDir);
+        const file = files[idx];
+        if (!file) {
+            await ctx.answerCbQuery("⚠️ File already removed").catch(() => { });
+            const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+            await showServerFiles(ctx, msg ? msg.message_id : null, 0);
+            return;
+        }
+        try {
+            fs.rmSync(file.path, { force: true });
+            await ctx.answerCbQuery(`🗑 Deleted ${file.name}!`).catch(() => { });
+        } catch (err) {
+            await ctx.answerCbQuery(`💥 Deletion error: ${err.message}`).catch(() => { });
+        }
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showServerFiles(ctx, msg ? msg.message_id : null, 0);
+    });
+
+    // Wipe all raw files prompt
+    bot.action("files:wipe:raw:ask", async (ctx) => {
+        const rawFiles = scanDirFiles(localProcessRoot());
+        await ctx.answerCbQuery().catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        const totalBytes = rawFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
+        const confirmText = [
+            `🧹  ${B("WIPE ALL RAW INCOMING FILES?")}`,
+            RULE,
+            `📦  ${B(num(rawFiles.length))} files (${humanSize(totalBytes)}) will be permanently deleted from:`,
+            CODE(escapeHtml(localProcessRoot())),
+            "",
+            `Cleaned output files under ${CODE(escapeHtml(localProcessedRoot()))} will remain safe.`,
+            "",
+            `⚠️  ${I("Do you wish to proceed?")}`,
+        ].join("\n");
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, confirmText, confirmFileDeleteKeyboard("allraw", 0));
+        } else {
+            await safeReply(ctx, confirmText, confirmFileDeleteKeyboard("allraw", 0));
+        }
+    });
+
+    // Wipe all processed files prompt
+    bot.action("files:wipe:proc:ask", async (ctx) => {
+        const processedFiles = scanDirFiles(localProcessedRoot());
+        await ctx.answerCbQuery().catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        const totalBytes = processedFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
+        const confirmText = [
+            `🧹  ${B("WIPE ALL CLEANED OUTPUT FILES?")}`,
+            RULE,
+            `💎  ${B(num(processedFiles.length))} cleaned output files (${humanSize(totalBytes)}) will be deleted from:`,
+            CODE(escapeHtml(localProcessedRoot())),
+            "",
+            `⚠️  ${I("Do you wish to proceed?")}`,
+        ].join("\n");
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, confirmText, confirmFileDeleteKeyboard("allproc", 0));
+        } else {
+            await safeReply(ctx, confirmText, confirmFileDeleteKeyboard("allproc", 0));
+        }
+    });
+
+    // Wipe all server storage prompt
+    bot.action("files:wipe:all:ask", async (ctx) => {
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const processedFiles = scanDirFiles(localProcessedRoot());
+        await ctx.answerCbQuery().catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        const totalBytes =
+            rawFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0) +
+            processedFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
+        const confirmText = [
+            `💥  ${B("PURGE ALL SERVER STORAGE?")}`,
+            RULE,
+            `⚠️  ${B("EVERYTHING ON SERVER DISK WILL BE DELETED:")}`,
+            `  • ${num(rawFiles.length)} raw incoming files`,
+            `  • ${num(processedFiles.length)} cleaned output files`,
+            `  • Total freeing up: ${humanSize(totalBytes)}`,
+            "",
+            `Also clears the in-memory batch credentials for this chat.`,
+            "",
+            `🚨  ${I("This action cannot be undone! Are you sure?")}`,
+        ].join("\n");
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, confirmText, confirmFileDeleteKeyboard("purgeall", 0));
+        } else {
+            await safeReply(ctx, confirmText, confirmFileDeleteKeyboard("purgeall", 0));
+        }
+    });
+
+    // Confirmed execution of bulk wipe
+    bot.action(/^file:del:confirm:(allraw|allproc|purgeall):(\d+)$/, async (ctx) => {
+        const action = ctx.match[1];
+        let deletedCount = 0;
+        let freedBytes = 0;
+
+        const wipeDir = (dir) => {
+            const files = scanDirFiles(dir);
+            for (const f of files) {
+                try {
+                    fs.rmSync(f.path, { force: true });
+                    deletedCount++;
+                    freedBytes += f.size || 0;
+                } catch (_) { }
+            }
+        };
+
+        if (action === "allraw" || action === "purgeall") {
+            wipeDir(localProcessRoot());
+        }
+        if (action === "allproc" || action === "purgeall") {
+            wipeDir(localProcessedRoot());
+        }
+        if (action === "purgeall") {
+            store.clear(ctx.chat.id);
+            store.clearLastCombined(ctx.chat.id);
+        }
+
+        await ctx.answerCbQuery(`🧹 Deleted ${deletedCount} file(s) freeing ${humanSize(freedBytes)}!`).catch(() => { });
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showServerFiles(ctx, msg ? msg.message_id : null, 0);
     });
 
     bot.action(/^file:clean:(\d+)$/, async (ctx) => {
@@ -371,6 +592,89 @@ function createBot(token, meta = {}) {
         }
     });
 
+    bot.action(/^file:dl:proc:(\d+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        await ctx.answerCbQuery("📥 Preparing download…").catch(() => { });
+        const processedFiles = scanDirFiles(localProcessedRoot());
+        const file = processedFiles[idx];
+        if (!file) {
+            await safeReply(ctx, `⚠️ Output file #${idx + 1} not found on server disk.`, mainKeyboard());
+            return;
+        }
+        try {
+            await ctx.replyWithChatAction("upload_document").catch(() => { });
+            await ctx.replyWithDocument(
+                { source: file.path, filename: file.name },
+                {
+                    caption: [
+                        `💎  ${B("CLEANED OUTPUT FILE")}`,
+                        `📄  ${escapeHtml(file.name)} · ${CODE(humanSize(file.size))}`,
+                        `📅  Created: ${CODE(formatFileDate(file.mtime))}`,
+                    ].join("\n"),
+                    parse_mode: "HTML",
+                    ...serverFilesKeyboard(scanDirFiles(localProcessRoot()), processedFiles),
+                },
+            );
+        } catch (err) {
+            await safeReply(ctx, `💥 Download failed: ${escapeHtml(err.message)}`, mainKeyboard());
+        }
+    });
+
+    bot.action(/^file:search:proc:(\d+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        await ctx.answerCbQuery().catch(() => { });
+        const processedFiles = scanDirFiles(localProcessedRoot());
+        const file = processedFiles[idx];
+        if (!file) {
+            await safeReply(ctx, `⚠️ Output file #${idx + 1} not found.`, mainKeyboard());
+            return;
+        }
+        await safeReply(
+            ctx,
+            [
+                `🔎  ${B("SEARCH CLEANED OUTPUT")} · ${B(escapeHtml(file.name))}`,
+                `📁  Size: ${humanSize(file.size)}`,
+                "",
+                `${I("Tap a quick filter below or type /lsearch <query>:")}`,
+            ].join("\n"),
+            Markup.inlineKeyboard([
+                [
+                    Markup.button.callback("📧 Gmail", `file:dosearch:proc:${idx}:gmail.com`),
+                    Markup.button.callback("📧 Hotmail", `file:dosearch:proc:${idx}:hotmail.com`),
+                ],
+                [
+                    Markup.button.callback("📧 Yahoo", `file:dosearch:proc:${idx}:yahoo.com`),
+                    Markup.button.callback("🌐 .com", `file:dosearch:proc:${idx}:.com`),
+                ],
+                [
+                    Markup.button.callback("🔙 Server Vault", "server_files"),
+                ],
+            ]),
+        );
+    });
+
+    bot.action(/^file:dosearch:proc:(\d+):(.+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        const query = ctx.match[2];
+        await ctx.answerCbQuery(`Searching ${query}…`).catch(() => { });
+        const processedFiles = scanDirFiles(localProcessedRoot());
+        const file = processedFiles[idx];
+        if (!file) {
+            await safeReply(ctx, "⚠️ Output file not found.", mainKeyboard());
+            return;
+        }
+        const status = await ctx.reply(
+            `🔎  ${B("SEARCHING OUTPUT")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`,
+            { parse_mode: "HTML" },
+        );
+        try {
+            const result = await searchTextFile(file.path, query, 20);
+            await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+        } catch (err) {
+            await safeEdit(ctx, status.message_id, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+        }
+    });
+
     bot.action("ulp:menu", async (ctx) => {
         await ctx.answerCbQuery("🚀 ULP Target Selector").catch(() => { });
         const text = [
@@ -430,7 +734,40 @@ function createBot(token, meta = {}) {
         } else {
             result = store.searchLines(ctx.chat.id, query, 20);
         }
-        await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+        await safeReply(ctx, renderSearch(query, result), searchResultKeyboard(query, result.total));
+    });
+
+    bot.action(/^search:dl:(.+)$/, async (ctx) => {
+        const query = ctx.match[1];
+        await ctx.answerCbQuery(`Preparing "${query}" export…`).catch(() => { });
+        let matches = [];
+        const chatStats = store.getStats(ctx.chat.id);
+        if (chatStats && chatStats.size > 5000) {
+            const res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 100000);
+            matches = res.matches;
+        } else {
+            const res = store.searchLines(ctx.chat.id, query, 100000);
+            matches = res.matches;
+        }
+        if (matches.length === 0) {
+            await safeReply(ctx, `⚠️ No matches found in batch for ${CODE(escapeHtml(query))}.`, mainKeyboard());
+            return;
+        }
+        const buffer = Buffer.from(matches.join("\n"), "utf8");
+        const stamp = new Date().toISOString().slice(0, 10);
+        const filename = `search_${sanitizeSiteSlug(query)}_${stamp}.txt`;
+        await ctx.replyWithDocument(
+            { source: buffer, filename },
+            {
+                caption: [
+                    `📥  ${B("SEARCH EXPORT READY")}  ⚡️`,
+                    `🎯  Query: ${CODE(escapeHtml(query))}`,
+                    `💎  Matches: ${B(num(matches.length))} lines`,
+                ].join("\n"),
+                parse_mode: "HTML",
+                ...afterCombineKeyboard(),
+            },
+        );
     });
 
     bot.action("help:save", async (ctx) => {
@@ -459,13 +796,14 @@ function createBot(token, meta = {}) {
 
         let file = null;
         if (specifiedName) {
-            const p1 = path.join(localProcessedRoot(), specifiedName);
-            const p2 = path.join(localProcessRoot(), specifiedName);
+            const safeName = path.basename(specifiedName);
+            const p1 = path.join(localProcessedRoot(), safeName);
+            const p2 = path.join(localProcessRoot(), safeName);
             if (fs.existsSync(p1)) file = p1;
             else if (fs.existsSync(p2)) file = p2;
             else {
                 const allProcessed = scanDirFiles(localProcessedRoot());
-                const match = allProcessed.find((f) => f.name.toLowerCase().includes(specifiedName.toLowerCase()));
+                const match = allProcessed.find((f) => f.name.toLowerCase().includes(safeName.toLowerCase()));
                 if (match) file = match.path;
             }
         }
@@ -726,6 +1064,252 @@ function createBot(token, meta = {}) {
                 renderSaveError(err),
             ))
             .finally(() => localJobs.delete(ctx.chat.id));
+    });
+
+    // ---- /batchsave [count] & /savebatch: batch save & clean multiple forwarded/uploaded files
+    //
+    // Finds recent documents in the chat using the MTProto userbot, downloads each to disk,
+    // cleans them sequentially into the batch, and reports aggregate results.
+    const batchSaveHandler = async (ctx) => {
+        const peer = meta.userbot;
+        if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
+            await safeReply(
+                ctx,
+                `⚠️  ${B("Account downloader is offline")}\nSet TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SESSION, then redeploy.`,
+            );
+            return;
+        }
+
+        if (localJobs.has(ctx.chat.id)) {
+            await safeReply(ctx, `⏳  Already processing ${CODE(escapeHtml(localJobs.get(ctx.chat.id)))}.`);
+            return;
+        }
+
+        // Parse optional limit: e.g. "/batchsave 20" or default to 10 (max 50)
+        const rawArg = (ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
+        let limit = 10;
+        if (rawArg && /^\d+$/.test(rawArg)) {
+            limit = Math.min(50, Math.max(1, parseInt(rawArg, 10)));
+        }
+
+        const cmdMsgId = ctx.message && ctx.message.message_id;
+        const statusMsg = await ctx.reply(
+            [
+                `🔍  ${B("SCANNING FOR DOCUMENTS")}  ⏳`,
+                RULE,
+                `Scanning recent chat history for up to ${B(num(limit))} documents…`,
+                "",
+                I("The MTProto userbot is reading recent forwarded documents directly from the chat ⚡️"),
+            ].join("\n"),
+            { parse_mode: "HTML" },
+        );
+
+        let docs = [];
+        try {
+            if (typeof peer.findRecentDocuments === "function") {
+                docs = await peer.findRecentDocuments(ctx.chat.id, limit, cmdMsgId);
+            }
+        } catch (err) {
+            console.error("findRecentDocuments failed:", err && err.message ? err.message : err);
+        }
+
+        if (!docs || docs.length === 0) {
+            await safeEdit(
+                ctx,
+                statusMsg.message_id,
+                [
+                    `📌  ${B("NO RECENT DOCUMENTS FOUND")}`,
+                    RULE,
+                    `Could not find any recent documents or forwarded files in this chat.`,
+                    "",
+                    `${B("How to batch forward:")}`,
+                    `1. Select multiple .zip or .txt files in any channel or chat.`,
+                    `2. Forward them all together into this chat.`,
+                    `3. Run ${CODE("/batchsave")} (or ${CODE("/batchsave 20")}).`,
+                    "",
+                    I("The bot will automatically download and clean all of them in one go! ⚡️"),
+                ].join("\n"),
+            );
+            return;
+        }
+
+        localJobs.set(ctx.chat.id, `batchsave:${docs.length}-files`);
+        const startTime = Date.now();
+        const processedFiles = [];
+        let totalLinesAdded = 0;
+
+        try {
+            for (let i = 0; i < docs.length; i++) {
+                const doc = docs[i];
+                const currentName = doc.fileName || `telegram-${doc.messageId}.bin`;
+                const beforeStats = store.getStats(ctx.chat.id);
+                const beforeSize = beforeStats ? beforeStats.size : 0;
+
+                await safeEdit(
+                    ctx,
+                    statusMsg.message_id,
+                    renderBatchSaveProgress({
+                        current: i + 1,
+                        total: docs.length,
+                        currentName,
+                        linesAdded: totalLinesAdded,
+                        totalLines: beforeSize,
+                    }),
+                );
+
+                try {
+                    const saved = await peer.downloadMessageToDisk(ctx.chat.id, doc.messageId, {
+                        root: localProcessRoot(),
+                        fileName: currentName,
+                        message: doc.message,
+                    });
+
+                    const fullPath = saved.path;
+                    const lowerName = currentName.toLowerCase();
+                    const isZip = lowerName.endsWith(".zip");
+                    const isText = [".txt", ".csv", ".tsv", ".log", ".lst", ".list", ".dat"].some((e) => lowerName.endsWith(e));
+
+                    if (isText) {
+                        if (doc.size > 80 * 1024 * 1024) {
+                            const rl = readline.createInterface({
+                                input: fs.createReadStream(fullPath, { encoding: "utf8" }),
+                                crlfDelay: Infinity,
+                            });
+                            let batch = [];
+                            let fileAdded = 0;
+                            const site = sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
+                            for await (const line of rl) {
+                                batch.push(line);
+                                if (batch.length >= 25000) {
+                                    const res = extractAndCleanText(batch.join("\n"), { keepUrl: true });
+                                    const r = store.addLines(ctx.chat.id, res.lines, site);
+                                    fileAdded += r.added;
+                                    batch = [];
+                                }
+                            }
+                            if (batch.length > 0) {
+                                const res = extractAndCleanText(batch.join("\n"), { keepUrl: true });
+                                const r = store.addLines(ctx.chat.id, res.lines, site);
+                                fileAdded += r.added;
+                            }
+                            totalLinesAdded += fileAdded;
+                            processedFiles.push({ name: currentName, lines: fileAdded, size: doc.size });
+                        } else {
+                            const content = fs.readFileSync(fullPath, "utf8");
+                            const res = extractAndCleanText(content, { sourceName: currentName, keepUrl: true });
+                            const site = sanitizeSiteSlug(res.site || "") || sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
+                            const added = store.addLines(ctx.chat.id, res.lines, site);
+                            totalLinesAdded += added.added;
+                            processedFiles.push({ name: currentName, lines: added.added, size: doc.size });
+                        }
+                    } else if (isZip) {
+                        const buffer = fs.readFileSync(fullPath);
+                        const res = extractAndCleanZip(buffer, { sourceName: currentName, keepUrl: true });
+                        const site = sanitizeSiteSlug(res.site || "") || sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
+                        const added = store.addLines(ctx.chat.id, res.lines, site);
+                        totalLinesAdded += added.added;
+                        processedFiles.push({ name: currentName, lines: added.added, size: doc.size });
+                    } else {
+                        processedFiles.push({ name: `${currentName} (unsupported format)`, lines: 0, size: doc.size });
+                    }
+                } catch (fileErr) {
+                    console.error(`batchsave failed for file ${currentName}:`, fileErr && fileErr.message ? fileErr.message : fileErr);
+                    processedFiles.push({ name: `${currentName} (error)`, lines: 0, size: doc.size });
+                }
+            }
+
+            const durationMs = Date.now() - startTime;
+            const finalStats = store.getStats(ctx.chat.id);
+            const totalLines = finalStats ? finalStats.size : totalLinesAdded;
+
+            await safeEdit(
+                ctx,
+                statusMsg.message_id,
+                renderBatchSaveComplete({
+                    totalFiles: docs.length,
+                    totalLines,
+                    files: processedFiles,
+                    durationMs,
+                }),
+                afterCombineKeyboard(),
+            );
+        } catch (err) {
+            console.error("batchsave process loop failed:", err);
+            await safeEdit(ctx, statusMsg.message_id, `💥  ${B("Batch save failed")}\n${I(escapeHtml(err.message))}`);
+        } finally {
+            localJobs.delete(ctx.chat.id);
+        }
+    };
+
+    bot.command("batchsave", batchSaveHandler);
+    bot.command("savebatch", batchSaveHandler);
+
+    // ---- /emojis & /packs: inspect all custom emoji packs installed on the user account
+    const emojisHandler = async (ctx) => {
+        const peer = meta.userbot;
+        if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
+            await safeReply(
+                ctx,
+                [
+                    `💎  ${B("EMOJI PACK SCANNER")}`,
+                    RULE,
+                    `⚠️  ${B("MTProto Account is offline")}`,
+                    "",
+                    `Set TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SESSION to inspect all custom emoji packs installed on your account.`,
+                    "",
+                    `Currently using the built-in ${B("599 standard animated stickers")}! ⚡️`,
+                ].join("\n"),
+                mainKeyboard(),
+            );
+            return;
+        }
+
+        await ctx.replyWithChatAction("choose_sticker").catch(() => {});
+        const status = await ctx.reply("🔍 Scanning all installed custom emoji packs on your account… ⏳");
+        try {
+            const data = await peer.getInstalledEmojiPacks();
+            await safeEdit(ctx, status.message_id, renderEmojiPacks(data), mainKeyboard());
+        } catch (err) {
+            await safeEdit(ctx, status.message_id, `💥 Failed to fetch emoji packs: ${escapeHtml(err.message)}`, mainKeyboard());
+        }
+    };
+
+    bot.command("emojis", emojisHandler);
+    bot.command("packs", emojisHandler);
+
+    bot.action("emojis:view", async (ctx) => {
+        await ctx.answerCbQuery("🎨 Scanning emoji packs…").catch(() => {});
+        const peer = meta.userbot;
+        if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
+            await safeReply(
+                ctx,
+                [
+                    `💎  ${B("EMOJI PACK SCANNER")}`,
+                    RULE,
+                    `⚠️  ${B("MTProto Account is offline")}`,
+                    "",
+                    `Set TELEGRAM_API_ID, TELEGRAM_API_HASH and TELEGRAM_SESSION to inspect all custom emoji packs installed on your account.`,
+                    "",
+                    `Currently using the built-in ${B("599 standard animated stickers")}! ⚡️`,
+                ].join("\n"),
+                mainKeyboard(),
+            );
+            return;
+        }
+        try {
+            const data = await peer.getInstalledEmojiPacks();
+            try {
+                await ctx.editMessageText(renderEmojiPacks(data), {
+                    parse_mode: "HTML",
+                    disable_web_page_preview: true,
+                    ...mainKeyboard(),
+                });
+            } catch {
+                await safeReply(ctx, renderEmojiPacks(data), mainKeyboard());
+            }
+        } catch (err) {
+            await safeReply(ctx, `💥 Failed to fetch emoji packs: ${escapeHtml(err.message)}`, mainKeyboard());
+        }
     });
 
     // Inline button: Combine
@@ -1170,25 +1754,46 @@ async function sendPreview(ctx) {
  */
 const lastCombineAt = new Map(); // chatId -> timestamp
 
-async function sendCombined(ctx) {
+async function sendCombined(ctx, force = false) {
     const chatId = ctx.chat && ctx.chat.id;
     const now = Date.now();
     const last = lastCombineAt.get(chatId) || 0;
-    if (now - last < COMBINE_COOLDOWN_MS) {
+    if (!force && now - last < COMBINE_COOLDOWN_MS) {
         await safeReply(ctx, "\u23F3 One sec \u2014 already building it! \uD83E\uDDFD");
         return;
     }
     lastCombineAt.set(chatId, now);
+    if (lastCombineAt.size > 500) {
+        const oldest = lastCombineAt.keys().next().value;
+        lastCombineAt.delete(oldest);
+    }
 
     const chat = store.getRawChat(chatId);
     const customName = chat && chat.customName ? chat.customName : null;
 
     const lines = store.getLines(chatId);
     if (lines.length === 0) {
+        const cached = store.getLastCombined(chatId);
+        if (cached && cached.buffer) {
+            await ctx.replyWithDocument(
+                { source: cached.buffer, filename: cached.filename },
+                {
+                    caption: [
+                        `🎁  ${B("COMBINED & DEDUPED (Latest Batch)")}`,
+                        `📁  ${B(escapeHtml(cached.filename))}  ·  🔑 ${B(compact(cached.linesCount))} credentials`,
+                        "",
+                        `${I("Delivering your recent search results fresh from cache! ⚡️")}`,
+                    ].join("\n"),
+                    parse_mode: "HTML",
+                    ...afterCombineKeyboard(),
+                },
+            );
+            return;
+        }
         await safeReply(
             ctx,
             [
-                `\uD83D\uDCED  ${B("Nothing to combine yet")}`,
+                `📬  ${B("Nothing to combine yet")}`,
                 `Your batch is empty \u2014 send me a ${B(".zip")} or ${B(".txt")}`,
                 `first and I'll get cleaning \uD83E\uDDFC\u2728`,
             ].join("\n"),
@@ -1221,23 +1826,78 @@ async function sendCombined(ctx) {
                 : `${emoji}  ${B(num(sites.length))} sites mixed`;
     }
 
-    const buffer = Buffer.from(buildOutput(lines), "utf8");
     const stamp = new Date().toISOString().slice(0, 10);
     const filename = `${base}_combined_${stamp}.txt`;
+    const outputPath = path.join(localProcessedRoot(), filename);
 
-    await ctx.replyWithDocument(
-        { source: buffer, filename },
-        {
-            caption: [
-                `\uD83C\uDF81  ${B("COMBINED & DEDUPED")}`,
-                `${siteLine}  \u00B7  \uD83D\uDD10 ${B(compact(lines.length))} unique lines`,
+    let buffer;
+    // Always persist to localProcessedRoot so the file is never lost and accessible via /files
+    try {
+        fs.mkdirSync(localProcessedRoot(), { recursive: true });
+        // Stream / write combined content
+        const combinedContent = buildOutput(lines);
+        buffer = Buffer.from(combinedContent, "utf8");
+        fs.writeFileSync(outputPath, buffer);
+    } catch (writeErr) {
+        console.error("Failed to persist combined file to disk:", writeErr);
+        if (!buffer) buffer = Buffer.from(buildOutput(lines), "utf8");
+    }
+
+    store.setLastCombined(chatId, { buffer, filename, linesCount: lines.length, site: base });
+
+    // If file is very large (> 45 MB), Bot API cannot upload raw (> 50 MB limit).
+    // Try compressing to .zip first (credentials compress by 70-85%).
+    let sendPayload = { source: buffer, filename };
+    let isZipped = false;
+    if (buffer.length > 45 * 1024 * 1024) {
+        try {
+            const AdmZip = require("adm-zip");
+            const zip = new AdmZip();
+            zip.addFile(filename, buffer);
+            const zipBuffer = zip.toBuffer();
+            if (zipBuffer.length <= 48 * 1024 * 1024) {
+                sendPayload = { source: zipBuffer, filename: `${base}_combined_${stamp}.zip` };
+                isZipped = true;
+            }
+        } catch (zipErr) {
+            console.error("Zip compression of large combined file failed:", zipErr);
+        }
+    }
+
+    try {
+        await ctx.replyWithDocument(
+            sendPayload,
+            {
+                caption: [
+                    `🎁  ${B("COMBINED & DEDUPED")}`,
+                    `${siteLine}  ·  🔑 ${B(compact(lines.length))} unique lines`,
+                    isZipped ? `📦  ${I("Compressed to .zip to fit Telegram upload limits")}` : "",
+                    `💾  Saved to server vault: ${CODE(escapeHtml(filename))}`,
+                    "",
+                    `${I("Served fresh — tap 📥 below to grab it again anytime.")}`,
+                ].filter(Boolean).join("\n"),
+                parse_mode: "HTML",
+                ...afterCombineKeyboard(),
+            },
+        );
+    } catch (uploadErr) {
+        console.error("replyWithDocument failed:", uploadErr);
+        // Fallback: Notify user with server path and vault keyboard
+        await safeReply(
+            ctx,
+            [
+                `⚠️  ${B("Telegram Upload Limit Exceeded")}`,
+                RULE,
+                `The combined list contains ${B(compact(lines.length))} lines (${humanSize(buffer.length)}), which exceeds Telegram's Bot API cap.`,
                 "",
-                `${I("Served fresh \u2014 tap \uD83D\uDCE5 below to grab it again anytime.")}`,
+                `✅  ${B("File safely saved to Server Disk:")}`,
+                CODE(escapeHtml(outputPath)),
+                "",
+                `Use ${CODE("/files")} to inspect or download it.`,
             ].join("\n"),
-            parse_mode: "HTML",
-            ...afterCombineKeyboard(),
-        },
-    );
+            serverFilesKeyboard(scanDirFiles(localProcessRoot()), scanDirFiles(localProcessedRoot())),
+        );
+    }
 }
 
 /**
@@ -1308,17 +1968,21 @@ async function waitForIngestions(chatId) {
 }
 
 const deliveringCombined = new Set();
-
 async function deliverCombinedAndResetBatch(ctx) {
     const chatId = ctx.chat && ctx.chat.id;
     if (!chatId || deliveringCombined.has(chatId)) return;
+    const run = searchbot.getRun(chatId);
+    if (run) {
+        if (run.delivered) return;
+        run.delivered = true;
+    }
     deliveringCombined.add(chatId);
     try {
         await waitForIngestions(chatId);
         await new Promise((r) => setTimeout(r, 1200));
         const lines = store.getLines(chatId);
         if (lines.length > 0) {
-            await sendCombined(ctx);
+            await sendCombined(ctx, true);
             store.clear(chatId);
             await safeReply(ctx, "\uD83E\uDDF9 Batch automatically cleaned and reset.");
         } else {
@@ -1341,8 +2005,14 @@ async function deliverCombinedAndResetBatch(ctx) {
  * @returns {{ query: string|null, scope: string }}
  */
 function parseUlpArg(raw, fallbackScope = "day") {
+    const defaultScope =
+        typeof fallbackScope === "string"
+            ? fallbackScope
+            : fallbackScope && typeof fallbackScope.defaultScope === "string"
+            ? fallbackScope.defaultScope
+            : "day";
     const parts = String(raw || "").split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return { query: null, scope: fallbackScope };
+    if (parts.length === 0) return { query: null, scope: defaultScope };
 
     const lastToken = parts[parts.length - 1];
     const parsedDate = userbot.parseDmyDate(lastToken);
@@ -1359,7 +2029,7 @@ function parseUlpArg(raw, fallbackScope = "day") {
     // "/ulp month" — a scope without a query: show the usage card instead.
     if (lastScope && parts.length === 1) return { query: null, scope: lastScope };
 
-    const scope = lastScope && parts.length > 1 ? lastScope : fallbackScope;
+    const scope = lastScope && parts.length > 1 ? lastScope : defaultScope;
     const queryParts = lastScope && parts.length > 1 ? parts.slice(0, -1) : parts;
     return { query: searchbot.normalizeQuery(queryParts.join(" ")), scope };
 }
@@ -1507,6 +2177,10 @@ async function beginUlpRun(ctx, params) {
         return;
     }
     ulpStartedAt.set(chatId, now);
+    if (ulpStartedAt.size > 500) {
+        const oldest = ulpStartedAt.keys().next().value;
+        ulpStartedAt.delete(oldest);
+    }
 
     // Choose how the query reaches the searcher: the account transport
     // (MTProto bypass, needs no other bot's cooperation) or the plain Bot API.
@@ -1586,18 +2260,18 @@ async function beginUlpRun(ctx, params) {
         });
 
         clearUlpWindow(ulpWindows, chatId);
-        const finalStatus = dayRes.status === "stopped" ? "stopped" : "done";
-        searchbot.finishRun(chatId, finalStatus);
+        if (dayRes.status === "stopped") {
+            return;
+        }
+        searchbot.finishRun(chatId, "done");
         if (card) {
             const resultCount = (searchbot.getRun(chatId) || {}).results?.length || 0;
-            const text = finalStatus === "done"
-                ? renderUlpDone({ query, scope, count: resultCount })
-                : renderUlpStopped({ query, scope, count: resultCount });
+            const text = renderUlpDone({ query, scope, count: resultCount });
             await safeEdit(
                 ctx,
                 card.message_id,
                 text,
-                ulpKeyboard(finalStatus),
+                ulpKeyboard("done"),
             );
         }
         await deliverCombinedAndResetBatch(ctx);
@@ -1705,6 +2379,13 @@ async function relaySearcherMessage(ctx, params) {
                 }),
             );
         }
+        if (!msg.document && msg.text && run && run.query) {
+            const res = extractAndCleanText(msg.text, { keepUrl: true });
+            if (res.lines.length > 0) {
+                const site = sanitizeSiteSlug(run.query) || "cleaned";
+                store.addLines(chatId, res.lines, site);
+            }
+        }
         try {
             await ctx.telegram.forwardMessage(chatId, searcherChatId, msg.message_id, {
                 ...ulpResultKeyboard(Boolean(msg.document)),
@@ -1789,6 +2470,15 @@ async function ackSharedResult(ctx, params) {
                         console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
                     });
                 trackIngestion(chatId, p);
+            }
+        }
+    } else {
+        const rawText = msg.text || msg.caption || "";
+        if (rawText) {
+            const res = extractAndCleanText(rawText, { keepUrl: true });
+            if (res.lines.length > 0) {
+                const site = sanitizeSiteSlug(query) || "cleaned";
+                store.addLines(chatId, res.lines, site);
             }
         }
     }
@@ -1894,6 +2584,27 @@ function localProcessedRoot() {
 }
 
 /**
+ * Get filesystem storage capacity and free space stats.
+ * Uses fs.statfsSync if available on the current OS/platform.
+ */
+function getDiskStats(dirPath = null) {
+    const target = dirPath || localProcessRoot();
+    try {
+        if (typeof fs.statfsSync === "function") {
+            const st = fs.statfsSync(target);
+            const bsize = st.bsize || 4096;
+            const total = Number(st.blocks) * bsize;
+            const free = Number(st.bavail || st.bfree) * bsize;
+            const used = Math.max(0, total - free);
+            return { total, free, used };
+        }
+    } catch {
+        // Directory may not exist yet or statfs unsupported
+    }
+    return null;
+}
+
+/**
  * Search a huge text file without loading it into memory.
  * @param {string} filePath
  * @param {string} query
@@ -1903,34 +2614,7 @@ async function searchTextFile(filePath, query, limit = 20) {
     const q = String(query || "").trim();
     if (!q) return { total: 0, matches: [] };
     const pool = getSharedPool();
-    let total = 0;
-    const matches = [];
-    let buffer = [];
-    const CHUNK_SIZE = 25000;
-
-    const rl = readline.createInterface({
-        input: fs.createReadStream(filePath, { encoding: "utf8", highWaterMark: 1024 * 1024 }),
-        crlfDelay: Infinity,
-    });
-    for await (const line of rl) {
-        buffer.push(line);
-        if (buffer.length >= CHUNK_SIZE) {
-            const res = await pool.searchLinesParallel(buffer, q);
-            total += res.total;
-            for (const m of res.matches) {
-                if (matches.length < limit) matches.push(m);
-            }
-            buffer = [];
-        }
-    }
-    if (buffer.length > 0) {
-        const res = await pool.searchLinesParallel(buffer, q);
-        total += res.total;
-        for (const m of res.matches) {
-            if (matches.length < limit) matches.push(m);
-        }
-    }
-    return { total, matches };
+    return pool.searchFileParallel(filePath, q, limit);
 }
 
 /** Build a collision-resistant output path under LOCAL_PROCESSED_ROOT. */
@@ -2117,7 +2801,7 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
                 stats.duplicates += 1;
                 continue;
             }
-            if (seen.size < 2_000_000) {
+            if (seen.size < store.MAX_LINES_PER_CHAT) {
                 seen.add(cleaned);
             }
             stats.kept += 1;
@@ -2250,11 +2934,14 @@ module.exports = {
     processFile,
     latestFileIn,
     localProcessRoot,
+    localProcessedRoot,
+    getDiskStats,
     resolveLocalInput,
     searchTextFile,
     processedOutputPath,
     renderSaveError,
     scanDirFiles,
+    deliverCombinedAndResetBatch,
 };
 
 

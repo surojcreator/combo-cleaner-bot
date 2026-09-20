@@ -66,6 +66,8 @@ async function registerCommands() {
     try {
         await bot.telegram.setMyCommands([
             { command: "combine", description: "\uD83D\uDCE6 Download the combined file" },
+            { command: "storage", description: "💾 Manage server storage & delete files" },
+            { command: "files", description: "📂 Browse server vault files" },
             { command: "stats", description: "\uD83D\uDCCA Batch dashboard" },
             { command: "sites", description: "\uD83C\uDF10 Per-site breakdown" },
             { command: "preview", description: "\uD83D\uDC41 Peek at sample lines" },

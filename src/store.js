@@ -8,8 +8,24 @@
  * A global cap keeps memory bounded on free tiers.
  */
 
-const MAX_LINES_PER_CHAT = 2_000_000; // ~2M credentials per chat
-const MAX_CHATS = 500; // max concurrent chats tracked
+const DEFAULT_MAX_LINES = 10_000_000; // 10M default credentials per chat
+function getMaxLinesPerChat() {
+    if (process.env.MAX_LINES_PER_CHAT !== undefined) {
+        const val = Number(process.env.MAX_LINES_PER_CHAT);
+        if (Number.isFinite(val)) {
+            return val <= 0 ? Infinity : Math.floor(val);
+        }
+    }
+    return DEFAULT_MAX_LINES;
+}
+
+function getMaxChats() {
+    if (process.env.MAX_CHATS !== undefined) {
+        const val = Number(process.env.MAX_CHATS);
+        if (Number.isFinite(val) && val > 0) return Math.floor(val);
+    }
+    return 500;
+}
 
 /** @type {Map<number, { lines: Set<string>, totalKept: number, files: number, updatedAt: number }>} */
 const chats = new Map();
@@ -28,12 +44,13 @@ function getChat(chatId) {
 }
 
 function evictIfNeeded() {
-    if (chats.size <= MAX_CHATS) return;
+    const maxChats = getMaxChats();
+    if (chats.size <= maxChats) return;
     // Drop the least-recently-updated chats.
     const entries = [...chats.entries()].sort(
         (a, b) => a[1].updatedAt - b[1].updatedAt,
     );
-    const toRemove = chats.size - MAX_CHATS;
+    const toRemove = chats.size - maxChats;
     for (let i = 0; i < toRemove; i += 1) {
         chats.delete(entries[i][0]);
     }
@@ -53,9 +70,10 @@ function addLines(chatId, lines, site, options = {}) {
     let added = 0;
     let duplicates = 0;
     let capped = false;
+    const maxLines = getMaxLinesPerChat();
 
     for (const line of lines) {
-        if (chat.lines.size >= MAX_LINES_PER_CHAT) {
+        if (chat.lines.size >= maxLines) {
             capped = true;
             break;
         }
@@ -158,12 +176,11 @@ function searchLines(chatId, query, limit = 20) {
     const chat = chats.get(chatId);
     const q = String(query || "").trim();
     if (!chat || !q) return { total: 0, matches: [] };
-    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(escaped, "i");
+    const qLower = q.toLowerCase();
     const matches = [];
     let total = 0;
     for (const line of chat.lines) {
-        if (re.test(line)) {
+        if (typeof line === "string" && line.toLowerCase().includes(qLower)) {
             total += 1;
             if (matches.length < limit) matches.push(line);
         }
@@ -171,11 +188,6 @@ function searchLines(chatId, query, limit = 20) {
     return { total, matches };
 }
 
-/**
- * Get all stored lines for a chat.
- * @param {number} chatId
- * @returns {string[]}
- */
 function getLines(chatId) {
     const chat = chats.get(chatId);
     if (!chat) return [];
@@ -193,6 +205,54 @@ function clear(chatId) {
     return existed;
 }
 
+/**
+ * Cache of the most recent combined file per chat (retained across store.clear).
+ * Allows users to download their search output even if the active batch was automatically cleared.
+ */
+const lastCombinedCache = new Map(); // chatId -> { buffer, filename, linesCount, site, timestamp }
+
+function setLastCombined(chatId, data) {
+    if (!chatId || !data) return;
+    lastCombinedCache.set(chatId, { ...data, timestamp: Date.now() });
+    if (lastCombinedCache.size > 200) {
+        const oldest = lastCombinedCache.keys().next().value;
+        lastCombinedCache.delete(oldest);
+    }
+}
+
+function getLastCombined(chatId, maxAgeMs = 30 * 60 * 1000) {
+    const item = lastCombinedCache.get(chatId);
+    if (!item) return null;
+    if (Date.now() - item.timestamp > maxAgeMs) {
+        lastCombinedCache.delete(chatId);
+        return null;
+    }
+    return item;
+}
+
+function clearLastCombined(chatId) {
+    if (chatId) return lastCombinedCache.delete(chatId);
+    lastCombinedCache.clear();
+    return true;
+}
+
+/**
+ * Overview of global memory usage across all active chats and cache.
+ */
+function getMemoryStats() {
+    let totalStoredLines = 0;
+    for (const chat of chats.values()) {
+        totalStoredLines += chat.lines.size;
+    }
+    return {
+        activeChats: chats.size,
+        maxChats: getMaxChats(),
+        totalLines: totalStoredLines,
+        maxLinesPerChat: getMaxLinesPerChat(),
+        cachedCombinedFiles: lastCombinedCache.size,
+    };
+}
+
 module.exports = {
     addLines,
     getStats,
@@ -202,5 +262,13 @@ module.exports = {
     getRawChat,
     searchLines,
     clear,
-    MAX_LINES_PER_CHAT,
+    setLastCombined,
+    getLastCombined,
+    clearLastCombined,
+    getMemoryStats,
+    getMaxLinesPerChat,
+    getMaxChats,
+    get MAX_LINES_PER_CHAT() {
+        return getMaxLinesPerChat();
+    },
 };

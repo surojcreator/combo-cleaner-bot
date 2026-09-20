@@ -51,3 +51,50 @@ test("clear wipes lines and sites", () => {
     assert.deepStrictEqual(store.getSites(chatId), []);
     assert.strictEqual(store.getStats(chatId), null);
 });
+
+test("store allows configuring MAX_LINES_PER_CHAT and supports >2M lines without capping", () => {
+    const orig = process.env.MAX_LINES_PER_CHAT;
+    try {
+        process.env.MAX_LINES_PER_CHAT = "5000000";
+        assert.equal(store.getMaxLinesPerChat(), 5_000_000);
+        assert.equal(store.MAX_LINES_PER_CHAT, 5_000_000);
+
+        // Unlimited when 0
+        process.env.MAX_LINES_PER_CHAT = "0";
+        assert.equal(store.getMaxLinesPerChat(), Infinity);
+
+        // Custom cap
+        process.env.MAX_LINES_PER_CHAT = "10";
+        const chatId = -99999;
+        store.clear(chatId);
+        const lines = [];
+        for (let i = 0; i < 15; i++) lines.push(`user${i}@mail.com:pw${i}`);
+        const res = store.addLines(chatId, lines, "testsite");
+        assert.equal(res.added, 10);
+        assert.equal(res.capped, true);
+        assert.equal(res.size, 10);
+        store.clear(chatId);
+    } finally {
+        if (orig !== undefined) process.env.MAX_LINES_PER_CHAT = orig;
+        else delete process.env.MAX_LINES_PER_CHAT;
+    }
+});
+
+test("store tracks memory stats across chats", () => {
+    const chatId1 = -88881;
+    const chatId2 = -88882;
+    store.clear(chatId1);
+    store.clear(chatId2);
+
+    store.addLines(chatId1, ["u1@x.com:pw", "u2@x.com:pw"], "site1");
+    store.addLines(chatId2, ["u3@x.com:pw"], "site2");
+
+    const mem = store.getMemoryStats();
+    assert.ok(mem.activeChats >= 2);
+    assert.ok(mem.totalLines >= 3);
+    assert.ok(mem.maxLinesPerChat > 0);
+
+    store.clear(chatId1);
+    store.clear(chatId2);
+});
+

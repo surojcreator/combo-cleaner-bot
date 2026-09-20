@@ -45,6 +45,7 @@ want the download. `/clear` starts a fresh batch.
 - `/save` — reply to a forwarded document in the shared group; download it to `/var/data` through the user account and process it
 - `/lsearch <query>` — search the newest full output under `/var/data/processed`
 - `/combine` — download the combined, deduped file
+- `/storage` (or `/files`, `/disk`) — 💾 manage server disk storage, inspect raw & cleaned files, and delete files with buttons
 - `/stats` — how many unique lines are stored for this chat
 - `/clear` — wipe this chat's stored lines
 - `/help` — usage help
@@ -85,6 +86,32 @@ The user account fetches the replied-to message and streams its media directly
 to `LOCAL_PROCESS_ROOT` (`/var/data` by default). The bot then automatically
 runs the same local processing pipeline as `/process` and writes full cleaned
 output under `/var/data/processed`.
+
+### Batch Save Multiple Forwarded Telegram Files
+
+When you have multiple `.zip` or text files forwarded into a group or chat, you can process them all in a single batch command:
+
+```text
+/batchsave [limit]
+# or
+/savebatch 20
+```
+
+1. Select and forward 5, 10, or 20 files at once into your private group or chat.
+2. Send `/batchsave` (default scans the 10 most recent files, or specify up to 50, e.g. `/batchsave 25`).
+3. The MTProto userbot reads each document in chronological order, streams each directly to `/var/data`, cleans each into the batch, displays live progress with file counts, and summarizes the aggregate results with an instant `[ 📦 Get combined file ]` button!
+
+### Inspect Installed Custom Emoji Packs
+
+Inspect all custom emoji packs installed on your Telegram account (in addition to the 599 standard animated stickers):
+
+```text
+/emojis
+# or
+/packs
+```
+
+---
 
 This bypasses the Bot API's 20 MB download limit, but not Telegram's own
 user-file upload limit. A 50 GB file still cannot travel through Telegram; use

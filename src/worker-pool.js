@@ -3,12 +3,14 @@
 const { Worker } = require("node:worker_threads");
 const os = require("node:os");
 const path = require("node:path");
+const fs = require("node:fs");
 
 class WorkerPool {
     constructor(workerPath, numWorkers) {
         this.workerPath = workerPath || path.join(__dirname, "clean-worker.js");
         const availableCpus = os.cpus().length || 4;
-        this.numWorkers = numWorkers || Math.max(2, Math.min(availableCpus, 16));
+        // Default to all available CPU cores (saturates 100% of available cores)
+        this.numWorkers = numWorkers || Math.max(4, Math.min(availableCpus, 32));
         this.workers = [];
         this.freeWorkers = [];
         this.queue = [];
@@ -16,6 +18,11 @@ class WorkerPool {
         this.pending = new Map();
         this.isClosed = false;
         this.idleTimer = null;
+        this.idleTimeoutMs = 120000; // Keep workers hot for 2 minutes to eliminate spawn lag
+    }
+
+    warmup() {
+        this._ensureWorkers();
     }
 
     _ensureWorkers() {
@@ -84,7 +91,7 @@ class WorkerPool {
                 this.workers = [];
                 this.freeWorkers = [];
             }
-        }, 1500);
+        }, this.idleTimeoutMs);
         if (this.idleTimer.unref) this.idleTimer.unref();
     }
 
@@ -126,7 +133,7 @@ class WorkerPool {
         }
 
         // For small batches (< 5000 lines), worker thread overhead is not worth it
-        if (lines.length < 5000 || this.workers.length === 0) {
+        if (lines.length < 5000) {
             const { cleanText } = require("./cleaner");
             return cleanText(lines.join("\n"), options);
         }
@@ -182,36 +189,47 @@ class WorkerPool {
      * Search an array of lines in parallel across all CPU worker threads.
      * @param {string[]} lines
      * @param {string} query
+     * @param {number|object} [limitOrOptions]
      * @param {number} [chunkSize]
      * @returns {Promise<{ total: number, matches: string[] }>}
      */
-    async searchLinesParallel(lines, query, chunkSize = 25000) {
+    async searchLinesParallel(lines, query, limitOrOptions = 50, chunkSize = 25000) {
         if (!lines || lines.length === 0 || !query) {
             return { total: 0, matches: [] };
         }
 
+        let limit = 50;
+        let actualChunkSize = chunkSize;
+        if (typeof limitOrOptions === "number") {
+            limit = limitOrOptions;
+        } else if (limitOrOptions && typeof limitOrOptions === "object") {
+            if (typeof limitOrOptions.limit === "number") limit = limitOrOptions.limit;
+            if (typeof limitOrOptions.chunkSize === "number") actualChunkSize = limitOrOptions.chunkSize;
+        }
+
+        const qLower = String(query).trim().toLowerCase();
+        if (!qLower) return { total: 0, matches: [] };
+
         // Fast path for small queries without worker overhead
         if (lines.length < 5000) {
-            const escaped = String(query || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            const re = new RegExp(escaped, "i");
             let total = 0;
             const matches = [];
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
-                if (re.test(line)) {
+                if (typeof line === "string" && line.toLowerCase().includes(qLower)) {
                     total++;
-                    if (matches.length < 50) matches.push(line);
+                    if (matches.length < limit) matches.push(line);
                 }
             }
             return { total, matches };
         }
 
-        const size = Math.max(5000, Math.min(chunkSize, Math.ceil(lines.length / this.numWorkers)));
+        const size = Math.max(5000, Math.min(actualChunkSize, Math.ceil(lines.length / this.numWorkers)));
         const tasks = [];
 
         for (let i = 0; i < lines.length; i += size) {
             const slice = lines.slice(i, i + size);
-            tasks.push(this.exec({ type: "search", lines: slice, query }));
+            tasks.push(this.exec({ type: "search", lines: slice, query: qLower, limit }));
         }
 
         const results = await Promise.all(tasks);
@@ -221,7 +239,86 @@ class WorkerPool {
         for (const res of results) {
             total += res.total;
             for (const m of res.matches) {
-                if (matches.length < 50) matches.push(m);
+                if (matches.length < limit) matches.push(m);
+            }
+        }
+
+        return { total, matches };
+    }
+
+    /**
+     * Search a huge text file on disk across all CPU cores in parallel by partitioning byte ranges.
+     * @param {string} filePath
+     * @param {string} query
+     * @param {number} [limit]
+     * @returns {Promise<{ total: number, matches: string[] }>}
+     */
+    async searchFileParallel(filePath, query, limit = 20) {
+        const q = String(query || "").trim();
+        if (!q || !filePath) return { total: 0, matches: [] };
+        if (!fs.existsSync(filePath)) return { total: 0, matches: [] };
+
+        let stat;
+        try {
+            stat = fs.statSync(filePath);
+        } catch (_) {
+            return { total: 0, matches: [] };
+        }
+
+        const fileSize = stat.size;
+        if (fileSize === 0) return { total: 0, matches: [] };
+
+        const qLower = q.toLowerCase();
+
+        // For small files (< 256KB), avoid worker dispatch overhead and do fast direct scan
+        if (fileSize < 256 * 1024) {
+            const matches = [];
+            let total = 0;
+            const content = fs.readFileSync(filePath, "utf8");
+            const lines = content.split("\n");
+            for (let i = 0; i < lines.length; i++) {
+                const raw = lines[i];
+                const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+                if (line.toLowerCase().includes(qLower)) {
+                    total++;
+                    if (matches.length < limit) matches.push(line);
+                }
+            }
+            return { total, matches };
+        }
+
+        this._ensureWorkers();
+        const numSlices = Math.max(1, Math.min(this.numWorkers, Math.ceil(fileSize / (1024 * 1024))));
+        const sliceSize = Math.ceil(fileSize / numSlices);
+        const tasks = [];
+
+        for (let i = 0; i < numSlices; i++) {
+            const start = i * sliceSize;
+            const end = Math.min(fileSize, (i + 1) * sliceSize);
+            tasks.push(
+                this.exec({
+                    type: "searchFileSlice",
+                    filePath: path.resolve(filePath),
+                    start,
+                    end,
+                    query: q,
+                    limit,
+                }),
+            );
+        }
+
+        const results = await Promise.all(tasks);
+        let total = 0;
+        const matches = [];
+
+        for (const res of results) {
+            if (res) {
+                total += res.total || 0;
+                if (Array.isArray(res.matches)) {
+                    for (const m of res.matches) {
+                        if (matches.length < limit) matches.push(m);
+                    }
+                }
             }
         }
 
@@ -230,6 +327,10 @@ class WorkerPool {
 
     close() {
         this.isClosed = true;
+        if (this.idleTimer) {
+            clearTimeout(this.idleTimer);
+            this.idleTimer = null;
+        }
         for (const w of this.workers) {
             w.terminate().catch(() => {});
         }

@@ -240,6 +240,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
     let resultSink = null;
 
     const peerCache = new Map();
+    const forwardedMsgKeys = new Set();
 
     /**
      * Resolve a Bot API chat id to the account-specific InputPeer/access hash.
@@ -450,6 +451,16 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
         async forwardResult(toChatId, msg) {
             if (!ready || !client) return "skipped";
+            if (!msg || !msg.id) return "skipped";
+            const fwdKey = `${toChatId}:${msg.id}`;
+            if (forwardedMsgKeys.has(fwdKey)) {
+                return "already_forwarded";
+            }
+            forwardedMsgKeys.add(fwdKey);
+            if (forwardedMsgKeys.size > 2000) {
+                const first = forwardedMsgKeys.values().next().value;
+                forwardedMsgKeys.delete(first);
+            }
             let targetPeer = toChatId;
             try {
                 targetPeer = await resolveChatPeer(toChatId);
@@ -588,6 +599,111 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             }
 
             return null;
+        },
+
+        /**
+         * Find multiple recent documents in a chat for batch saving.
+         *
+         * @param {number|string} chatId
+         * @param {number} [limit] max documents to return (default 10)
+         * @param {number} [commandMessageId] optional command message id to exclude
+         * @returns {Promise<Array<{ messageId: number, fileName: string, size: number, document: any }>>}
+         */
+        async findRecentDocuments(chatId, limit = 10, commandMessageId = null) {
+            if (!ready || !client) return [];
+            let inputPeer = chatId;
+            try {
+                inputPeer = await resolveChatPeer(chatId);
+            } catch {
+                inputPeer = chatId;
+            }
+            try {
+                const recent = await withTimeout(
+                    client.getMessages(inputPeer, { limit: 80 }),
+                    timeoutMs,
+                    "userbot getRecentMessagesBatch",
+                );
+                const found = [];
+                for (const msg of recent || []) {
+                    if (commandMessageId && msg.id === Number(commandMessageId)) continue;
+                    if (found.length >= limit) break;
+                    if (msg.media && (msg.media.document || msg.file)) {
+                        const fileName =
+                            (msg.file && msg.file.name) ||
+                            (msg.media.document && msg.media.document.attributes &&
+                                msg.media.document.attributes.find((a) => a && a.fileName) &&
+                                msg.media.document.attributes.find((a) => a && a.fileName).fileName) ||
+                            `telegram-${msg.id}.bin`;
+                        const size = Number((msg.file && msg.file.size) || (msg.media.document && msg.media.document.size) || 0);
+                        found.push({
+                            messageId: msg.id,
+                            fileName: safeDownloadName(fileName),
+                            size,
+                            document: msg.media.document || msg.file,
+                            message: msg,
+                        });
+                    }
+                }
+                // Return in chronological order so files process sequentially (e.g. part 1, part 2...)
+                return found.reverse();
+            } catch (err) {
+                log.error("userbot failed to scan recent batch documents:", err && err.message ? err.message : err);
+                return [];
+            }
+        },
+
+        /**
+         * Query all installed custom emoji sticker sets and animated emojis on the user account.
+         * @returns {Promise<{ packs: Array<{ title: string, shortName: string, id: string, count: number, sample: string[] }>, totalEmojis: number }>}
+         */
+        async getInstalledEmojiPacks() {
+            if (!ready || !client) {
+                return { packs: [], totalEmojis: 0, error: "USERBOT_NOT_READY" };
+            }
+            try {
+                const res = await withTimeout(
+                    client.invoke(new Api.messages.GetEmojiStickers({ hash: BigInt(0) })),
+                    timeoutMs,
+                    "userbot GetEmojiStickers",
+                );
+                const packs = [];
+                let totalEmojis = 0;
+                for (const s of (res && res.sets) || []) {
+                    try {
+                        const full = await withTimeout(
+                            client.invoke(new Api.messages.GetStickerSet({
+                                stickerset: new Api.InputStickerSetID({ id: s.id, accessHash: s.accessHash }),
+                                hash: 0,
+                            })),
+                            timeoutMs,
+                            `userbot GetStickerSet ${s.shortName}`,
+                        );
+                        const sample = (full.packs || []).slice(0, 10).map((p) => p.emoticon);
+                        const count = full.documents ? full.documents.length : (s.count || 0);
+                        totalEmojis += count;
+                        packs.push({
+                            title: s.title || s.shortName,
+                            shortName: s.shortName,
+                            id: s.id.toString(),
+                            count,
+                            sample,
+                        });
+                    } catch (e) {
+                        packs.push({
+                            title: s.title || s.shortName,
+                            shortName: s.shortName,
+                            id: s.id.toString(),
+                            count: s.count || 0,
+                            sample: [],
+                        });
+                        totalEmojis += s.count || 0;
+                    }
+                }
+                return { packs, totalEmojis };
+            } catch (err) {
+                log.error("userbot getInstalledEmojiPacks error:", err && err.message ? err.message : err);
+                return { packs: [], totalEmojis: 0, error: err.message };
+            }
         },
 
         /**

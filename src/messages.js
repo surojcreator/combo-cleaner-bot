@@ -9,7 +9,6 @@ const LT = String.fromCharCode(60); // <
 const GT = String.fromCharCode(62); // >
 const B = (s) => `${LT}b${GT}${s}${LT}/b${GT}`;
 const I = (s) => `${LT}i${GT}${s}${LT}/i${GT}`;
-const U = (s) => `${LT}u${GT}${s}${LT}/u${GT}`;
 const CODE = (s) => `${LT}code${GT}${s}${LT}/code${GT}`;
 
 // Escape entities (for escaping user text), built from the ampersand char code.
@@ -133,6 +132,9 @@ function mainKeyboard() {
         ],
         [
             Markup.button.callback("⚡️ Fast /save Guide", "help:save"),
+            Markup.button.callback("💎 Emoji Packs", "emojis:view"),
+        ],
+        [
             Markup.button.callback("🔄 Refresh Menu", "help"),
         ],
     ]);
@@ -159,31 +161,100 @@ function afterCombineKeyboard() {
 
 /**
  * Keyboard shown under the server files vault.
+ * Supports file cleaning, downloading, searching, individual deletion, and bulk wipe.
+ * @param {Array} [rawFiles]
+ * @param {Array} [processedFiles]
+ * @param {{ page?: number, pageSize?: number }} [options]
  */
-function serverFilesKeyboard(rawFiles = [], processedFiles = []) {
+function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}) {
     const rows = [];
-    if (Array.isArray(rawFiles) && rawFiles.length > 0) {
-        for (let i = 0; i < Math.min(rawFiles.length, 4); i++) {
+    const pageSize = options.pageSize || 3;
+    const page = options.page || 0;
+
+    const rawStart = page * pageSize;
+    const rawSlice = Array.isArray(rawFiles) ? rawFiles.slice(rawStart, rawStart + pageSize) : [];
+    const totalRawPages = Math.ceil((rawFiles ? rawFiles.length : 0) / pageSize) || 1;
+
+    const procStart = page * pageSize;
+    const procSlice = Array.isArray(processedFiles) ? processedFiles.slice(procStart, procStart + pageSize) : [];
+    const totalProcPages = Math.ceil((processedFiles ? processedFiles.length : 0) / pageSize) || 1;
+    const maxPages = Math.max(totalRawPages, totalProcPages);
+
+    // 1. Raw Files Actions (Clean, Search, Delete)
+    if (rawSlice.length > 0) {
+        for (let i = 0; i < rawSlice.length; i++) {
+            const actualIdx = rawStart + i;
             rows.push([
-                Markup.button.callback(`🧼 Clean #${i + 1}`, `file:clean:${i}`),
-                Markup.button.callback(`🔎 Search #${i + 1}`, `file:search:${i}`),
-            ]);
-        }
-        if (rawFiles.length > 1) {
-            rows.push([
-                Markup.button.callback(`⚡️ Clean All Raw (${rawFiles.length})`, "files:clean:all"),
+                Markup.button.callback(`🧼 Clean Raw #${actualIdx + 1}`, `file:clean:${actualIdx}`),
+                Markup.button.callback(`🔎 Search Raw #${actualIdx + 1}`, `file:search:${actualIdx}`),
+                Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:raw:ask:${actualIdx}`),
             ]);
         }
     }
+
+    // 2. Processed Outputs Actions (Download, Search, Delete)
+    if (procSlice.length > 0) {
+        for (let i = 0; i < procSlice.length; i++) {
+            const actualIdx = procStart + i;
+            rows.push([
+                Markup.button.callback(`📥 Download Output #${actualIdx + 1}`, `file:dl:proc:${actualIdx}`),
+                Markup.button.callback(`🔎 Search Output #${actualIdx + 1}`, `file:search:proc:${actualIdx}`),
+                Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:proc:ask:${actualIdx}`),
+            ]);
+        }
+    }
+
+    // 3. Pagination Controls (if more than pageSize items exist)
+    if (maxPages > 1) {
+        const navRow = [];
+        if (page > 0) {
+            navRow.push(Markup.button.callback("◀️ Prev Page", `files:page:${page - 1}`));
+        }
+        navRow.push(Markup.button.callback(`📄 ${page + 1}/${maxPages}`, "files:refresh"));
+        if (page + 1 < maxPages) {
+            navRow.push(Markup.button.callback("Next Page ▶️", `files:page:${page + 1}`));
+        }
+        rows.push(navRow);
+    }
+
+    // 4. Batch & Bulk Operations
+    const bulkRow = [];
+    if (Array.isArray(rawFiles) && rawFiles.length > 1) {
+        bulkRow.push(Markup.button.callback(`⚡️ Clean All Raw (${rawFiles.length})`, "files:clean:all"));
+    }
+    if (Array.isArray(rawFiles) && rawFiles.length > 0) {
+        bulkRow.push(Markup.button.callback(`🧹 Wipe All Raw`, "files:wipe:raw:ask"));
+    }
+    if (Array.isArray(processedFiles) && processedFiles.length > 0) {
+        bulkRow.push(Markup.button.callback(`🧹 Wipe All Outputs`, "files:wipe:proc:ask"));
+    }
+    if (bulkRow.length > 0) {
+        rows.push(bulkRow);
+    }
+
+    // 5. Global Actions
     rows.push([
         Markup.button.callback("🔄 Refresh Vault", "files:refresh"),
         Markup.button.callback("📊 System Stats", "stats"),
+        Markup.button.callback("💥 Purge All", "files:wipe:all:ask"),
     ]);
     rows.push([
         Markup.button.callback("📦 Get Combined File", "combine"),
         Markup.button.callback("🔙 Main Menu", "help"),
     ]);
     return Markup.inlineKeyboard(rows);
+}
+
+/**
+ * Confirmation dialog keyboard for deleting individual files or bulk storage.
+ */
+function confirmFileDeleteKeyboard(actionType, targetId, fileName = "") {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback("⚠️ Yes, permanently delete", `file:del:confirm:${actionType}:${targetId}`),
+            Markup.button.callback("❌ Cancel", "server_files"),
+        ],
+    ]);
 }
 
 /**
@@ -251,13 +322,16 @@ function renderSaveGuide() {
     return [
         `⚡️  ${B("FAST SERVER SAVE GUIDE")}  ⚡️`,
         RULE,
-        `💎  ${B("How to save any dump to server instantly:")}`,
+        `💎  ${B("Option 1: Single File Save")}`,
+        `  1️⃣  ${B("Reply to any file")} with ${CODE("/save")}.`,
+        `  2️⃣  Streams directly to server disk & cleans into batch!`,
         "",
-        `1️⃣  ${B("Forward or upload")} any ${CODE(".zip")} or ${CODE(".txt")} dump into chat.`,
-        `2️⃣  ${B("Reply to that message")} with the command ${CODE("/save")}.`,
-        `3️⃣  The bot downloads it directly to server disk & cleans it into your batch!`,
+        `📦  ${B("Option 2: Multi-File Batch Save")}`,
+        `  1️⃣  ${B("Forward multiple files")} at once into this chat or group.`,
+        `  2️⃣  Type ${CODE("/batchsave")} (or ${CODE("/batchsave 20")}).`,
+        `  3️⃣  The userbot downloads & cleans all forwarded files sequentially in one run!`,
         "",
-        `✨ ${I("No file size limits on the server! Clean or search files anytime via Server Vault.")}`,
+        `✨ ${I("No file size limits on the server! Bypass the 20MB bot limit with your MTProto userbot.")}`,
         RULE,
         `👇 ${I("Tap below to open your server vault:")}`,
     ].join("\n");
@@ -314,19 +388,6 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
         "",
         `🛡️ ${mention} · Ultimate Pro Edition`,
     ].join("\n");
-}
-
-/**
- * Welcome-back line returned to /start when a batch exists.
- * @param {{ size: number, files: number }|null} batch
- */
-function renderWelcomeBack(batch) {
-    if (!batch || batch.size === 0) return null;
-    return (
-        `💎 ${B("Welcome back!")} Your batch holds ` +
-        `${B(num(batch.size))} unique line${batch.size === 1 ? "" : "s"} ` +
-        `from ${num(batch.files)} file${batch.files === 1 ? "" : "s"} 🎁`
-    );
 }
 
 /**
@@ -519,8 +580,32 @@ function renderSearch(query, result) {
     if (result.total > shown) {
         out.push("", I("Showing first " + shown + " of " + num(result.total) + " \u2014 /combine for the full file \uD83D\uDCE6"));
     }
-    out.push("", I("Credentials are sensitive \u2014 delete this message when done \uD83D\uDDD1\uFE0F"));
     return out.join("\n");
+}
+
+/**
+ * Inline keyboard shown under search results.
+ * Includes direct download button when hits are found.
+ * @param {string} query
+ * @param {number} total
+ */
+function searchResultKeyboard(query, total = 0) {
+    const rows = [];
+    const cleanQ = String(query || "").trim();
+    if (total > 0 && cleanQ) {
+        const shortQ = cleanQ.length > 25 ? cleanQ.slice(0, 22) + "…" : cleanQ;
+        rows.push([
+            Markup.button.callback(`📥 Download "${shortQ}" (${num(total)})`, `search:dl:${cleanQ}`),
+        ]);
+    }
+    rows.push([
+        Markup.button.callback("📦 Get Combined File", "combine"),
+        Markup.button.callback("📊 System Stats", "stats"),
+    ]);
+    rows.push([
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+    return Markup.inlineKeyboard(rows);
 }
 
 /**
@@ -697,22 +782,76 @@ function renderUlpStopped(info) {
  *   humanSize: (n: number) => string
  * }} info
  */
+/**
+ * Format date for file listings (YYYY-MM-DD HH:mm).
+ * @param {Date} d
+ * @returns {string}
+ */
+function formatFileDate(d) {
+    if (!d || !(d instanceof Date) || Number.isNaN(d.getTime())) return "Recent";
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    const da = String(d.getDate()).padStart(2, "0");
+    const hr = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    return `${yr}-${mo}-${da} ${hr}:${mi}`;
+}
+
+/**
+ * Server files vault list (/files).
+ * @param {{
+ *   rawFiles: Array<{ name: string, size: number, mtime: Date }>,
+ *   processedFiles: Array<{ name: string, size: number, mtime: Date }>,
+ *   rawRoot: string,
+ *   processedRoot: string,
+ *   humanSize: (n: number) => string
+ * }} info
+ */
 function renderServerFiles(info) {
-    const { rawFiles = [], processedFiles = [], rawRoot, processedRoot, humanSize } = info;
+    const { rawFiles = [], processedFiles = [], rawRoot, processedRoot, humanSize, diskStats = null, batchStats = null } = info;
+    const totalRawBytes = rawFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
+    const totalProcBytes = processedFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
+
     const lines = [
-        `📂  ${B("SERVER FILES VAULT")}  ⚡️`,
+        `💾  ${B("SERVER STORAGE & FILES VAULT")}  ⚡️`,
         RULE,
     ];
 
-    lines.push(`📥  ${B("Raw Incoming Dumps")} \u00B7 ${CODE(escapeHtml(rawRoot))}`);
+    if (diskStats && Number.isFinite(diskStats.total) && diskStats.total > 0) {
+        const pctUsed = Math.min(100, Math.max(0, Math.round((diskStats.used / diskStats.total) * 100)));
+        const filled = Math.round(pctUsed / 10);
+        const gauge = "█".repeat(filled) + "░".repeat(10 - filled);
+        lines.push(
+            `💽  ${B("Server Disk Storage:")}`,
+            `     ${CODE(`[${gauge}]`)} ${B(`${pctUsed}%`)} (${humanSize(diskStats.used)} / ${humanSize(diskStats.total)})`,
+            `     └ 🟢 Free Space: ${B(humanSize(diskStats.free))}`,
+            "",
+        );
+    }
+
+    lines.push(
+        `📊  ${B("Vault Breakdown:")}`,
+        `  📥  ${B("Raw Incoming:")} ${num(rawFiles.length)} file${rawFiles.length === 1 ? "" : "s"} (${humanSize(totalRawBytes)})`,
+        `  💎  ${B("Cleaned Outputs:")} ${num(processedFiles.length)} file${processedFiles.length === 1 ? "" : "s"} (${humanSize(totalProcBytes)})`,
+    );
+
+    if (batchStats) {
+        lines.push(`  📦  ${B("Active In-Memory Batch:")} ${num(batchStats.size || 0)} credentials`);
+    }
+    lines.push(RULE);
+
+    lines.push(`📥  ${B("Raw Incoming Dumps")} · ${CODE(escapeHtml(rawRoot))}`);
     if (rawFiles.length === 0) {
-        lines.push(`  ${I("No raw files found on disk \u2014 reply to any file with /save")}`);
+        lines.push(`  ${I("No raw files on disk — reply to any file with /save")}`);
     } else {
         for (let i = 0; i < Math.min(rawFiles.length, 10); i++) {
             const f = rawFiles[i];
             const isZip = f.name.toLowerCase().endsWith(".zip");
             const icon = isZip ? "📦" : "📄";
-            lines.push(`  ${B(`[${i + 1}]`)} ${icon} ${B(escapeHtml(f.name))} \u00B7 ${CODE(humanSize(f.size))}`);
+            lines.push(
+                `  ${B(`[${i + 1}]`)} ${icon} ${B(escapeHtml(f.name))}`,
+                `       └ 📁 ${CODE(humanSize(f.size))} · 📅 ${CODE(formatFileDate(f.mtime))}`,
+            );
         }
         if (rawFiles.length > 10) {
             lines.push(`  ${I(`…and ${rawFiles.length - 10} more raw file(s)`)}`);
@@ -720,13 +859,16 @@ function renderServerFiles(info) {
     }
 
     lines.push("");
-    lines.push(`💎  ${B("Cleaned Output Files")} \u00B7 ${CODE(escapeHtml(processedRoot))}`);
+    lines.push(`💎  ${B("Cleaned Output Files")} · ${CODE(escapeHtml(processedRoot))}`);
     if (processedFiles.length === 0) {
-        lines.push(`  ${I("No processed outputs yet \u2014 tap a Clean button below")}`);
+        lines.push(`  ${I("No processed outputs yet — tap a Clean button below")}`);
     } else {
         for (let i = 0; i < Math.min(processedFiles.length, 10); i++) {
             const f = processedFiles[i];
-            lines.push(`  ${B(`[${i + 1}]`)} ⚡️ ${B(escapeHtml(f.name))} \u00B7 ${CODE(humanSize(f.size))}`);
+            lines.push(
+                `  ${B(`[${i + 1}]`)} ⚡️ ${B(escapeHtml(f.name))}`,
+                `       └ 📁 ${CODE(humanSize(f.size))} · 📅 ${CODE(formatFileDate(f.mtime))}`,
+            );
         }
         if (processedFiles.length > 10) {
             lines.push(`  ${I(`…and ${processedFiles.length - 10} more output(s)`)}`);
@@ -736,7 +878,7 @@ function renderServerFiles(info) {
     lines.push(
         "",
         RULE,
-        `👇 ${I("Tap any button below to clean or search immediately without typing commands:")}`,
+        `👇 ${I("Tap any button below to Clean, Search, or Download files directly (or Delete as you wish):")}`,
     );
     return lines.join("\n");
 }
@@ -871,6 +1013,96 @@ function renderUlpSharedResult(info) {
     ].join("\n");
 }
 
+function humanSize(bytes) {
+    const b = Number(bytes || 0);
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(2)} MB`;
+    return `${(b / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/**
+ * Render installed account emoji packs.
+ * @param {{ packs: Array<{ title: string, shortName: string, id: string, count: number, sample: string[] }>, totalEmojis: number, error?: string }} data
+ */
+function renderEmojiPacks(data) {
+    const packs = (data && data.packs) || [];
+    const totalEmojis = (data && data.totalEmojis) || 0;
+    const lines = [
+        `💎  ${B("INSTALLED ACCOUNT EMOJI PACKS")}  ✨`,
+        RULE,
+        `📂  ${B("Custom Packs:")} ${packs.length}  ·  🎨  ${B("Total Emojis:")} ${num(totalEmojis)}`,
+        `🤖  ${B("Platform Animated:")} 599 standard animated stickers`,
+        "",
+    ];
+
+    if (packs.length === 0) {
+        lines.push(
+            I("No custom emoji packs found on this MTProto account."),
+            I("Telegram standard animated emojis are fully active! ⚡️"),
+        );
+    } else {
+        packs.forEach((p, idx) => {
+            const sampleStr = (p.sample && p.sample.length > 0) ? `  ${p.sample.slice(0, 6).join(" ")}` : "";
+            lines.push(
+                `${idx + 1}. ${B(escapeHtml(p.title))}`,
+                `   ↳ ${CODE(escapeHtml(p.shortName))} · ${num(p.count)} emojis${sampleStr}`,
+            );
+        });
+    }
+
+    lines.push(
+        "",
+        RULE,
+        I("Your bot renders using both Telegram animated emojis and your custom account packs ⚡️"),
+    );
+
+    return lines.join("\n");
+}
+
+/**
+ * Render batch save progress.
+ */
+function renderBatchSaveProgress({ current, total, currentName, linesAdded, totalLines }) {
+    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    return [
+        `📦  ${B("BATCH SAVE & PROCESS")}  ⏳`,
+        RULE,
+        `📊  ${B("Progress:")} ${bar(current, total, 10)} ${pct}% (${current}/${total} files)`,
+        `📄  ${B("Current:")} ${CODE(escapeHtml(currentName))}`,
+        `✨  ${B("Lines added so far:")} ${num(totalLines)} (+${num(linesAdded)})`,
+        "",
+        I("Streaming via MTProto bypass directly into /var/data and cleaning… 🧼"),
+    ].join("\n");
+}
+
+/**
+ * Render batch save completion.
+ */
+function renderBatchSaveComplete({ totalFiles, totalLines, files = [], durationMs = 0 }) {
+    const s = (durationMs / 1000).toFixed(1);
+    const out = [
+        `✅  ${B("BATCH SAVE COMPLETE")}  💎`,
+        RULE,
+        `📦  ${B("Files Processed:")} ${num(totalFiles)} in ${s}s`,
+        `🧼  ${B("Total Credentials in Batch:")} ${num(totalLines)}`,
+        "",
+        `${B("Processed Documents:")}`,
+    ];
+    files.slice(0, 8).forEach((f, i) => {
+        out.push(` ${i + 1}. ${CODE(escapeHtml(f.name))} ↳ +${num(f.lines)} lines (${humanSize(f.size)})`);
+    });
+    if (files.length > 8) {
+        out.push(` …and ${files.length - 8} more files.`);
+    }
+    out.push(
+        "",
+        RULE,
+        I("Tap 📦 Get Combined File below to download all deduped credentials! ⬇️"),
+    );
+    return out.join("\n");
+}
+
 module.exports = {
     renderHelp,
     renderStats,
@@ -879,7 +1111,10 @@ module.exports = {
     renderPing,
     renderPreview,
     renderSearch,
-    renderWelcomeBack,
+    searchResultKeyboard,
+    renderEmojiPacks,
+    renderBatchSaveProgress,
+    renderBatchSaveComplete,
     renderUlpHint,
     renderUlpStart,
     renderUlpProgress,
@@ -892,6 +1127,8 @@ module.exports = {
     renderServerFiles,
     renderSaveGuide,
     serverFilesKeyboard,
+    confirmFileDeleteKeyboard,
+    formatFileDate,
     ulpMenuKeyboard,
     saveGuideKeyboard,
     searchPromptKeyboard,
@@ -904,13 +1141,13 @@ module.exports = {
     ulpResultKeyboard,
     B,
     I,
-    U,
     CODE,
     RULE,
     bar,
     num,
     compact,
     siteEmoji,
+    humanSize,
 };
 
 

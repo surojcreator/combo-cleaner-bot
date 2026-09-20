@@ -198,7 +198,6 @@ function extractAndCleanText(text, options = {}) {
         lines,
         site: detectSite(rawSample, options.sourceName || ""),
         rawSample,
-        lines,
         stats: {
             files: 1,
             total: stats.total,

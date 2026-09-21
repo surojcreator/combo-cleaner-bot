@@ -609,21 +609,70 @@ function forwardedZipKeyboard(downloadUrl = "", token = null) {
 
 /**
  * Keyboard shown under the server files vault.
- * Supports file cleaning, downloading, searching, individual deletion, and bulk wipe.
+ * Supports file cleaning, downloading, searching, multi-selection merge, and bulk wipe.
  * @param {Array} [rawFiles]
  * @param {Array} [processedFiles]
- * @param {{ page?: number, pageSize?: number }} [options]
+ * @param {object|string|number} [options]
+ * @param {number} [pageArg]
  */
-function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}) {
+function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, pageArg = 0) {
     const rows = [];
-    const pageSize = options.pageSize || 3;
-    const page = options.page || 0;
-    const tab = options.tab || "overview";
+    let opts = {};
+    if (typeof options === "string") {
+        opts = { tab: options, page: pageArg };
+    } else if (typeof options === "number") {
+        opts = { page: options };
+    } else if (options && typeof options === "object") {
+        opts = { ...options };
+    }
+    const hasExplicitTab = Boolean(opts.tab);
+    const tab = opts.tab || "overview";
+    const page = typeof opts.page === "number" ? opts.page : 0;
+    const pageSize = opts.pageSize || 3;
 
     const rawCount = Array.isArray(rawFiles) ? rawFiles.length : 0;
     const procCount = Array.isArray(processedFiles) ? processedFiles.length : 0;
 
-    if (tab === "raw") {
+    if (tab === "select") {
+        const selectFiles = opts.files || [...(Array.isArray(rawFiles) ? rawFiles : []), ...(Array.isArray(processedFiles) ? processedFiles : [])];
+        const selectPageSize = 5;
+        const totalPages = Math.ceil(selectFiles.length / selectPageSize) || 1;
+        const selStart = page * selectPageSize;
+        const selSlice = selectFiles.slice(selStart, selStart + selectPageSize);
+        const selected = opts.selected instanceof Set ? opts.selected : new Set(opts.selected || []);
+
+        for (let i = 0; i < selSlice.length; i++) {
+            const actualIdx = selStart + i;
+            const f = selSlice[i];
+            const isChecked = selected.has(actualIdx);
+            const mark = isChecked ? "☑️" : "⬜️";
+            const icon = f.name.toLowerCase().endsWith(".zip") ? "📦" : "📄";
+            rows.push([
+                Markup.button.callback(`${mark} [${actualIdx + 1}] ${icon} ${f.name} (${humanSize(f.size)})`, `vault:sel:toggle:${actualIdx}`),
+            ]);
+        }
+
+        if (totalPages > 1) {
+            const navRow = [];
+            if (page > 0) navRow.push(Markup.button.callback("◀️ Prev", `vault:sel:page:${page - 1}`));
+            navRow.push(Markup.button.callback(`📄 ${page + 1}/${totalPages}`, `vault:sel:page:${page}`));
+            if (page + 1 < totalPages) navRow.push(Markup.button.callback("Next ▶️", `vault:sel:page:${page + 1}`));
+            rows.push(navRow);
+        }
+
+        const count = selected.size;
+        rows.push([
+            Markup.button.callback("⚡️ Select All", "vault:sel:all"),
+            Markup.button.callback("🧹 Deselect All", "vault:sel:clear"),
+        ]);
+        rows.push([
+            Markup.button.callback(`🔀 Merge Selected (${count} file${count === 1 ? "" : "s"})`, "vault:sel:merge"),
+        ]);
+        rows.push([
+            Markup.button.callback("🏠 Back to Vault", "files:tab:overview"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ]);
+    } else if (tab === "raw") {
         // Tab switcher
         rows.push([
             Markup.button.callback(`📥 Raw Dumps (${rawCount}) ✅`, "files:tab:raw"),
@@ -679,7 +728,7 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}) {
         // Tab switcher
         rows.push([
             Markup.button.callback(`📥 Raw Dumps (${rawCount})`, "files:tab:raw"),
-            Markup.button.callback(`💎 Cleaned Vault (${procCount}) ✅`, "files:tab:proc"),
+            Markup.button.callback(`💎 Cleaned Vault (${procCount})`, "files:tab:proc"),
             Markup.button.callback("⚙️ Tools", "files:tab:tools"),
         ]);
 
@@ -737,8 +786,25 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}) {
             Markup.button.callback("🏠 Back to Vault Overview", "files:tab:overview"),
             Markup.button.callback("🔙 Main Menu", "help"),
         ]);
+    } else if (hasExplicitTab && tab === "overview") {
+        // Streamlined, clean, and elegant overview keyboard
+        rows.push([
+            Markup.button.callback("🔀 Multi-Select & Merge Files", "files:tab:select"),
+        ]);
+        rows.push([
+            Markup.button.callback(`📥 Raw Dumps (${rawCount})`, "files:tab:raw"),
+            Markup.button.callback(`💎 Cleaned Vault (${procCount})`, "files:tab:proc"),
+        ]);
+        rows.push([
+            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback("⚙️ Storage Tools", "files:tab:tools"),
+        ]);
+        rows.push([
+            Markup.button.callback("🔄 Refresh Vault", "files:refresh"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ]);
     } else {
-        // "overview" (default) - includes tabs at top, followed by file actions and global buttons
+        // Legacy overview (fallback when called without explicit options)
         rows.push([
             Markup.button.callback(`📥 Browse Raw Dumps (${rawCount})`, "files:tab:raw"),
             Markup.button.callback(`💎 Cleaned Vault (${procCount})`, "files:tab:proc"),
@@ -1022,14 +1088,16 @@ function renderSaveListeningPrompt(botUsername = null) {
 
 /**
  * Inline keyboard while /save listening mode is active.
+ * @param {number} [queuedCount]
  */
-function saveListeningKeyboard() {
+function saveListeningKeyboard(queuedCount = 0) {
     return createInlineKeyboard([
         [
             Markup.button.callback("✅ Done / Finish Saving", "save:done"),
-            Markup.button.callback("❌ Cancel", "save:cancel"),
+            Markup.button.callback("🔀 Merge & Finish", "save:merge_and_finish"),
         ],
         [
+            Markup.button.callback("❌ Cancel", "save:cancel"),
             Markup.button.callback("📦 Get Combined File", "combine"),
         ],
     ]);
@@ -1051,27 +1119,78 @@ function renderSaveListeningComplete(data = {}) {
     } else {
         for (let i = 0; i < processed.length; i++) {
             const f = processed[i];
-            lines.push(`  ${i + 1}. 📄 ${B(escapeHtml(f.name))} (${humanSize(f.size || 0)}) → ${B("+" + num(f.linesAdded || 0))} lines`);
+            lines.push(`  ${i + 1}. 📄 ${B(escapeHtml(f.name))} (${humanSize(f.size || 0)}) → ${B("+" + num(f.linesAdded || f.lines || 0))} lines`);
         }
     }
     lines.push("");
     lines.push(`📦  ${B("Active Batch Total:")} ${B(num(data.totalBatchLines || 0))} lines`);
-    lines.push(`${I("Tap below to download the combined clean file or manage your batch.")}`);
+    lines.push(`${I("Tap below to download combined, merge session files on disk, or manage batch.")}`);
     return lines.join("\n");
 }
 
 /**
  * Keyboard after finishing a save session.
+ * @param {boolean} [hasSessionFiles]
  */
-function saveListeningCompleteKeyboard() {
+function saveListeningCompleteKeyboard(hasSessionFiles = true) {
+    const rows = [];
+    if (hasSessionFiles) {
+        rows.push([
+            Markup.button.callback("🔀 Merge Session Files on Server", "save:merge_session"),
+        ]);
+    }
+    rows.push([
+        Markup.button.callback("📦 Get Combined File", "combine"),
+        Markup.button.callback("📊 Batch Analytics", "stats"),
+    ]);
+    rows.push([
+        Markup.button.callback("📥 Save More Files", "save:start"),
+        Markup.button.callback("📂 Server Vault", "server_files"),
+    ]);
+    rows.push([
+        Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+    ]);
+    return createInlineKeyboard(rows);
+}
+
+/**
+ * Summary rendered after merging files on server disk without returning to Telegram.
+ * @param {{ outName: string, outPath: string, totalFiles: number, keptLines?: number, duplicatesStripped?: number, fileSize: number, isZip?: boolean }} stats
+ */
+function renderMergeComplete(stats = {}) {
+    const lines = [
+        `✅  ${B("FILES MERGED ON SERVER VAULT")}  ${tgEmoji("⚡️")}`,
+        RULE,
+        `Merged ${B(stats.totalFiles || 0)} file(s) into one clean, deduplicated file on disk:`,
+        "",
+        `📄  ${B("Output File:")} ${B(escapeHtml(stats.outName || "merged_output"))}`,
+        `📁  ${B("Disk Path:")} ${CODE(escapeHtml(stats.outPath || ""))}`,
+    ];
+    if (stats.isZip) {
+        lines.push(`📦  ${B("Format:")} Master ZIP Archive (Folders Preserved)`);
+    } else {
+        lines.push(`💎  ${B("Cleaned Lines:")} ${B(num(stats.keptLines || 0))}`);
+        lines.push(`🧹  ${B("Duplicates Stripped:")} ${B(num(stats.duplicatesStripped || 0))}`);
+    }
+    lines.push(`💾  ${B("Final Size:")} ${B(humanSize(stats.fileSize || 0))}`);
+    lines.push(RULE);
+    lines.push(`🔒  ${I("The clean merged file is saved on server disk in your vault. As requested, it was NOT sent back to Telegram.")}`);
+    return lines.filter(Boolean).join("\n");
+}
+
+/**
+ * Keyboard rendered after server-side file merge.
+ * @param {string} [outName]
+ */
+function mergeCompleteKeyboard(outName = "") {
     return createInlineKeyboard([
         [
-            Markup.button.callback("📦 Get Combined File", "combine"),
-            Markup.button.callback("📊 Batch Analytics", "stats"),
+            Markup.button.callback("📂 Open Server Vault", "server_files"),
+            Markup.button.callback("🔀 Merge More Files", "files:tab:select"),
         ],
         [
-            Markup.button.callback("📥 Save More Files", "save:start"),
-            Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+            Markup.button.callback("📊 System Stats", "stats"),
+            Markup.button.callback("🔙 Main Menu", "help"),
         ],
     ]);
 }
@@ -1780,50 +1899,80 @@ function renderServerFiles(info) {
             "",
             `⚠️  ${I("Use the actions below to selectively wipe raw uploads, delete generated outputs, or perform a total storage purge.")}`,
         );
-    } else {
-        // "overview" (default)
+    } else if (tab === "select") {
+        const selectFiles = info.selectFiles || info.files || [...rawFiles, ...processedFiles];
+        const selected = info.selected instanceof Set ? info.selected : new Set(info.selected || []);
+        const totalItems = selectFiles.length;
         lines.push(
-            `${tgEmoji("📊")}  ${B("Vault Inventory:")}`,
+            `${tgEmoji("🔀")}  ${B("MULTI-FILE SELECT & MERGE")}  ${tgEmoji("⚡️")}`,
+            RULE,
+            `Select files below to merge into ${B("one clean deduplicated file on disk")}.`,
+            `💡 ${I("The clean file will be stored in your server vault (it won't be returned to Telegram).")}`,
+            "",
+            `📁  Selected: ${B(selected.size)} file(s) · Total: ${B(num(totalItems))} file(s) in vault`,
+            RULE,
+        );
+        if (totalItems === 0) {
+            lines.push(`  ${I("No files in vault yet — forward files with /save to ingest first.")}`);
+        } else {
+            lines.push(`📑  ${B("Tap any file button below to toggle selection (☑️ / ⬜️):")}`);
+            const selectPageSize = 5;
+            const selStart = page * selectPageSize;
+            const slice = selectFiles.slice(selStart, selStart + selectPageSize);
+            slice.forEach((f, i) => {
+                const actualIdx = selStart + i;
+                const isChecked = selected.has(actualIdx);
+                const mark = isChecked ? "☑️" : "⬜️";
+                const isZip = f.name.toLowerCase().endsWith(".zip");
+                const icon = isZip ? tgEmoji("📦") : tgEmoji("📄");
+                lines.push(`  ${mark} ${B(`[${actualIdx + 1}]`)} ${icon} ${B(escapeHtml(f.name))} (${CODE(humanSize(f.size))})`);
+            });
+            if (selected.size > 0) {
+                lines.push("");
+                lines.push(`✨  ${B(`${selected.size} file(s) selected.`)} Tap ${B("Merge Selected")} below to execute.`);
+            }
+        }
+    } else {
+        // "overview" (default) - Streamlined, clean, and elegant
+        lines.push(
+            `${tgEmoji("📊")}  ${B("Vault Summary:")}`,
             `  ${tgEmoji("📥")}  ${B("Raw Incoming:")} ${num(rawFiles.length)} file(s) (${humanSize(totalRawBytes)}) · ${CODE(escapeHtml(rawRoot))}`,
-            `  ${tgEmoji("💎")}  ${B("Cleaned Outputs:")} ${num(processedFiles.length)} file(s) (${humanSize(totalProcBytes)}) · ${CODE(escapeHtml(processedRoot))}`,
+            `  ${tgEmoji("💎")}  ${B("Cleaned Vault:")} ${num(processedFiles.length)} file(s) (${humanSize(totalProcBytes)})`,
         );
         if (batchStats) {
-            lines.push(`  ${tgEmoji("📦")}  ${B("Active In-Memory Batch:")} ${num(batchStats.size || 0)} credentials`);
+            lines.push(`  ${tgEmoji("📦")}  ${B("Active Batch:")} ${num(batchStats.size || 0)} credentials`);
         }
         lines.push(RULE);
 
-        lines.push(`${tgEmoji("📥")}  ${B("Raw Incoming Dumps")} · ${CODE(escapeHtml(rawRoot))}`);
+        lines.push(`${tgEmoji("📥")}  ${B("Recent Raw Dumps:")}`);
         if (rawFiles.length === 0) {
-            lines.push(`  ${I("No raw files on disk — reply to any file with /save")}`);
+            lines.push(`  ${I("No raw files on disk — send /save to ingest.")}`);
         } else {
-            for (let i = 0; i < Math.min(rawFiles.length, 5); i++) {
+            for (let i = 0; i < Math.min(rawFiles.length, 3); i++) {
                 const f = rawFiles[i];
-                const isZip = f.name.toLowerCase().endsWith(".zip");
-                const icon = isZip ? tgEmoji("📦") : tgEmoji("📄");
+                const icon = f.name.toLowerCase().endsWith(".zip") ? tgEmoji("📦") : tgEmoji("📄");
                 lines.push(
-                    `  ${B(`[${i + 1}]`)} ${icon} ${B(escapeHtml(f.name))}`,
-                    `       └ ${tgEmoji("📁")} ${CODE(humanSize(f.size))} · ${tgEmoji("📅")} ${CODE(formatFileDate(f.mtime))}`,
+                    `  ${B(`[${i + 1}]`)} ${icon} ${B(escapeHtml(f.name))} · ${CODE(humanSize(f.size))}`,
                 );
             }
-            if (rawFiles.length > 5) {
-                lines.push(`  ${I(`…and ${rawFiles.length - 5} more raw file(s) (tap Raw Dumps below)`)}`);
+            if (rawFiles.length > 3) {
+                lines.push(`  ${I(`…+${rawFiles.length - 3} more in Raw Dumps tab`)}`);
             }
         }
 
         lines.push("");
-        lines.push(`${tgEmoji("💎")}  ${B("Cleaned Output Files")} · ${CODE(escapeHtml(processedRoot))}`);
+        lines.push(`${tgEmoji("💎")}  ${B("Recent Cleaned Outputs:")}`);
         if (processedFiles.length === 0) {
-            lines.push(`  ${I("No processed outputs yet — tap a Clean button below")}`);
+            lines.push(`  ${I("No processed outputs yet — tap a Clean button or use Multi-Select")}`);
         } else {
-            for (let i = 0; i < Math.min(processedFiles.length, 5); i++) {
+            for (let i = 0; i < Math.min(processedFiles.length, 3); i++) {
                 const f = processedFiles[i];
                 lines.push(
-                    `  ${B(`[${i + 1}]`)} ${tgEmoji("⚡️")} ${B(escapeHtml(f.name))}`,
-                    `       └ ${tgEmoji("📁")} ${CODE(humanSize(f.size))} · ${tgEmoji("📅")} ${CODE(formatFileDate(f.mtime))}`,
+                    `  ${B(`[${i + 1}]`)} ${tgEmoji("⚡️")} ${B(escapeHtml(f.name))} · ${CODE(humanSize(f.size))}`,
                 );
             }
-            if (processedFiles.length > 5) {
-                lines.push(`  ${I(`…and ${processedFiles.length - 5} more output(s) (tap Cleaned Vault below)`)}`);
+            if (processedFiles.length > 3) {
+                lines.push(`  ${I(`…+${processedFiles.length - 3} more in Cleaned tab`)}`);
             }
         }
     }
@@ -1831,7 +1980,7 @@ function renderServerFiles(info) {
     lines.push(
         "",
         RULE,
-        `👇 ${I("Tap any button below to Clean, Search, or Download files directly (or use tabs to browse):")}`,
+        `👇 ${I("Tap any button below to Clean, Search, or Download files directly (or use Multi-Select & Merge):")}`,
     );
     return lines.filter(Boolean).join("\n");
 }
@@ -2177,6 +2326,8 @@ module.exports = {
     saveListeningKeyboard,
     renderSaveListeningComplete,
     saveListeningCompleteKeyboard,
+    renderMergeComplete,
+    mergeCompleteKeyboard,
     serverFilesKeyboard,
     confirmFileDeleteKeyboard,
     formatFileDate,

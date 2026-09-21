@@ -40,6 +40,8 @@ const {
     saveListeningKeyboard,
     renderSaveListeningComplete,
     saveListeningCompleteKeyboard,
+    renderMergeComplete,
+    mergeCompleteKeyboard,
     serverFilesKeyboard,
     confirmFileDeleteKeyboard,
     formatFileDate,
@@ -206,11 +208,19 @@ function createBot(token, meta = {}) {
     const userUlpDays = new Map();
     /** chatId -> { action: string, messageId?: number } active prompt state */
     const userPromptState = new Map();
+    bot.userPromptState = userPromptState;
     /** chatId -> absolute path currently being processed */
     const localJobs = new Map();
     /** chatId -> { items: Array<{ doc: any, ctx: any, name: string, messageId: number }>, timer: any, noticeId: number|null, latestCtx: any } */
     const forwardBatches = new Map();
     const forwardDebounceMs = Number(process.env.FORWARD_DEBOUNCE_MS || (meta && meta.forwardDebounceMs) || 1800);
+
+    const localProcessRoot = (override = null) => {
+        return path.resolve(override || (meta && meta.localProcessRoot) || process.env.LOCAL_PROCESS_ROOT || "/var/data");
+    };
+    const localProcessedRoot = (override = null) => {
+        return path.resolve(override || (meta && meta.localProcessedRoot) || process.env.LOCAL_PROCESSED_ROOT || "/var/data/processed");
+    };
 
     // Pre-warm multi-core worker pool for instantaneous zero-latency searches
     try {
@@ -513,6 +523,203 @@ function createBot(token, meta = {}) {
         await safeReply(ctx, renderSearch(query, result), searchResultKeyboard(query, result.total));
     });
 
+    const vaultSelectState = new Map();
+    const lastCompletedSaveSessions = new Map();
+
+    /**
+     * Merge multiple files on server disk into one clean, deduplicated file without returning to Telegram.
+     */
+    const mergeFilesOnServer = async (ctx, fileList, options = {}) => {
+        const chatId = ctx.chat.id;
+        const root = localProcessedRoot();
+        fs.mkdirSync(root, { recursive: true });
+
+        // Normalize file items to { path, name }
+        const normalized = (fileList || []).map((f) => {
+            if (typeof f === "string") {
+                return { path: f, name: path.basename(f) };
+            }
+            return { path: f.path, name: f.name || (f.path ? path.basename(f.path) : "unknown") };
+        }).filter((f) => f.path && fs.existsSync(f.path));
+
+        if (normalized.length === 0) {
+            throw new Error("None of the specified files exist on server disk.");
+        }
+
+        const allZip = normalized.every((f) => f.name.toLowerCase().endsWith(".zip"));
+
+        if (allZip && options.forceText !== true) {
+            const zipBuffers = normalized.map((f) => fs.readFileSync(f.path));
+            const mergedBuffer = mergeZipFiles(zipBuffers);
+
+            const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+            const outName = `merged_vault_${chatId}_${stamp}.zip`;
+            const outPath = path.join(root, outName);
+            fs.writeFileSync(outPath, mergedBuffer);
+            const stat = fs.statSync(outPath);
+
+            return {
+                outName,
+                outPath,
+                totalFiles: normalized.length,
+                fileSize: stat.size,
+                isZip: true,
+            };
+        }
+
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const outName = `merged_vault_${chatId}_${stamp}.txt`;
+        const outPath = path.join(root, outName);
+        const partialPath = `${outPath}.partial`;
+        const outStream = fs.createWriteStream(partialPath, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 });
+
+        const seen = new Set();
+        let totalKept = 0;
+        let totalDupes = 0;
+        let batch = [];
+
+        const flushBatch = () => {
+            if (batch.length === 0) return;
+            store.addLines(chatId, batch, "merged_vault");
+            batch = [];
+        };
+
+        const writeLine = async (line) => {
+            if (seen.has(line)) {
+                totalDupes++;
+                return;
+            }
+            if (seen.size < store.MAX_LINES_PER_CHAT) {
+                seen.add(line);
+            }
+            totalKept++;
+            batch.push(line);
+            if (!outStream.write(line + "\n")) {
+                await once(outStream, "drain");
+            }
+            if (batch.length >= 10000) {
+                flushBatch();
+            }
+        };
+
+        for (const f of normalized) {
+            const isZip = f.name.toLowerCase().endsWith(".zip");
+            if (isZip) {
+                try {
+                    const buf = fs.readFileSync(f.path);
+                    if (isZipBuffer(buf)) {
+                        const AdmZip = require("adm-zip");
+                        const zip = new AdmZip(buf);
+                        const entries = zip.getEntries();
+                        for (const entry of entries) {
+                            if (entry.isDirectory) continue;
+                            const lower = entry.entryName.toLowerCase();
+                            if (lower.endsWith(".txt") || lower.endsWith(".log") || lower.endsWith(".csv") || lower.endsWith(".tsv")) {
+                                const text = entry.getData().toString("utf8");
+                                const res = extractAndCleanText(Buffer.from(text, "utf8"), { keepUrl: true, dedupe: false });
+                                for (const line of res.lines) {
+                                    await writeLine(line);
+                                }
+                                totalDupes += res.stats.duplicates || 0;
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.error("Error extracting zip entry during merge:", f.name, err);
+                }
+            } else {
+                const rl = readline.createInterface({
+                    input: fs.createReadStream(f.path, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
+                    crlfDelay: Infinity,
+                });
+                let chunk = [];
+                for await (const line of rl) {
+                    chunk.push(line);
+                    if (chunk.length >= 5000) {
+                        const { cleanText } = require("./cleaner");
+                        const res = cleanText(chunk.join("\n"), { keepUrl: true, dedupe: false });
+                        chunk = [];
+                        for (const cl of res.lines) {
+                            await writeLine(cl);
+                        }
+                        totalDupes += res.stats.duplicates || 0;
+                    }
+                }
+                if (chunk.length > 0) {
+                    const { cleanText } = require("./cleaner");
+                    const res = cleanText(chunk.join("\n"), { keepUrl: true, dedupe: false });
+                    chunk = [];
+                    for (const cl of res.lines) {
+                        await writeLine(cl);
+                    }
+                    totalDupes += res.stats.duplicates || 0;
+                }
+            }
+        }
+
+        flushBatch();
+        outStream.end();
+        await once(outStream, "finish");
+        fs.renameSync(partialPath, outPath);
+        const stat = fs.statSync(outPath);
+
+        return {
+            outName,
+            outPath,
+            totalFiles: normalized.length,
+            keptLines: totalKept,
+            duplicatesStripped: totalDupes,
+            fileSize: stat.size,
+            isZip: false,
+        };
+    };
+
+    bot.vaultSelectState = vaultSelectState;
+    bot.lastCompletedSaveSessions = lastCompletedSaveSessions;
+    bot.mergeFilesOnServer = mergeFilesOnServer;
+
+    const showVaultSelect = async (ctx, editMessageId = null, page = 0) => {
+        userPromptState.delete(ctx.chat.id);
+        const rawRoot = localProcessRoot();
+        const processedRoot = localProcessedRoot();
+        const rawFiles = scanDirFiles(rawRoot);
+        const processedFiles = scanDirFiles(processedRoot);
+        const allFiles = [...rawFiles, ...processedFiles];
+
+        let state = vaultSelectState.get(ctx.chat.id);
+        if (!state) {
+            state = { selected: new Set(), page: 0 };
+            vaultSelectState.set(ctx.chat.id, state);
+        }
+        state.page = page;
+
+        const text = renderServerFiles({
+            rawFiles,
+            processedFiles,
+            selectFiles: allFiles,
+            selected: state.selected,
+            rawRoot,
+            processedRoot,
+            humanSize,
+            tab: "select",
+            page,
+            pageSize: 5,
+        });
+        const keyboard = serverFilesKeyboard(rawFiles, processedFiles, {
+            tab: "select",
+            page,
+            pageSize: 5,
+            files: allFiles,
+            selected: state.selected,
+        });
+
+        if (editMessageId) {
+            await safeEdit(ctx, editMessageId, text, keyboard);
+        } else {
+            await safeReply(ctx, text, keyboard);
+        }
+    };
+
     const showServerFiles = async (ctx, editMessageId = null, page = 0, tab = "overview") => {
         userPromptState.delete(ctx.chat.id);
         const rawRoot = localProcessRoot();
@@ -565,17 +772,113 @@ function createBot(token, meta = {}) {
         await showServerFiles(ctx);
     });
 
+    bot.command(["mergefiles", "selectmerge"], async (ctx) => {
+        await showVaultSelect(ctx);
+    });
+
     bot.action("server_files", async (ctx) => {
         await ctx.answerCbQuery("📂 Opening server vault…").catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         await showServerFiles(ctx, msg ? msg.message_id : null, 0, "overview");
     });
 
-    bot.action(/^files:tab:(overview|raw|proc|tools)$/, async (ctx) => {
+    bot.action(/^files:tab:(overview|raw|proc|tools|select)$/, async (ctx) => {
         const tab = ctx.match[1];
         await ctx.answerCbQuery().catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
-        await showServerFiles(ctx, msg ? msg.message_id : null, 0, tab);
+        if (tab === "select") {
+            await showVaultSelect(ctx, msg ? msg.message_id : null, 0);
+        } else {
+            await showServerFiles(ctx, msg ? msg.message_id : null, 0, tab);
+        }
+    });
+
+    bot.action(/^vault:sel:toggle:(\d+)$/, async (ctx) => {
+        const idx = parseInt(ctx.match[1], 10);
+        let state = vaultSelectState.get(ctx.chat.id);
+        if (!state) {
+            state = { selected: new Set(), page: 0 };
+            vaultSelectState.set(ctx.chat.id, state);
+        }
+        if (state.selected.has(idx)) {
+            state.selected.delete(idx);
+            await ctx.answerCbQuery("Deselected").catch(() => {});
+        } else {
+            state.selected.add(idx);
+            await ctx.answerCbQuery("Selected").catch(() => {});
+        }
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showVaultSelect(ctx, msg ? msg.message_id : null, state.page);
+    });
+
+    bot.action("vault:sel:all", async (ctx) => {
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const processedFiles = scanDirFiles(localProcessedRoot());
+        const allFiles = [...rawFiles, ...processedFiles];
+        let state = vaultSelectState.get(ctx.chat.id);
+        if (!state) state = { selected: new Set(), page: 0 };
+        state.selected = new Set(allFiles.map((_, i) => i));
+        vaultSelectState.set(ctx.chat.id, state);
+        await ctx.answerCbQuery(`Selected all (${allFiles.length})`).catch(() => {});
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showVaultSelect(ctx, msg ? msg.message_id : null, state.page);
+    });
+
+    bot.action("vault:sel:clear", async (ctx) => {
+        let state = vaultSelectState.get(ctx.chat.id);
+        if (state) state.selected.clear();
+        await ctx.answerCbQuery("Cleared selection").catch(() => {});
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showVaultSelect(ctx, msg ? msg.message_id : null, state ? state.page : 0);
+    });
+
+    bot.action(/^vault:sel:page:(\d+)$/, async (ctx) => {
+        const page = parseInt(ctx.match[1], 10) || 0;
+        await ctx.answerCbQuery(`Page ${page + 1}`).catch(() => {});
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showVaultSelect(ctx, msg ? msg.message_id : null, page);
+    });
+
+    bot.action("vault:sel:merge", async (ctx) => {
+        const state = vaultSelectState.get(ctx.chat.id);
+        if (!state || state.selected.size === 0) {
+            await ctx.answerCbQuery("⚠️ Please select at least 1 file to merge!").catch(() => {});
+            return;
+        }
+        await ctx.answerCbQuery("🔀 Merging files on server disk...").catch(() => {});
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const processedFiles = scanDirFiles(localProcessedRoot());
+        const allFiles = [...rawFiles, ...processedFiles];
+
+        const selectedFiles = [];
+        for (const idx of state.selected) {
+            if (allFiles[idx]) {
+                selectedFiles.push(allFiles[idx]);
+            }
+        }
+
+        if (selectedFiles.length === 0) {
+            await ctx.answerCbQuery("⚠️ Selected files were not found on disk").catch(() => {});
+            return;
+        }
+
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        const statusMsg = msg ? msg : await safeReply(ctx, "⏳ Merging and deduplicating files on server...");
+
+        try {
+            const stats = await mergeFilesOnServer(ctx, selectedFiles);
+            vaultSelectState.delete(ctx.chat.id);
+            const report = renderMergeComplete(stats);
+            const kb = mergeCompleteKeyboard(stats.outName);
+            if (statusMsg && statusMsg.message_id) {
+                await safeEdit(ctx, statusMsg.message_id, report, kb);
+            } else {
+                await safeReply(ctx, report, kb);
+            }
+        } catch (err) {
+            console.error("Multi-select merge error:", err);
+            await safeReply(ctx, `❌ Failed to merge files on server: ${err.message}`);
+        }
     });
 
     bot.action(/^files:page:(raw|proc):(\d+)$/, async (ctx) => {
@@ -1774,14 +2077,16 @@ function createBot(token, meta = {}) {
         }
 
         userPromptState.delete(ctx.chat.id);
+        const processed = prompt.processed || [];
+        lastCompletedSaveSessions.set(ctx.chat.id, processed);
         const batch = store.getStats(ctx.chat.id);
         await safeReply(
             ctx,
             renderSaveListeningComplete({
-                processed: prompt.processed || [],
+                processed,
                 totalBatchLines: batch ? batch.size : 0,
             }),
-            saveListeningCompleteKeyboard(),
+            saveListeningCompleteKeyboard(processed.length > 0),
         );
     };
 
@@ -1797,8 +2102,43 @@ function createBot(token, meta = {}) {
         }
     };
 
+    /**
+     * Merge all files from active or last save session into one clean file on disk without sending to Telegram.
+     */
+    const handleMergeSession = async (ctx) => {
+        const prompt = userPromptState.get(ctx.chat.id);
+        let sessionFiles = [];
+        if (prompt && prompt.action === "save:listening") {
+            sessionFiles = prompt.processed || [];
+            userPromptState.delete(ctx.chat.id);
+        } else {
+            sessionFiles = lastCompletedSaveSessions.get(ctx.chat.id) || [];
+        }
+
+        if (!sessionFiles || sessionFiles.length === 0) {
+            await safeReply(ctx, `⚠️  ${B("No files saved in current or recent session.")}\nForward or save files with ${CODE("/save")} first!`);
+            return;
+        }
+
+        const statusMsg = await safeReply(ctx, `⏳  ${B(`Merging ${sessionFiles.length} session file(s) into one clean file on disk…`)}`);
+        try {
+            const stats = await mergeFilesOnServer(ctx, sessionFiles);
+            const report = renderMergeComplete(stats);
+            const kb = mergeCompleteKeyboard(stats.outName);
+            if (statusMsg && statusMsg.message_id) {
+                await safeEdit(ctx, statusMsg.message_id, report, kb);
+            } else {
+                await safeReply(ctx, report, kb);
+            }
+        } catch (err) {
+            console.error("Session merge error:", err);
+            await safeReply(ctx, `❌ Failed to merge session files on disk: ${err.message}`);
+        }
+    };
+
     bot.command(["done", "finish"], finishSaveSession);
     bot.command("cancel", cancelSaveSession);
+    bot.command("mergesession", handleMergeSession);
 
     bot.action("save:done", async (ctx) => {
         try {
@@ -1812,6 +2152,20 @@ function createBot(token, meta = {}) {
             await ctx.answerCbQuery().catch(() => {});
         } catch (_) {}
         await cancelSaveSession(ctx);
+    });
+
+    bot.action("save:merge_session", async (ctx) => {
+        try {
+            await ctx.answerCbQuery().catch(() => {});
+        } catch (_) {}
+        await handleMergeSession(ctx);
+    });
+
+    bot.action("save:merge_and_finish", async (ctx) => {
+        try {
+            await ctx.answerCbQuery().catch(() => {});
+        } catch (_) {}
+        await handleMergeSession(ctx);
     });
 
     bot.action("save:start", async (ctx) => {

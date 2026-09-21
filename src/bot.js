@@ -3405,7 +3405,8 @@ function createBot(token, meta = {}) {
     });
 
     bot.catch((err, ctx) => {
-        console.error(`Bot error for update ${ctx.update && ctx.update.update_id}:`, err);
+        const updateId = ctx && ctx.update ? ctx.update.update_id : "unknown";
+        console.error(`Bot error for update ${updateId}:`, err);
     });
 
     return bot;

@@ -79,19 +79,17 @@ class WorkerPool {
             });
 
             worker.on("exit", (code) => {
-                if (!this.isClosed && code !== 0) {
-                    const idx = this.workers.indexOf(worker);
-                    if (idx !== -1) this.workers.splice(idx, 1);
-                    const fIdx = this.freeWorkers.indexOf(worker);
-                    if (fIdx !== -1) this.freeWorkers.splice(fIdx, 1);
-                    for (const [id, task] of this.pending.entries()) {
-                        if (task.worker === worker) {
-                            this.pending.delete(id);
-                            task.reject(new Error(`WORKER_EXITED_CODE_${code}`));
-                        }
+                const idx = this.workers.indexOf(worker);
+                if (idx !== -1) this.workers.splice(idx, 1);
+                const fIdx = this.freeWorkers.indexOf(worker);
+                if (fIdx !== -1) this.freeWorkers.splice(fIdx, 1);
+                for (const [id, task] of this.pending.entries()) {
+                    if (task.worker === worker) {
+                        this.pending.delete(id);
+                        task.reject(new Error(`WORKER_EXITED_CODE_${code}`));
                     }
-                    if (this.queue.length > 0) this._spawnWorker();
                 }
+                if (!this.isClosed && this.queue.length > 0) this._spawnWorker();
             });
 
             this.workers.push(worker);

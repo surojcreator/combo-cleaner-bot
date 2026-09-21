@@ -178,6 +178,7 @@ function domainFromFileName(fileName) {
  */
 function scoreDomains(rawText) {
     const counts = new Map();
+    const text = typeof rawText === "string" ? rawText : String(rawText || "");
 
     const bump = (domain, weight) => {
         const d = domain.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
@@ -190,15 +191,15 @@ function scoreDomains(rawText) {
     // URL domains (strongest content signal).
     let m;
     URL_DOMAIN_RE.lastIndex = 0;
-    while ((m = URL_DOMAIN_RE.exec(rawText)) !== null) bump(m[1], WEIGHT_URL);
+    while ((m = URL_DOMAIN_RE.exec(text)) !== null) bump(m[1], WEIGHT_URL);
 
     // Domains leading lines before a separator ("site.com:user:pass").
     LINE_LEAD_DOMAIN_RE.lastIndex = 0;
-    while ((m = LINE_LEAD_DOMAIN_RE.exec(rawText)) !== null) bump(m[1], WEIGHT_LINE_LEAD);
+    while ((m = LINE_LEAD_DOMAIN_RE.exec(text)) !== null) bump(m[1], WEIGHT_LINE_LEAD);
 
     // Email domains (weak).
     EMAIL_DOMAIN_RE.lastIndex = 0;
-    while ((m = EMAIL_DOMAIN_RE.exec(rawText)) !== null) bump(m[1], WEIGHT_EMAIL);
+    while ((m = EMAIL_DOMAIN_RE.exec(text)) !== null) bump(m[1], WEIGHT_EMAIL);
 
     let best = null;
     let bestScore = 0;

@@ -210,7 +210,7 @@ function getDownload(token) {
  * @returns {boolean}
  */
 function isDownloadRequest(req) {
-    if (!req || !req.url) return false;
+    if (!req || typeof req.url !== "string") return false;
     const pathname = req.url.split("?")[0];
     return pathname.startsWith("/download/") || pathname.startsWith("/dl/");
 }
@@ -229,7 +229,7 @@ function handleDownloadRequest(req, res) {
         return;
     }
 
-    const pathname = (req.url || "").split("?")[0];
+    const pathname = (typeof req.url === "string" ? req.url : "").split("?")[0];
     const match = pathname.match(/^\/(?:download|dl)\/([a-zA-Z0-9_-]+)/);
     const token = match ? match[1] : null;
 

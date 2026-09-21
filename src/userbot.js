@@ -1198,7 +1198,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             client.invoke(new Api.messages.GetBotCallbackAnswer({
                                 peer: searchTarget,
                                 msgId: Number(menuMsg.id),
-                                data: Buffer.from(folderBtn.data),
+                                data: Buffer.isBuffer(folderBtn.data) ? folderBtn.data : Buffer.from(String(folderBtn.data || "")),
                             })),
                             timeoutMs,
                             "userbot click folder",
@@ -1326,7 +1326,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                 client.invoke(new Api.messages.GetBotCallbackAnswer({
                                     peer: searchTarget,
                                     msgId: Number(folderView.id),
-                                    data: Buffer.from(histBtn.data),
+                                    data: Buffer.isBuffer(histBtn.data) ? histBtn.data : Buffer.from(String(histBtn.data || "")),
                                 })),
                                 timeoutMs,
                                 "userbot click hist",

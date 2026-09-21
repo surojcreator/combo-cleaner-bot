@@ -86,12 +86,11 @@ function addLines(chatId, lines, site, options = {}) {
             capped = true;
             break;
         }
-        const prevSize = chat.lines.size;
-        chat.lines.add(line);
-        if (chat.lines.size > prevSize) {
-            added += 1;
-        } else {
+        if (chat.lines.has(line)) {
             duplicates += 1;
+        } else {
+            chat.lines.add(line);
+            added += 1;
         }
     }
 

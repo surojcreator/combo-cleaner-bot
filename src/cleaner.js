@@ -88,17 +88,24 @@ const DOMAIN_RE =
 const IPV4_RE =
     /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?::\d{1,5})?$/;
 
+// Fast check for special whitespace/BOM characters
+const SPECIAL_WS_RE = /[\u200B-\u200D\uFEFF\u00A0]/;
+
 /**
- * Strip a leading BOM and trim whitespace.
+ * Strip a leading BOM and trim whitespace with fast-path for clean strings.
  * @param {string} line
  * @returns {string}
  */
 function normalizeLine(line) {
-    return String(line || "")
-        .replace(/^\uFEFF/, "")
-        .replace(/[\u200B-\u200D\uFEFF]/g, "")
-        .replace(/\u00A0/g, " ")
-        .trim();
+    if (!line) return "";
+    let s = typeof line === "string" ? line : String(line);
+    if (SPECIAL_WS_RE.test(s)) {
+        s = s
+            .replace(/^\uFEFF/, "")
+            .replace(/[\u200B-\u200D\uFEFF]/g, "")
+            .replace(/\u00A0/g, " ");
+    }
+    return s.trim();
 }
 
 /**
@@ -396,6 +403,19 @@ function cleanLine(rawLine, options = {}) {
     const keepUrl = Boolean(options && options.keepUrl);
     const line = normalizeLine(rawLine);
     if (!line) return null;
+
+    // Ultra-fast path: standard email:password or phone:password lines with no URL, pipe, or labels
+    const fastSep = line.indexOf(":");
+    if (fastSep > 0 && !line.includes("|") && line.charCodeAt(fastSep + 1) !== 47 /* '/' */) {
+        const atIdx = line.indexOf("@");
+        if (atIdx > 0 && atIdx < fastSep && !line.includes(" ")) {
+            const user = line.slice(0, fastSep);
+            const pass = line.slice(fastSep + 1);
+            if (pass.length > 0 && EMAIL_RE.test(user)) {
+                return keepUrl ? line : `${user}:${stripTrailingMetadata(pass)}`;
+            }
+        }
+    }
 
     // Fast check for single-line key-value pairs (e.g. "USER: admin PASS: secret")
     const kv = extractFromKeyValueLabels(line, options);

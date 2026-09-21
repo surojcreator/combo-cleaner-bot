@@ -152,16 +152,19 @@ class WorkerPool {
 
         // For small batches (< 5000 lines), worker thread overhead is not worth it
         if (lines.length < 5000) {
-            const { cleanText } = require("./cleaner");
-            return cleanText(lines.join("\n"), options);
+            const { cleanLinesArray } = require("./cleaner");
+            return cleanLinesArray(lines, options);
         }
 
         const size = Math.max(5000, Math.min(chunkSize, Math.ceil(lines.length / this.numWorkers)));
         const tasks = [];
+        const isDedupe = options && options.dedupe !== false;
+        // Workers don't need to maintain separate dedupe sets if final dedupe will run
+        const workerOptions = isDedupe ? { ...options, dedupe: false } : options;
 
         for (let i = 0; i < lines.length; i += size) {
             const slice = lines.slice(i, i + size);
-            tasks.push(this.exec({ type: "clean", lines: slice, options }));
+            tasks.push(this.exec({ type: "clean", lines: slice, options: workerOptions }));
         }
 
         const results = await Promise.all(tasks);

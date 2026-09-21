@@ -2069,11 +2069,18 @@ function createBot(token, meta = {}) {
         }
 
         if (prompt.active || (prompt.queue && prompt.queue.length > 0)) {
-            await safeReply(
-                ctx,
-                `⏳  ${B("Still saving remaining files…")}\nPlease wait a moment for the current queue to finish.`,
-            );
-            return;
+            let waitTries = 0;
+            while ((prompt.active || (prompt.queue && prompt.queue.length > 0)) && waitTries < 30) {
+                await new Promise((r) => setTimeout(r, 100));
+                waitTries++;
+            }
+            if (prompt.active || (prompt.queue && prompt.queue.length > 0)) {
+                await safeReply(
+                    ctx,
+                    `⏳  ${B("Still saving remaining files…")}\nPlease wait a moment for the current queue to finish.`,
+                );
+                return;
+            }
         }
 
         userPromptState.delete(ctx.chat.id);
@@ -4974,8 +4981,8 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
 
         let res;
         if (currentLines.length < 5000) {
-            const { cleanText } = require("./cleaner");
-            res = cleanText(currentLines.join("\n"), { keepUrl, dedupe: false });
+            const { cleanLinesArray } = require("./cleaner");
+            res = cleanLinesArray(currentLines, { keepUrl, dedupe: false });
         } else {
             // Execute parallel multi-core cleaning across worker threads
             res = await pool.cleanLinesParallel(currentLines, { keepUrl, dedupe: false });

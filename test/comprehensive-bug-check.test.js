@@ -15,6 +15,8 @@ const {
     emojisKeyboard,
     renderHelp,
     renderEmojiPacks,
+    EMOJI_KEY_MAP,
+    DEFAULT_CUSTOM_ANIMATED_EMOJIS,
 } = require("../src/messages");
 const userbot = require("../src/userbot");
 const { createBot } = require("../src/bot");
@@ -336,6 +338,85 @@ test("bot: command navigation clears interactive prompt states", async () => {
     } finally {
         await api.close();
     }
+});
+
+test("bot: /preview command and preview action execute cleanly without errors on empty and populated batches", async () => {
+    const api = await startFakeApi();
+    const chatId = 999;
+    store.clear(chatId);
+    try {
+        const bot = createBot("123456:fake-token", {
+            botUsername: "TestBot",
+            telegram: { telegram: { apiRoot: api.apiRoot } },
+        });
+
+        // Test 1: Empty batch /preview command
+        await bot.handleUpdate({
+            update_id: 10,
+            message: {
+                message_id: 301,
+                chat: { id: chatId, type: "private" },
+                from: { id: chatId, is_bot: false },
+                text: "/preview",
+                entities: [{ type: "bot_command", offset: 0, length: 8 }],
+                date: Math.floor(Date.now() / 1000),
+            },
+        });
+        const emptyCalls = api.calls.filter((c) => c.method === "sendMessage");
+        assert.ok(emptyCalls.length > 0, "expected sendMessage for /preview on empty batch");
+        assert.ok(emptyCalls[emptyCalls.length - 1].payload.text.includes("Batch is empty"), "should show empty batch note");
+
+        // Test 2: Populated batch /preview command
+        store.addLines(chatId, ["alice@test.com:pass123", "bob@example.com:secret"]);
+        await bot.handleUpdate({
+            update_id: 11,
+            message: {
+                message_id: 302,
+                chat: { id: chatId, type: "private" },
+                from: { id: chatId, is_bot: false },
+                text: "/preview",
+                entities: [{ type: "bot_command", offset: 0, length: 8 }],
+                date: Math.floor(Date.now() / 1000),
+            },
+        });
+        const populatedCalls = api.calls.filter((c) => c.method === "sendMessage");
+        assert.ok(populatedCalls[populatedCalls.length - 1].payload.text.includes("alice@test.com:pass123"), "should show preview line");
+
+        // Test 3: Inline button preview action
+        await bot.handleUpdate({
+            update_id: 12,
+            callback_query: {
+                id: "cb_preview",
+                from: { id: chatId },
+                message: { message_id: 302, chat: { id: chatId, type: "private" } },
+                data: "preview",
+            },
+        });
+        const ansCalls = api.calls.filter((c) => c.method === "answerCallbackQuery");
+        assert.ok(ansCalls.length > 0, "should answer callback query");
+    } finally {
+        store.clear(chatId);
+        await api.close();
+    }
+});
+
+test("emojis: 100% of emojis in src/ files are mapped in EMOJI_KEY_MAP and DEFAULT_CUSTOM_ANIMATED_EMOJIS", () => {
+    const emojiRegex = /[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1FA00}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}]/gu;
+    const srcDir = path.resolve(__dirname, "../src");
+    const files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".js"));
+    const allFound = new Set();
+    for (const f of files) {
+        const text = fs.readFileSync(path.join(srcDir, f), "utf8");
+        const matches = text.match(emojiRegex) || [];
+        for (const m of matches) allFound.add(m);
+    }
+    const missing = [];
+    for (const e of allFound) {
+        if (!DEFAULT_CUSTOM_ANIMATED_EMOJIS[e] && !EMOJI_KEY_MAP[e]) {
+            missing.push(e);
+        }
+    }
+    assert.deepEqual(missing, [], `all emojis must be mapped; found unmapped: ${missing.join(", ")}`);
 });
 
 test.after(() => {

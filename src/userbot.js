@@ -421,6 +421,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
     const peerCache = new Map();
     const forwardedMsgKeys = new Set();
 
+    function setPeerCache(key, value) {
+        if (!key) return;
+        if (peerCache.size >= 500) {
+            const first = peerCache.keys().next().value;
+            peerCache.delete(first);
+        }
+        peerCache.set(key, value);
+    }
+
     /**
      * Resolve a Bot API chat id to the account-specific InputPeer/access hash.
      * Numeric -100... ids often aren't resolvable until dialogs warm the cache.
@@ -433,7 +442,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
         }
         try {
             const ent = await client.getInputEntity(chatId);
-            peerCache.set(wanted, ent);
+            setPeerCache(wanted, ent);
             return ent;
         } catch (firstError) {
             log.log(`userbot peer cache miss for ${wanted}; loading dialogs`);
@@ -450,7 +459,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     candidate = dialog.id ? markedPeerId(dialog.id) : "";
                 }
                 if (candidate === wanted || (dialog.id && markedPeerId(dialog.id) === wanted)) {
-                    peerCache.set(wanted, dialog.inputEntity);
+                    setPeerCache(wanted, dialog.inputEntity);
                     return dialog.inputEntity;
                 }
             }
@@ -519,8 +528,8 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 for (const d of dialogs || []) {
                     try {
                         const pid = markedPeerId(getPeerId(d.inputEntity, true));
-                        if (pid) peerCache.set(pid, d.inputEntity);
-                        if (d.id) peerCache.set(markedPeerId(d.id), d.inputEntity);
+                        if (pid) setPeerCache(pid, d.inputEntity);
+                        if (d.id) setPeerCache(markedPeerId(d.id), d.inputEntity);
                     } catch {}
                 }
             }).catch(() => {});
@@ -533,7 +542,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     try {
                         const mid = markedPeerId(getPeerId(msg.peerId, true));
                         if (mid && !peerCache.has(mid)) {
-                            peerCache.set(mid, msg.inputPeer || msg.peerId);
+                            setPeerCache(mid, msg.inputPeer || msg.peerId);
                         }
                     } catch {}
                 }

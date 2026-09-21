@@ -26,8 +26,6 @@
  */
 
 // A candidate token followed by a ':' or '|' separator. The lookbehind ensures
-// the token starts at a boundary (start of line or a non-token char) WITHOUT
-// A candidate token followed by a ':' or '|' separator. The lookbehind ensures
 // the token starts at a boundary (start of line or whitespace or separator) WITHOUT
 // consuming that boundary. We do NOT allow '/' in the lookbehind because URL paths
 // like /LogLogonHandler:user:pass must not treat path segments as candidate usernames.

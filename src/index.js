@@ -3,7 +3,6 @@
 require("dotenv").config();
 
 const http = require("http");
-const { Telegraf } = require("telegraf");
 const { createBot, ingestUserbotMessage, trackIngestion } = require("./bot");
 const searchbot = require("./searchbot");
 const userbot = require("./userbot");

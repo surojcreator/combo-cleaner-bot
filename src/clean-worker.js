@@ -2,7 +2,7 @@
 
 const { parentPort } = require("node:worker_threads");
 const fs = require("node:fs");
-const { cleanLine, cleanLinesArray } = require("./cleaner");
+const { cleanLinesArray } = require("./cleaner");
 
 if (parentPort) {
     parentPort.on("message", (msg) => {

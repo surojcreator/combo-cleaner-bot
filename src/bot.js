@@ -6,7 +6,6 @@ const readline = require("node:readline");
 const { once } = require("node:events");
 const { Telegraf, Markup } = require("telegraf");
 const {
-    extractAndCleanZip,
     extractAndCleanText,
     extractAndCleanZipAsync,
     extractAndCleanTextAsync,
@@ -14,7 +13,6 @@ const {
     isZipBuffer,
 } = require("./extractor");
 const { sanitizeSiteSlug, detectSite } = require("./sites");
-const { cleanLine } = require("./cleaner");
 const { getSharedPool } = require("./worker-pool");
 const searchbot = require("./searchbot");
 const store = require("./store");
@@ -59,7 +57,6 @@ const {
     saveGuideKeyboard,
     searchPromptKeyboard,
     emojisKeyboard,
-    registerCustomEmojis,
     mainKeyboard,
     confirmClearKeyboard,
     afterCombineKeyboard,
@@ -301,6 +298,15 @@ function createBot(token, meta = {}) {
             sitesKeyboard(counts)
         );
     });
+
+    async function sendPreview(ctx) {
+        const chatId = ctx.chat && ctx.chat.id;
+        if (!chatId) return;
+        const lines = store.getLines(chatId);
+        const sample = lines.slice(0, 10);
+        const text = renderPreview(sample, lines.length);
+        await safeReply(ctx, text, lines.length === 0 ? emptyBatchKeyboard() : mainKeyboard());
+    }
 
     bot.command("preview", async (ctx) => {
         userPromptState.delete(ctx.chat.id);
@@ -2509,13 +2515,7 @@ function createBot(token, meta = {}) {
             return;
         }
 
-        if (peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.getInstalledEmojiPacks === "function") {
-            try {
-                data = await peer.getInstalledEmojiPacks();
-            } catch {
-                // ignore
-            }
-        } else if (peer && typeof peer.getInstalledEmojiPacks === "function") {
+        if (peer && typeof peer.getInstalledEmojiPacks === "function") {
             try {
                 data = await peer.getInstalledEmojiPacks();
             } catch {

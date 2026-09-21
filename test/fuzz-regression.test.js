@@ -138,3 +138,24 @@ test("fuzz: bot sync exports survive arbitrary inputs with zero unhandled crashe
         }
     }
 });
+
+test("fuzz: date parsing rejects invalid days/months and prevents date rollover", () => {
+    assert.equal(userbot.parseDmyDate("31.02.2025"), null);
+    assert.equal(userbot.parseDmyDate("35.13.2025"), null);
+    assert.equal(userbot.parseDmyDate("00.01.2025"), null);
+    assert.equal(userbot.parseDmyDate("31.04.2025"), null); // April has 30 days
+    const valid = userbot.parseDmyDate("15.08.2025");
+    assert.ok(valid instanceof Date);
+    assert.equal(valid.getFullYear(), 2025);
+    assert.equal(valid.getMonth(), 7);
+    assert.equal(valid.getDate(), 15);
+});
+
+test("fuzz: parseChannelFilename validates integer messageId", () => {
+    assert.deepEqual(userbot.parseChannelFilename("@channel - 123.txt"), { peer: "@channel", messageId: 123 });
+    assert.equal(userbot.parseChannelFilename("@channel - 0.txt"), null);
+    assert.equal(userbot.parseChannelFilename("@channel - -5.txt"), null);
+    assert.equal(userbot.parseChannelFilename(""), null);
+    assert.equal(userbot.parseChannelFilename(null), null);
+});
+

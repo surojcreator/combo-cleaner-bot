@@ -627,41 +627,51 @@ function createBot(token, meta = {}) {
             }
         };
 
-        for (const f of normalized) {
-            const isZip = f.name.toLowerCase().endsWith(".zip");
-            if (isZip) {
-                try {
-                    const buf = fs.readFileSync(f.path);
-                    if (isZipBuffer(buf)) {
-                        const AdmZip = require("adm-zip");
-                        const zip = new AdmZip(buf);
-                        const entries = zip.getEntries();
-                        for (const entry of entries) {
-                            if (entry.isDirectory) continue;
-                            const lower = entry.entryName.toLowerCase();
-                            if (lower.endsWith(".txt") || lower.endsWith(".log") || lower.endsWith(".csv") || lower.endsWith(".tsv")) {
-                                const text = entry.getData().toString("utf8");
-                                const res = await extractAndCleanTextAsync(text, { keepUrl: true, dedupe: false });
-                                for (const line of res.lines) {
-                                    await writeLine(line);
+        try {
+            for (const f of normalized) {
+                const isZip = f.name.toLowerCase().endsWith(".zip");
+                if (isZip) {
+                    try {
+                        const buf = fs.readFileSync(f.path);
+                        if (isZipBuffer(buf)) {
+                            const AdmZip = require("adm-zip");
+                            const zip = new AdmZip(buf);
+                            const entries = zip.getEntries();
+                            for (const entry of entries) {
+                                if (entry.isDirectory) continue;
+                                const lower = entry.entryName.toLowerCase();
+                                if (lower.endsWith(".txt") || lower.endsWith(".log") || lower.endsWith(".csv") || lower.endsWith(".tsv")) {
+                                    const text = entry.getData().toString("utf8");
+                                    const res = await extractAndCleanTextAsync(text, { keepUrl: true, dedupe: false });
+                                    for (const line of res.lines) {
+                                        await writeLine(line);
+                                    }
+                                    totalDupes += res.stats.duplicates || 0;
                                 }
-                                totalDupes += res.stats.duplicates || 0;
                             }
                         }
+                    } catch (err) {
+                        console.error("Error extracting zip entry during merge:", f.name, err);
                     }
-                } catch (err) {
-                    console.error("Error extracting zip entry during merge:", f.name, err);
-                }
-            } else {
-                const rl = readline.createInterface({
-                    input: fs.createReadStream(f.path, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
-                    crlfDelay: Infinity,
-                });
-                const { cleanLinesArray } = require("./cleaner");
-                let chunk = [];
-                for await (const line of rl) {
-                    chunk.push(line);
-                    if (chunk.length >= 25000) {
+                } else {
+                    const rl = readline.createInterface({
+                        input: fs.createReadStream(f.path, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
+                        crlfDelay: Infinity,
+                    });
+                    const { cleanLinesArray } = require("./cleaner");
+                    let chunk = [];
+                    for await (const line of rl) {
+                        chunk.push(line);
+                        if (chunk.length >= 25000) {
+                            const res = cleanLinesArray(chunk, { keepUrl: true, dedupe: false });
+                            chunk = [];
+                            for (const cl of res.lines) {
+                                await writeLine(cl);
+                            }
+                            totalDupes += res.stats.duplicates || 0;
+                        }
+                    }
+                    if (chunk.length > 0) {
                         const res = cleanLinesArray(chunk, { keepUrl: true, dedupe: false });
                         chunk = [];
                         for (const cl of res.lines) {
@@ -670,21 +680,17 @@ function createBot(token, meta = {}) {
                         totalDupes += res.stats.duplicates || 0;
                     }
                 }
-                if (chunk.length > 0) {
-                    const res = cleanLinesArray(chunk, { keepUrl: true, dedupe: false });
-                    chunk = [];
-                    for (const cl of res.lines) {
-                        await writeLine(cl);
-                    }
-                    totalDupes += res.stats.duplicates || 0;
-                }
             }
-        }
 
-        flushBatch();
-        outStream.end();
-        await once(outStream, "finish");
-        fs.renameSync(partialPath, outPath);
+            flushBatch();
+            outStream.end();
+            await once(outStream, "finish");
+            fs.renameSync(partialPath, outPath);
+        } catch (err) {
+            outStream.destroy();
+            fs.rmSync(partialPath, { force: true });
+            throw err;
+        }
         const stat = fs.statSync(outPath);
 
         return {
@@ -993,9 +999,9 @@ function createBot(token, meta = {}) {
         }
         try {
             fs.rmSync(file.path, { force: true });
-            await ctx.answerCbQuery(`🗑 Deleted ${file.name}!`).catch(() => { });
+            await safeAnswerCbQuery(ctx, `🗑 Deleted ${file.name}!`);
         } catch (err) {
-            await ctx.answerCbQuery(`💥 Deletion error: ${err.message}`).catch(() => { });
+            await safeAnswerCbQuery(ctx, `💥 Deletion error: ${err.message}`);
         }
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         await showServerFiles(ctx, msg ? msg.message_id : null, 0, type === "raw" ? "raw" : "proc");
@@ -1196,7 +1202,7 @@ function createBot(token, meta = {}) {
     bot.action(/^file:dosearch:(\d+):(.+)$/, async (ctx) => {
         const idx = parseInt(ctx.match[1], 10);
         const query = ctx.match[2];
-        await ctx.answerCbQuery(`Searching ${query}…`).catch(() => { });
+        await safeAnswerCbQuery(ctx, `Searching ${query}…`);
         const rawFiles = scanDirFiles(localProcessRoot());
         const file = rawFiles[idx];
         if (!file) {
@@ -1289,7 +1295,7 @@ function createBot(token, meta = {}) {
     bot.action(/^file:dosearch:proc:(\d+):(.+)$/, async (ctx) => {
         const idx = parseInt(ctx.match[1], 10);
         const query = ctx.match[2];
-        await ctx.answerCbQuery(`Searching ${query}…`).catch(() => { });
+        await safeAnswerCbQuery(ctx, `Searching ${query}…`);
         const processedFiles = scanDirFiles(localProcessedRoot());
         const file = processedFiles[idx];
         if (!file) {
@@ -1351,7 +1357,7 @@ function createBot(token, meta = {}) {
             store.addCustomDomain(ctx.chat.id, query);
         }
         const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
-        await ctx.answerCbQuery(`🚀 Launching ${query} (${activeDays}d)…`).catch(() => { });
+        await safeAnswerCbQuery(ctx, `🚀 Launching ${query} (${activeDays}d)…`);
         await beginUlpRun(ctx, {
             query,
             scope: "day",
@@ -1425,7 +1431,7 @@ function createBot(token, meta = {}) {
     bot.action(/^ulp:custom:del:(.+)$/, async (ctx) => {
         const domain = ctx.match[1];
         if (store && store.removeCustomDomain) store.removeCustomDomain(ctx.chat.id, domain);
-        await ctx.answerCbQuery(`🗑 Removed ${domain}`).catch(() => { });
+        await safeAnswerCbQuery(ctx, `🗑 Removed ${domain}`);
         const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
         const text = [
             `✏️  ${B("MANAGE CUSTOM DOMAINS")}  ⚡️`,
@@ -1511,7 +1517,7 @@ function createBot(token, meta = {}) {
 
     bot.action(/^batch:quicksearch:(.+)$/, async (ctx) => {
         const query = ctx.match[1];
-        await ctx.answerCbQuery(`Searching ${query}…`).catch(() => { });
+        await safeAnswerCbQuery(ctx, `Searching ${query}…`);
         const chatStats = store.getStats(ctx.chat.id);
         let result;
         if (chatStats && chatStats.size > 5000) {
@@ -1524,7 +1530,7 @@ function createBot(token, meta = {}) {
 
     bot.action(/^search:dl:(.+)$/, async (ctx) => {
         const query = ctx.match[1];
-        await ctx.answerCbQuery(`Preparing "${query}" export…`).catch(() => { });
+        await safeAnswerCbQuery(ctx, `Preparing "${query}" export…`);
         let matches = [];
         const chatStats = store.getStats(ctx.chat.id);
         if (chatStats && chatStats.size > 5000) {
@@ -3470,6 +3476,25 @@ function stripButtonEmojis(extra) {
     return clean;
 }
 
+const TELEGRAM_MSG_LIMIT = 4000;
+
+/**
+ * Safely answer a callback query, ensuring text is capped to Telegram's 200 character limit
+ * and catching any network or expired-query errors gracefully.
+ * @param {import('telegraf').Context} ctx
+ * @param {string} [text]
+ * @param {boolean} [showAlert]
+ */
+async function safeAnswerCbQuery(ctx, text = "", showAlert = false) {
+    if (!ctx || typeof ctx.answerCbQuery !== "function") return;
+    try {
+        const safeText = text ? String(text).slice(0, 195) : undefined;
+        await ctx.answerCbQuery(safeText, showAlert ? { show_alert: true } : undefined);
+    } catch {
+        // silently ignore callback answer failures (expired callback queries, etc.)
+    }
+}
+
 /**
  * Safely send a text message using HTML parse mode, stripping custom emoji tags
  * and button emoji IDs if rejected by the Telegram API (such as DOCUMENT_INVALID).
@@ -3478,7 +3503,10 @@ function stripButtonEmojis(extra) {
  * @param {object} [extra] additional sendMessage options (e.g. keyboard)
  */
 async function safeReply(ctx, text, extra = {}) {
-    let sendText = text;
+    let sendText = typeof text === "string" ? text : String(text || "");
+    if (sendText.length > TELEGRAM_MSG_LIMIT) {
+        sendText = sendText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… ⚠️ [TRUNCATED]";
+    }
     let sendExtra = extra;
     if (botApiCustomEmojiRejected) {
         if (sendText && sendText.includes("<tg-emoji")) {
@@ -3494,12 +3522,12 @@ async function safeReply(ctx, text, extra = {}) {
         });
     } catch (err) {
         const msg = String((err && err.message) || err || "");
-        const hasEmoji = (text && text.includes("<tg-emoji")) || (extra && extra.reply_markup);
+        const hasEmoji = (sendText && sendText.includes("<tg-emoji")) || (extra && extra.reply_markup);
         if (/custom_emoji|entity|button|icon|markup|document_invalid|bad request/i.test(msg) || hasEmoji) {
             botApiCustomEmojiRejected = true;
-            let fallbackText = text;
-            if (text && text.includes("<tg-emoji")) {
-                fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            let fallbackText = sendText;
+            if (fallbackText && fallbackText.includes("<tg-emoji")) {
+                fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
             }
             const fallbackExtra = stripButtonEmojis(extra);
             try {
@@ -3533,7 +3561,10 @@ async function safeReply(ctx, text, extra = {}) {
  * @param {object} [extra]
  */
 async function safeEdit(ctx, messageId, text, extra = {}) {
-    let editText = text;
+    let editText = typeof text === "string" ? text : String(text || "");
+    if (editText.length > TELEGRAM_MSG_LIMIT) {
+        editText = editText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… ⚠️ [TRUNCATED]";
+    }
     let editExtra = extra;
     if (botApiCustomEmojiRejected) {
         if (editText && editText.includes("<tg-emoji")) {
@@ -3549,12 +3580,12 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
         });
     } catch (err) {
         const msg = String((err && err.message) || err || "");
-        const hasEmoji = (text && text.includes("<tg-emoji")) || (extra && extra.reply_markup);
+        const hasEmoji = (editText && editText.includes("<tg-emoji")) || (extra && extra.reply_markup);
         if (/custom_emoji|entity|button|icon|markup|document_invalid|bad request/i.test(msg) || hasEmoji) {
             botApiCustomEmojiRejected = true;
-            let fallbackText = text;
-            if (text && text.includes("<tg-emoji")) {
-                fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+            let fallbackText = editText;
+            if (fallbackText && fallbackText.includes("<tg-emoji")) {
+                fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
             }
             const fallbackExtra = stripButtonEmojis(extra);
             try {
@@ -3705,9 +3736,12 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
             isZip ? ".zip" : ".txt",
         );
     }
-    let sendExtra = extra;
+    let sendExtra = extra ? { ...extra } : {};
+    if (sendExtra.caption && typeof sendExtra.caption === "string" && sendExtra.caption.length > 1000) {
+        sendExtra.caption = sendExtra.caption.slice(0, 950) + "…";
+    }
     if (botApiCustomEmojiRejected) {
-        sendExtra = stripButtonEmojis(extra);
+        sendExtra = stripButtonEmojis(sendExtra);
         if (sendExtra && sendExtra.caption && sendExtra.caption.includes("<tg-emoji")) {
             sendExtra = {
                 ...sendExtra,
@@ -3716,17 +3750,21 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
         }
     }
     const doSend = async (opts) => {
+        let finalOpts = opts;
+        if (finalOpts && typeof finalOpts.caption === "string" && finalOpts.caption.length > 1000) {
+            finalOpts = { ...finalOpts, caption: finalOpts.caption.slice(0, 950) + "…" };
+        }
         if (typeof ctx.replyWithDocument === "function") {
             try {
-                return await ctx.replyWithDocument(payload, opts);
+                return await ctx.replyWithDocument(payload, finalOpts);
             } catch (err) {
                 if (ctx.telegram && typeof ctx.telegram.sendDocument === "function" && chatId) {
-                    return await ctx.telegram.sendDocument(chatId, payload, opts);
+                    return await ctx.telegram.sendDocument(chatId, payload, finalOpts);
                 }
                 throw err;
             }
         } else if (ctx.telegram && typeof ctx.telegram.sendDocument === "function" && chatId) {
-            return await ctx.telegram.sendDocument(chatId, payload, opts);
+            return await ctx.telegram.sendDocument(chatId, payload, finalOpts);
         }
         throw new Error("No document delivery method available on context");
     };

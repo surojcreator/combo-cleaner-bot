@@ -254,8 +254,10 @@ function parseDmyDate(str) {
     const day = parseInt(m[1], 10);
     const month = parseInt(m[2], 10) - 1;
     const year = parseInt(m[3], 10);
+    if (month < 0 || month > 11 || day < 1 || day > 31) return null;
     const d = new Date(year, month, day);
     if (Number.isNaN(d.getTime())) return null;
+    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
     return d;
 }
 
@@ -272,7 +274,7 @@ function detectLatestBatchDate(menuMsg) {
     for (const row of menuMsg.replyMarkup.rows) {
         if (!Array.isArray(row.buttons)) continue;
         for (const btn of row.buttons) {
-            const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
+            const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (Buffer.isBuffer(btn.data) ? btn.data.toString("utf8") : String(btn.data || ""));
             const textStr = String(btn.text || "");
             const m = dataStr.match(/folder:(\d{1,2}\.\d{1,2}\.\d{4}):/) || textStr.match(/(\d{1,2}\.\d{1,2}\.\d{4})/);
             if (m) {
@@ -368,7 +370,7 @@ function parseChannelFilename(fileName) {
     if (m) {
         const peer = `@${m[1]}`;
         const messageId = parseInt(m[2], 10);
-        if (messageId > 0) {
+        if (Number.isSafeInteger(messageId) && messageId > 0) {
             return { peer, messageId };
         }
     }

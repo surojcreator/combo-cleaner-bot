@@ -285,6 +285,9 @@ function handleDownloadRequest(req, res) {
     if (entry.filePath && fs.existsSync(entry.filePath)) {
         const stream = fs.createReadStream(entry.filePath);
         stream.pipe(res);
+        res.on("close", () => {
+            if (!stream.destroyed) stream.destroy();
+        });
         stream.on("error", (streamErr) => {
             console.error("Stream download error:", streamErr);
             if (!res.headersSent) {

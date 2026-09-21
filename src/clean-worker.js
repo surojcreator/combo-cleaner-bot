@@ -140,6 +140,12 @@ if (parentPort) {
                 }
             } catch (err) {
                 console.error("Worker searchFileSlice error:", err && err.message ? err.message : err);
+                parentPort.postMessage({
+                    id,
+                    error: err && err.message ? err.message : String(err),
+                    result: null,
+                });
+                return;
             } finally {
                 if (fd !== null) {
                     try {

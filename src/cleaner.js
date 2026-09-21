@@ -158,8 +158,8 @@ function cleanCcLine(line) {
             const pan = rawPan.replace(/[\s-]/g, "");
             if (/^\d{12,19}$/.test(pan)) {
                 const parts = rawExpiry.split("/");
-                const mmDigits = parts[0].replace(/\D/g, "");
-                const mmNum = parseInt(mmDigits, 10);
+                const mmDigits = (parts[0] || "").replace(/\D/g, "");
+                const mmNum = parseInt(mmDigits, 10) || 0;
                 if (mmNum >= 1 && mmNum <= 12) {
                     const mm = mmDigits.padStart(2, "0");
                     const yy = normalizeYear(parts[1]);
@@ -190,7 +190,7 @@ function cleanCcLine(line) {
         // Month: 1-12, 1 or 2 digits.
         const mmDigits = rawMm.replace(/\D/g, "");
         if (!/^\d{1,2}$/.test(mmDigits)) continue;
-        const mmNum = parseInt(mmDigits, 10);
+        const mmNum = parseInt(mmDigits, 10) || 0;
         if (mmNum < 1 || mmNum > 12) continue;
         const mm = mmDigits.padStart(2, "0");
 

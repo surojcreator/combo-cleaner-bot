@@ -12,7 +12,8 @@ class WorkerPool {
             workerPath = null;
         }
         this.workerPath = workerPath || path.join(__dirname, "clean-worker.js");
-        const availableCpus = os.cpus().length || 4;
+        const cpus = os.cpus();
+        const availableCpus = (Array.isArray(cpus) && cpus.length) || 4;
         // Default to all available CPU cores (saturates 100% of available cores)
         this.numWorkers = numWorkers || Math.max(4, Math.min(availableCpus, 32));
         this.workers = [];

@@ -528,6 +528,83 @@ test("searchDayByDay invokes forwardResult without error when chatId is specifie
     assert.equal(forwardCalled, true, "forwardResult should be called when chatId and results are present");
 });
 
+test("searchDayByDay paces day-to-day search with 14 seconds (14000ms) by default", async () => {
+    const cfg = {
+        apiId: 12345,
+        apiHash: "hash",
+        session: "session",
+        searcher: "DumpNews14Bot",
+        transport: "userbot",
+    };
+    let folderOpened = false;
+    const mockClient = {
+        async sendMessage(peer, { message }) {
+            return { id: 101, message };
+        },
+        async getMessages(peer, { limit, ids }) {
+            if (ids && ids.length) {
+                return [{
+                    id: 102,
+                    replyMarkup: {
+                        rows: [
+                            {
+                                buttons: [
+                                    { text: "Download Full History (0.1 MB)", data: Buffer.from("hist:2026-09-15") },
+                                ],
+                            },
+                        ],
+                    },
+                }];
+            }
+            if (limit) {
+                if (!folderOpened) {
+                    return [{
+                        id: 102,
+                        replyMarkup: {
+                            rows: [
+                                {
+                                    buttons: [
+                                        { text: "15.09.2026", data: Buffer.from("folder:15.09.2026:batch") },
+                                        { text: "14.09.2026", data: Buffer.from("folder:14.09.2026:batch") },
+                                    ],
+                                },
+                            ],
+                        },
+                    }];
+                } else {
+                    return [
+                        { id: 105, text: "Result dump document", media: { document: { id: 777 } } },
+                    ];
+                }
+            }
+            return [];
+        },
+        async invoke(req) {
+            const dataStr = req.data ? req.data.toString() : "";
+            if (dataStr.startsWith("folder:")) folderOpened = true;
+            return true;
+        },
+        async getInputEntity() { return { id: 999 }; },
+    };
+
+    const ub = userbot.createUserbot(cfg, {
+        client: mockClient,
+        searcherEntity: { id: 888 },
+    });
+
+    const sleeps = [];
+    const res = await ub.searchDayByDay({
+        query: "domain.com",
+        daysCount: 2,
+        startDate: new Date("2026-09-15T12:00:00Z"),
+        sleep: async (ms) => { sleeps.push(ms); },
+    });
+
+    assert.equal(res.status, "done");
+    assert.ok(sleeps.includes(14000), `expected sleep(14000) for pacing between days, got: ${JSON.stringify(sleeps)}`);
+});
+
+
 
 
 

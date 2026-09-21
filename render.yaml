@@ -23,7 +23,7 @@ services:
       - key: SEARCH_BOT_USERNAME
         value: DumpNews14Bot
       - key: SEARCH_STEP_DELAY_MS
-        value: "12000"
+        value: "14000"
       - key: SEARCH_RESULT_WAIT_MS
         value: "20000"
       - key: SEARCH_MAX_TRIES

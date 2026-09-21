@@ -40,8 +40,8 @@ const SCOPE_ALIASES = {
 const DEFAULT_SEARCH_BOT = "DumpNews14Bot";
 const DEFAULT_HIST_TEMPLATE = "hist:full:{scope}";
 
-/** "wait 12 seconds before each try". */
-const DEFAULT_STEP_DELAY_MS = 12000;
+/** "wait 14 seconds before each try". */
+const DEFAULT_STEP_DELAY_MS = 14000;
 
 /** How long to wait for the searcher bot to answer before retrying. */
 const DEFAULT_RESULT_WAIT_MS = 20000;
@@ -171,8 +171,8 @@ function classifySendError(err) {
 /**
  * Send the query + history steps to the searcher bot, pacing every try.
  *
- * Every single send happens only after `stepDelayMs` (12s by default) — that is
- * the "wait 12 seconds before each try" rule — and each retry of the pair waits
+ * Every single send happens only after `stepDelayMs` (14s by default) — that is
+ * the "wait 14 seconds before each try" rule — and each retry of the pair waits
  * the same delay again.
  *
  * The pair is always sent in order (query, then history) and results only decide

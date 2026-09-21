@@ -999,7 +999,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 daysCount = 5,
                 startDate = null,
                 chatId = null,
-                stepDelayMs = 12000,
+                stepDelayMs = 14000,
                 shouldStop = () => false,
                 onStatus = () => {},
                 sleep = (ms) => new Promise((r) => setTimeout(r, ms)),

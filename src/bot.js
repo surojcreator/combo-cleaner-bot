@@ -1774,6 +1774,7 @@ function createBot(token, meta = {}) {
                 queue: [],
                 active: false,
                 processed: [],
+                noticeId: null,
             });
             await safeReply(
                 ctx,
@@ -1848,6 +1849,7 @@ function createBot(token, meta = {}) {
 
     /**
      * Enqueue a document received while in save:listening mode.
+     * Files are buffered into the queue and only processed when /done is received.
      */
     async function queueSaveDocument(ctx, prompt) {
         const doc = ctx.message && ctx.message.document;
@@ -1869,15 +1871,41 @@ function createBot(token, meta = {}) {
             size: doc.file_size || 0,
         });
 
+        const queueCount = prompt.queue.length;
+
         if (prompt.active) {
-            const queuePos = prompt.queue.length;
+            const queuePos = queueCount;
             await safeReply(
                 ctx,
                 `📥  ${B("Queued for saving")} (#${prompt.processed.length + queuePos})\n📄 ${CODE(escapeHtml(originalName))} · ${humanSize(doc.file_size || 0)}`,
             );
+        } else if (!prompt.noticeId) {
+            const notice = await safeReply(
+                ctx,
+                [
+                    `📥  ${B("Queued for saving")} (#${num(queueCount)})`,
+                    `📄  ${CODE(escapeHtml(originalName))} · ${humanSize(doc.file_size || 0)}`,
+                    "",
+                    `${I("Forward more files, or send /done or tap Done when finished.")}`,
+                ].join("\n"),
+                saveListeningKeyboard(queueCount),
+            );
+            if (notice && notice.message_id) {
+                prompt.noticeId = notice.message_id;
+            }
+        } else {
+            void safeEdit(
+                ctx,
+                prompt.noticeId,
+                [
+                    `📥  ${B("Queued for saving")} (${num(queueCount)} files queued)`,
+                    `📄  Latest: ${CODE(escapeHtml(originalName))} · ${humanSize(doc.file_size || 0)}`,
+                    "",
+                    `${I("Forward more files, or send /done or tap Done when finished.")}`,
+                ].join("\n"),
+                saveListeningKeyboard(queueCount),
+            ).catch(() => {});
         }
-
-        void processSaveQueue(ctx.chat.id, prompt);
     }
 
     /**
@@ -2074,19 +2102,22 @@ function createBot(token, meta = {}) {
             return;
         }
 
-        if (prompt.active || (prompt.queue && prompt.queue.length > 0)) {
-            let waitTries = 0;
-            while ((prompt.active || (prompt.queue && prompt.queue.length > 0)) && waitTries < 30) {
-                await new Promise((r) => setTimeout(r, 100));
-                waitTries++;
-            }
-            if (prompt.active || (prompt.queue && prompt.queue.length > 0)) {
-                await safeReply(
-                    ctx,
-                    `⏳  ${B("Still saving remaining files…")}\nPlease wait a moment for the current queue to finish.`,
-                );
-                return;
-            }
+        if (prompt.active) {
+            await safeReply(
+                ctx,
+                `⏳  ${B("Currently processing queued files…")}\nPlease wait a moment for the save session to finish.`,
+            );
+            return;
+        }
+
+        // When /done is received, process all queued files one by one!
+        if (prompt.queue && prompt.queue.length > 0) {
+            const total = prompt.queue.length;
+            await safeReply(
+                ctx,
+                `⚡  ${B(`Processing ${num(total)} queued file${total === 1 ? "" : "s"} one by one…`)}`,
+            );
+            await processSaveQueue(ctx.chat.id, prompt);
         }
 
         userPromptState.delete(ctx.chat.id);
@@ -2122,6 +2153,11 @@ function createBot(token, meta = {}) {
         const prompt = userPromptState.get(ctx.chat.id);
         let sessionFiles = [];
         if (prompt && prompt.action === "save:listening") {
+            if (prompt.queue && prompt.queue.length > 0) {
+                const total = prompt.queue.length;
+                await safeReply(ctx, `⚡  ${B(`Processing ${num(total)} queued file${total === 1 ? "" : "s"} before merging…`)}`);
+                await processSaveQueue(ctx.chat.id, prompt);
+            }
             sessionFiles = prompt.processed || [];
             userPromptState.delete(ctx.chat.id);
         } else {
@@ -2191,6 +2227,7 @@ function createBot(token, meta = {}) {
             queue: [],
             active: false,
             processed: [],
+            noticeId: null,
         });
         await safeReply(
             ctx,

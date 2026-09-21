@@ -1076,13 +1076,13 @@ function renderSaveListeningPrompt(botUsername = null) {
         `📥  ${B("SAVE MODE ACTIVE")}  (OR ${B("REPLY TO A FILE")})  ${tgEmoji("⚡️")}`,
         RULE,
         `Forward or upload your log files now!`,
-        `The bot is listening and will save & clean them ${B("one by one")} into your batch.`,
+        `Files will queue up. When you're finished, send ${CODE("/done")} or tap Done to save & clean them ${B("one by one")}.`,
         "",
         `📁  Supported: ${B(".zip")}, ${B(".txt")}, ${B(".log")}, ${B(".csv")}, ${B(".tsv")}`,
-        `⚡️  Forward from any group or channel — files are queued and processed sequentially.`,
+        `⚡️  Forward from any group or channel — files will be buffered until you finalize.`,
         `📌  ${I("Tip: You can also reply directly to an existing document with /save.")}`,
         "",
-        `${I("When finished, tap Done below or send /done to finalize.")}`,
+        `${I("When finished forwarding, tap Done below or send /done to start saving.")}`,
     ].join("\n");
 }
 
@@ -1091,9 +1091,10 @@ function renderSaveListeningPrompt(botUsername = null) {
  * @param {number} [queuedCount]
  */
 function saveListeningKeyboard(queuedCount = 0) {
+    const doneText = queuedCount > 0 ? `✅ Done / Finish Saving (${queuedCount})` : "✅ Done / Finish Saving";
     return createInlineKeyboard([
         [
-            Markup.button.callback("✅ Done / Finish Saving", "save:done"),
+            Markup.button.callback(doneText, "save:done"),
             Markup.button.callback("🔀 Merge & Finish", "save:merge_and_finish"),
         ],
         [

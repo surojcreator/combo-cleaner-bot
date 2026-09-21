@@ -201,7 +201,14 @@ test("/save mode processes forwarded files one by one into the batch via userbot
         await bot.handleUpdate(documentUpdate({ file_name: `logs_part1_${Date.now()}.txt`, file_size: 100 }, true, 201, chatId));
         await bot.handleUpdate(documentUpdate({ file_name: `logs_part2_${Date.now()}.txt`, file_size: 150 }, true, 202, chatId));
 
-        // 3. Wait for both files to be downloaded and added to active batch
+        // 3. Verify files remain buffered in the queue and do NOT start processing before /done
+        assert.equal(downloadedFiles.length, 0);
+        assert.equal(store.getStats(chatId)?.size || 0, 0);
+
+        // 4. Finish save session with /done -> now processing starts!
+        await bot.handleUpdate(command("/done", chatId));
+
+        // 5. Wait for both files to be downloaded and added to active batch
         assert.equal(
             await waitFor(() => downloadedFiles.length === 2, 5000),
             true,
@@ -216,8 +223,6 @@ test("/save mode processes forwarded files one by one into the batch via userbot
             true,
         );
 
-        // 4. Finish save session with /done
-        await bot.handleUpdate(command("/done", chatId));
         assert.equal(
             await waitFor(() => api.calls.some((c) => /SAVE SESSION COMPLETE/.test(c.payload.text || "")), 5000),
             true,
@@ -251,14 +256,17 @@ test("/save mode falls back to Bot API download when userbot is offline", async 
         await bot.handleUpdate(command("/save", chatId));
         assert.equal(await waitFor(() => api.calls.some((c) => /SAVE MODE ACTIVE/.test(c.payload.text || ""))), true);
 
-        // Send forwarded file
+        // Send forwarded file (buffered in queue)
         await bot.handleUpdate(documentUpdate({ file_id: "doc_forward_1", file_name: docName, file_size: 25 }, true, 301, chatId));
+
+        // Ensure file is NOT processed before done signal
+        assert.equal(store.getStats(chatId)?.size || 0, 0);
+
+        // End session via callback query save:done (triggers processing)
+        await bot.handleUpdate(callbackUpdate("save:done", chatId));
 
         // Wait for it to be saved and cleaned
         assert.equal(await waitFor(() => (store.getStats(chatId)?.size || 0) === 1, 5000), true);
-
-        // End session via callback query save:done
-        await bot.handleUpdate(callbackUpdate("save:done", chatId));
         assert.equal(await waitFor(() => api.calls.some((c) => /SAVE SESSION COMPLETE/.test(c.payload.text || "")), 5000), true);
 
         const doneMsg = api.calls.find((c) => /SAVE SESSION COMPLETE/.test(c.payload.text || ""));
@@ -288,6 +296,57 @@ test("/save mode supports cancellation via /cancel or save:cancel", async () => 
             true,
         );
     } finally {
+        await api.close();
+    }
+});
+
+test("/save buffers forwarded files without starting work until /done is triggered", async () => {
+    const chatId = 885;
+    store.clear(chatId);
+
+    const processedOrder = [];
+    const fakePeer = {
+        isReady: () => true,
+        downloadMessageToDisk: async (cId, messageId, options) => {
+            processedOrder.push(messageId);
+            const outPath = path.join(options.root, options.fileName);
+            fs.writeFileSync(outPath, `user_${messageId}:secret_${messageId}\n`, "utf8");
+            return {
+                path: outPath,
+                name: options.fileName,
+                size: 40,
+            };
+        },
+    };
+
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot, fakePeer);
+
+        // Activate save mode
+        await bot.handleUpdate(command("/save", chatId));
+        assert.equal(await waitFor(() => api.calls.some((c) => /SAVE MODE ACTIVE/.test(c.payload.text || ""))), true);
+
+        // Forward 3 files
+        await bot.handleUpdate(documentUpdate({ file_name: "batch_1.txt", file_size: 50 }, true, 501, chatId));
+        await bot.handleUpdate(documentUpdate({ file_name: "batch_2.txt", file_size: 60 }, true, 502, chatId));
+        await bot.handleUpdate(documentUpdate({ file_name: "batch_3.txt", file_size: 70 }, true, 503, chatId));
+
+        // Ensure nothing started working yet!
+        assert.equal(processedOrder.length, 0);
+        assert.equal(store.getStats(chatId)?.size || 0, 0);
+
+        // Now user sends /done
+        await bot.handleUpdate(command("/done", chatId));
+
+        // Processing should complete all 3 in order
+        assert.equal(await waitFor(() => processedOrder.length === 3, 5000), true);
+        assert.deepEqual(processedOrder, [501, 502, 503]);
+        assert.equal(store.getStats(chatId)?.size || 0, 3);
+
+        assert.equal(await waitFor(() => api.calls.some((c) => /SAVE SESSION COMPLETE/.test(c.payload.text || "")), 5000), true);
+    } finally {
+        store.clear(chatId);
         await api.close();
     }
 });

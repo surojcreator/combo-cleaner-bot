@@ -27,9 +27,12 @@
 
 // A candidate token followed by a ':' or '|' separator. The lookbehind ensures
 // the token starts at a boundary (start of line or a non-token char) WITHOUT
-// consuming that boundary, so back-to-back candidates are all found.
+// A candidate token followed by a ':' or '|' separator. The lookbehind ensures
+// the token starts at a boundary (start of line or whitespace or separator) WITHOUT
+// consuming that boundary. We do NOT allow '/' in the lookbehind because URL paths
+// like /LogLogonHandler:user:pass must not treat path segments as candidate usernames.
 const CANDIDATE_RE =
-    /(?<=^|[\s/:|])([A-Za-z0-9._%+@+-]+)[ \t]*[:|][ \t]*/g;
+    /(?<=^|[\s:|])([A-Za-z0-9._%+@+-]+)[ \t]*[:|][ \t]*/g;
 
 // URL schemes we must never treat as a username login.
 const SCHEMES = new Set([
@@ -52,13 +55,15 @@ const SCHEMES = new Set([
     "javascript",
 ]);
 
-// Labels that represent metadata / form headers and are NEVER valid usernames.
+// Labels that represent metadata / form headers / handlers and are NEVER valid usernames.
 const PURE_FIELD_LABELS = new Set([
     "url", "uri", "link", "href", "host", "site", "website", "page", "target", "domain", "server", "address",
     "action", "form_action", "form", "submit", "submit_url", "post_url", "login_url", "auth_url",
     "soft", "software", "browser", "app", "application", "client",
     "hwid", "ip", "country", "time", "date", "token", "cookie", "cookies", "profile", "path", "port",
-    "id", "category", "data", "info", "note", "notes", "type", "stat", "status"
+    "id", "category", "data", "info", "note", "notes", "type", "stat", "status",
+    "loglogonhandler", "logonhandler", "loginhandler", "authhandler", "submithandler", "requesthandler",
+    "apihandler", "ajaxhandler", "formhandler", "handler", "handlers"
 ]);
 
 // Labels that indicate credential fields (user:, pass:) in key-value dumps.
@@ -252,16 +257,23 @@ function stripTrailingMetadata(password) {
         "",
     );
     p = p.replace(
-        /\s+(?:\[|\()(?:google\s+)?(?:chrome|firefox|edge|opera|brave|safari|chromium|yandex|vivaldi)[\w\s.-]*(?:\]|\)).*$/i,
+        /\s+(?:\[|\()(?:google\s+)?(?:chrome|firefox|edge|opera|brave|safari|chromium|yandex|vivaldi|windows)[\w\s.-]*(?:\]|\)).*$/i,
         "",
     );
+    p = p.replace(/\s+\[.*?\]/g, "");
+    p = p.replace(/\s+\(.*?\)/g, "");
+    p = p.replace(/\s+\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}:\d{2})?.*$/, "");
+    p = p.replace(/\s+[|;]+.*$/, "");
     p = p.replace(/[|;]+$/, "").trim();
+    if (p.includes(" ")) {
+        p = p.split(/\s+/)[0];
+    }
     return p;
 }
 
 /**
  * Decide whether a token is a usable plain-username login.
- * Rejects pure metadata field labels, scheme words, passwords, and URLs.
+ * Rejects pure metadata field labels, scheme words, handlers/endpoints, passwords, and URLs.
  *
  * @param {string} login
  * @param {string} password
@@ -282,9 +294,27 @@ function isUsername(login, password) {
     ) {
         return false;
     }
+    if (
+        lower.endsWith("handler") ||
+        lower.includes("handler") ||
+        lower.startsWith("loglogon") ||
+        lower.startsWith("logon") ||
+        lower.endsWith(".aspx") ||
+        lower.endsWith(".ashx") ||
+        lower.endsWith(".asmx") ||
+        lower.endsWith(".php") ||
+        lower.endsWith(".jsp") ||
+        lower.endsWith(".action") ||
+        lower.endsWith(".do") ||
+        lower.endsWith(".cgi") ||
+        lower.endsWith(".html") ||
+        lower.endsWith(".htm")
+    ) {
+        return false;
+    }
     if (isUrlOrDomain(login)) return false;
     // A scheme like "https" is followed by "//"; reject that shape.
-    if (password.startsWith("//")) return false;
+    if (password && password.startsWith("//")) return false;
     return true;
 }
 
@@ -344,7 +374,7 @@ function extractFromKeyValueLabels(line, options = {}) {
  */
 function stripLabelPrefixes(line) {
     const LEADING_LABEL_RE =
-        /^(?:action|form_action|form|submit|submit_url|post_url|login_url|url|uri|host|site|website|page|target|domain|user|username|login|account|acc|usr|user_name|user_login|email|mail|soft|software|browser|app|application|client)\s*[:=|]\s*/i;
+        /^(?:action|form_action|form|submit|submit_url|post_url|login_url|url|uri|host|site|website|page|target|domain|user|username|login|account|acc|usr|user_name|user_login|email|mail|soft|software|browser|app|application|client|[a-z0-9_.-]*handler|[a-z0-9_.-]*logon)\s*[:=|]\s*/i;
 
     let s = line;
     let lastStripped = null;
@@ -507,11 +537,23 @@ function cleanLine(rawLine, options = {}) {
 
     // Pass 2: fall back to a plain username login (only if no email/number was
     // found), skipping URL schemes, domain tokens, and pure field labels.
-    for (const { login, password } of candidates) {
+    // If a candidate's password contains another ':' and a later candidate is also
+    // a valid username/email (e.g. "prefix:user:pass"), prefer the actual credential pair.
+    let bestUsernameCandidate = null;
+    for (const cand of candidates) {
+        const { login, password } = cand;
         if (!password) continue;
         if (isUsername(login, password)) {
-            return keepUrl ? strippedLine : `${login}:${password}`;
+            if (password.includes(":")) {
+                if (!bestUsernameCandidate) bestUsernameCandidate = cand;
+                continue;
+            }
+            bestUsernameCandidate = cand;
+            break;
         }
+    }
+    if (bestUsernameCandidate) {
+        return keepUrl ? strippedLine : `${bestUsernameCandidate.login}:${bestUsernameCandidate.password}`;
     }
 
     // Pass 3: when keepUrl is enabled, also support shorter or non-standard

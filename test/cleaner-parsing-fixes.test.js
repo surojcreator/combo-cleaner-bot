@@ -104,3 +104,31 @@ test("cleaner fixes: cleanText parses multi-line stealer log blocks", () => {
     ]);
     assert.equal(res.stats.kept, 5);
 });
+
+test("cleaner fixes: strips LogLogonHandler, web handlers, and ensures user:pass without spaces", () => {
+    // 1. LogLogonHandler in URL path or scheme prefix
+    assert.equal(cleanLine("https://site.com/LogLogonHandler:admin:pass123"), "admin:pass123");
+    assert.equal(cleanLine("https://site.com/admin/LogLogonHandler.aspx:admin:pass123"), "admin:pass123");
+    assert.equal(cleanLine("http://corp.local/LogLogonHandler.ashx:admin:pass123"), "admin:pass123");
+    assert.equal(cleanLine("LogLogonHandler:admin:pass123"), "admin:pass123");
+    assert.equal(cleanLine("action:LogLogonHandler:admin:pass123"), "admin:pass123");
+    assert.equal(cleanLine("LogonHandler:admin:pass123"), "admin:pass123");
+    assert.equal(cleanLine("LoginHandler:admin:pass123"), "admin:pass123");
+
+    // 2. Trailing spaces, system tags, and dates are completely stripped so credentials are strictly user:pass without spaces
+    assert.equal(cleanLine("admin:pass123 extra stuff"), "admin:pass123");
+    assert.equal(cleanLine("admin:pass123 [Windows 10]"), "admin:pass123");
+    assert.equal(cleanLine("admin:pass123 (Chrome 120)"), "admin:pass123");
+    assert.equal(cleanLine("admin:pass123 2026-09-21"), "admin:pass123");
+    assert.equal(cleanLine("admin:pass123 2026-09-21 15:30:00"), "admin:pass123");
+    assert.equal(cleanLine("admin:pass123 | IP: 1.2.3.4"), "admin:pass123");
+    assert.equal(cleanLine("admin:pass123 ; status=active"), "admin:pass123");
+    assert.equal(cleanLine("admin : pass123"), "admin:pass123");
+
+    // 3. Combined LogLogonHandler + trailing spaces
+    assert.equal(
+        cleanLine("https://site.com/LogLogonHandler:admin:pass123 [Windows 11] 2026-09-21"),
+        "admin:pass123"
+    );
+});
+

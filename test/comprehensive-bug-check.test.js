@@ -85,7 +85,7 @@ test("cleaner: normalizes zero-width and non-breaking whitespace combinations", 
     assert.equal(normalized, "username:pass word");
 
     const cleaned = cleanLine(dirtyLine);
-    assert.equal(cleaned, "username:pass word");
+    assert.equal(cleaned, "username:pass");
 });
 
 test("cleaner: card dumps support both 4-field and 3-field mm/yy slash formats", () => {

@@ -1028,26 +1028,6 @@ function ulpMenuKeyboard(selectedDays = 5, customDomains = []) {
         }
     }
 
-    // Default target presets
-    rows.push(
-        [
-            Markup.button.callback("🎬 Netflix", "ulp:quick:netflix.com"),
-            Markup.button.callback("🎵 Spotify", "ulp:quick:spotify.com"),
-        ],
-        [
-            Markup.button.callback("📧 Gmail", "ulp:quick:gmail.com"),
-            Markup.button.callback("🎮 Steam", "ulp:quick:store.steampowered.com"),
-        ],
-        [
-            Markup.button.callback("🛍 Amazon", "ulp:quick:amazon.com"),
-            Markup.button.callback("🕹 Roblox", "ulp:quick:roblox.com"),
-        ],
-        [
-            Markup.button.callback("💳 PayPal", "ulp:quick:paypal.com"),
-            Markup.button.callback("🪙 Crypto", "ulp:quick:binance.com"),
-        ],
-    );
-
     // Custom domain action buttons:
     // 1. Enter a custom domain to search now
     rows.push([

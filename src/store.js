@@ -1,5 +1,11 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
+
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
+const CUSTOM_DOMAINS_FILE = process.env.CUSTOM_DOMAINS_FILE || path.join(DATA_DIR, "custom-domains.json");
+
 /**
  * In-memory, per-chat store of cleaned credentials.
  *
@@ -269,6 +275,52 @@ function getMemoryStats() {
     };
 }
 
+let persistedDomainsLoaded = false;
+function loadPersistedDomains() {
+    if (persistedDomainsLoaded) return;
+    persistedDomainsLoaded = true;
+    try {
+        if (fs.existsSync(CUSTOM_DOMAINS_FILE)) {
+            const raw = fs.readFileSync(CUSTOM_DOMAINS_FILE, "utf8");
+            const data = JSON.parse(raw);
+            if (data && typeof data === "object") {
+                for (const [chatIdStr, domains] of Object.entries(data)) {
+                    const cid = Number(chatIdStr);
+                    if (cid && Array.isArray(domains)) {
+                        const chat = getChat(cid);
+                        if (!chat.customDomains) chat.customDomains = new Set();
+                        for (const d of domains) {
+                            if (typeof d === "string" && d.trim()) {
+                                chat.customDomains.add(d.toLowerCase().trim());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } catch {
+        // ignore load errors
+    }
+}
+
+function persistCustomDomains() {
+    try {
+        const dir = path.dirname(CUSTOM_DOMAINS_FILE);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        const out = {};
+        for (const [chatId, chat] of chats.entries()) {
+            if (chat.customDomains && chat.customDomains.size > 0) {
+                out[chatId] = Array.from(chat.customDomains);
+            }
+        }
+        fs.writeFileSync(CUSTOM_DOMAINS_FILE, JSON.stringify(out, null, 2), "utf8");
+    } catch {
+        // ignore write errors
+    }
+}
+
 /**
  * Get saved custom ULP domains for a chat.
  * @param {number} chatId
@@ -276,6 +328,7 @@ function getMemoryStats() {
  */
 function getCustomDomains(chatId) {
     if (!chatId) return [];
+    loadPersistedDomains();
     const chat = getChat(chatId);
     return Array.from(chat.customDomains || []);
 }
@@ -288,6 +341,7 @@ function getCustomDomains(chatId) {
  */
 function addCustomDomain(chatId, domain) {
     if (!chatId || !domain) return false;
+    loadPersistedDomains();
     const clean = String(domain).toLowerCase().trim();
     if (!clean) return false;
     const chat = getChat(chatId);
@@ -295,6 +349,7 @@ function addCustomDomain(chatId, domain) {
     if (chat.customDomains.size >= 30) return false;
     chat.customDomains.add(clean);
     chat.updatedAt = Date.now();
+    persistCustomDomains();
     return true;
 }
 
@@ -306,11 +361,13 @@ function addCustomDomain(chatId, domain) {
  */
 function removeCustomDomain(chatId, domain) {
     if (!chatId || !domain) return false;
+    loadPersistedDomains();
     const clean = String(domain).toLowerCase().trim();
     const chat = getChat(chatId);
     if (!chat.customDomains) return false;
     const deleted = chat.customDomains.delete(clean);
     chat.updatedAt = Date.now();
+    persistCustomDomains();
     return deleted;
 }
 
@@ -321,10 +378,12 @@ function removeCustomDomain(chatId, domain) {
  */
 function clearCustomDomains(chatId) {
     if (!chatId) return false;
+    loadPersistedDomains();
     const chat = getChat(chatId);
     if (chat.customDomains) {
         chat.customDomains.clear();
         chat.updatedAt = Date.now();
+        persistCustomDomains();
     }
     return true;
 }

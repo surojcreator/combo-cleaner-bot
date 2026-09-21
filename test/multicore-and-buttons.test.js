@@ -135,8 +135,10 @@ test("renderHelp and keyboards display animated emojis and button dashboard", ()
 
     const ulpMenu = ulpMenuKeyboard();
     const ulpBtns = ulpMenu.reply_markup.inline_keyboard.flat().map((b) => b.text);
-    assert.ok(ulpBtns.some((t) => t.includes("Netflix")));
-    assert.ok(ulpBtns.some((t) => t.includes("Spotify")));
+    assert.ok(!ulpBtns.some((t) => t.includes("Netflix")), "expected no default Netflix button");
+    assert.ok(!ulpBtns.some((t) => t.includes("Spotify")), "expected no default Spotify button");
+    assert.ok(ulpBtns.some((t) => t.includes("Enter Custom Domain")), "expected enter custom domain button");
+    assert.ok(ulpBtns.some((t) => t.includes("Add Domain")), "expected add domain button");
 
     const saveGuide = renderSaveGuide();
     assert.match(saveGuide, /FAST SERVER SAVE GUIDE/);
@@ -442,6 +444,13 @@ test("bot handles ULP custom domains and days editing workflow", async () => {
         await bot.handleUpdate(callbackUpdate("ulp:custom:cancel"));
         const cancelEdit = api.calls.find((c) => c.method === "editMessageText" && c.payload.text && c.payload.text.includes("SELECT ULP SEARCH TARGET"));
         assert.ok(cancelEdit, "expected cancellation to return to ULP menu");
+
+        // 6. Enter custom domain on the fly and verify it is automatically saved
+        await bot.handleUpdate(callbackUpdate("ulp:custom:prompt"));
+        await bot.handleUpdate(messageUpdate("autosaved-target.com"));
+        assert.ok(store.getCustomDomains(testChatId).includes("autosaved-target.com"), "expected domain entered to search to be automatically saved to custom domains");
+        const menuWithAutoSaved = ulpMenuKeyboard(5, store.getCustomDomains(testChatId));
+        assert.ok(menuWithAutoSaved.reply_markup.inline_keyboard.flat().some((b) => b.text.includes("autosaved-target.com")));
     } finally {
         store.clearCustomDomains(testChatId);
         await api.close();

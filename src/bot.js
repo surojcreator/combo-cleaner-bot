@@ -1349,6 +1349,9 @@ function createBot(token, meta = {}) {
 
     bot.action(/^ulp:quick:(.+)$/, async (ctx) => {
         const query = ctx.match[1];
+        if (store && store.addCustomDomain) {
+            store.addCustomDomain(ctx.chat.id, query);
+        }
         const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         await ctx.answerCbQuery(`🚀 Launching ${query} (${activeDays}d)…`).catch(() => { });
         await beginUlpRun(ctx, {
@@ -2832,6 +2835,9 @@ function createBot(token, meta = {}) {
             );
             return;
         }
+        if (parsed.query && store && store.addCustomDomain) {
+            store.addCustomDomain(ctx.chat.id, parsed.query);
+        }
         await beginUlpRun(ctx, {
             query: parsed.query,
             scope: parsed.scope,
@@ -3291,8 +3297,11 @@ function createBot(token, meta = {}) {
                     return;
                 }
                 userPromptState.delete(ctx.chat.id);
+                if (store && store.addCustomDomain) {
+                    store.addCustomDomain(ctx.chat.id, query);
+                }
                 const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
-                await safeReply(ctx, `🚀 ${B("Starting search for")} ${CODE(escapeHtml(query))} (${activeDays} days)…`);
+                await safeReply(ctx, `🚀 ${B("Starting search for")} ${CODE(escapeHtml(query))} (${activeDays} days)…\n💾 ${I("Saved to your custom target domains.")}`);
                 await beginUlpRun(ctx, {
                     query,
                     scope: "day",

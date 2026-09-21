@@ -509,10 +509,11 @@ function mergeZipFiles(items, options = {}) {
 
     for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        const buffer = item.buffer;
+        if (!item) continue;
+        const buffer = Buffer.isBuffer(item) ? item : item.buffer;
         if (!buffer || !Buffer.isBuffer(buffer)) continue;
 
-        const rawName = item.name || `archive_${i + 1}.zip`;
+        const rawName = (item && item.name) || `archive_${i + 1}.zip`;
         const baseName = rawName.replace(/\.zip$/i, "").replace(/[^a-zA-Z0-9._-]/g, "_") || `part_${i + 1}`;
         const isZip = isZipBuffer(buffer) || looksLikeZip(rawName);
 
@@ -564,7 +565,9 @@ function mergeZipFiles(items, options = {}) {
 
                 for (const entry of collected) {
                     if (entry.isDir) {
-                        const normDir = normalizeZipPath(entry.path) + "/";
+                        const norm = normalizeZipPath(entry.path);
+                        if (!norm) continue;
+                        const normDir = norm + "/";
                         if (!uniqueFolders.has(normDir)) {
                             uniqueFolders.add(normDir);
                             try {

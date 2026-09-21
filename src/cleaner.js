@@ -704,6 +704,16 @@ function cleanLinesArray(rawLines, options = {}) {
                 }
 
                 if (recordUser && recordPass) {
+                    if (keepUrl && !recordUrl && j + 1 < Math.min(i + 8, len)) {
+                        const nextLine = normalizeLine(rawLines[j + 1]);
+                        const nextUrlMatch = nextLine.match(
+                            /^(?:url|uri|host|site|website|link|page|action|form_action)\s*[:=]\s*(.+)$/i,
+                        );
+                        if (nextUrlMatch) {
+                            recordUrl = nextUrlMatch[1].trim();
+                            j++;
+                        }
+                    }
                     foundRecord = true;
                     blockConsumed = j - i + 1;
                     break;

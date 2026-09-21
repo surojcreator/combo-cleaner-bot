@@ -196,6 +196,63 @@ test("regression: handleDownloadRequest handles missing or non-string entry.file
     // Test with invalid token (404)
     assert.doesNotThrow(() => downloads.handleDownloadRequest(req, res));
     assert.equal(statusCode, 404);
+
+    // Test with valid token whose file was deleted from disk and no buffer
+    const reg = downloads.registerDownload({
+        filename: "missing.txt",
+        filePath: "c:/nonexistent_file_path_12345.txt",
+        size: 500,
+    });
+    const reqMissing = { method: "GET", url: `/download/${reg.token}` };
+    downloads.handleDownloadRequest(reqMissing, res);
+    assert.equal(statusCode, 404);
+});
+
+test("regression: mergeZipFiles handles Buffer items, avoids root '/' directory, and produces valid output", () => {
+    const AdmZip = require("adm-zip");
+    const zip1 = new AdmZip();
+    zip1.addFile("test1.txt", Buffer.from("test1 content"));
+    const buf1 = zip1.toBuffer();
+
+    const zip2 = new AdmZip();
+    zip2.addFile("test2.txt", Buffer.from("test2 content"));
+    const buf2 = zip2.toBuffer();
+
+    // Passing array of raw Buffers
+    const resRaw = extractor.mergeZipFiles([buf1, buf2]);
+    assert.ok(Buffer.isBuffer(resRaw.buffer));
+    assert.equal(resRaw.entryCount, 2);
+
+    // Passing array of { name, buffer }
+    const resObj = extractor.mergeZipFiles([
+        { name: "archive1.zip", buffer: buf1 },
+        { name: "archive2.zip", buffer: buf2 },
+    ]);
+    assert.ok(Buffer.isBuffer(resObj.buffer));
+    assert.equal(resObj.entryCount, 2);
+
+    // Verify parsed merged entries have no "/" root directory
+    const parsed = new AdmZip(resObj.buffer);
+    const entryNames = parsed.getEntries().map((e) => e.entryName);
+    assert.ok(!entryNames.includes("/"), "Archive must not contain an invalid '/' entry");
+    assert.ok(entryNames.includes("test1.txt"));
+    assert.ok(entryNames.includes("test2.txt"));
+});
+
+test("regression: cleaner multi-line stealer record captures trailing URL when keepUrl is true", () => {
+    const stealerBlock = [
+        "Username: testuser",
+        "Password: testpassword123",
+        "URL: https://accounts.google.com/signin",
+    ];
+
+    const cleanedWithUrl = cleaner.cleanLinesArray(stealerBlock, { keepUrl: true });
+    assert.equal(cleanedWithUrl.lines.length, 1);
+    assert.equal(cleanedWithUrl.lines[0], "https://accounts.google.com/signin:testuser:testpassword123");
+
+    const cleanedWithoutUrl = cleaner.cleanLinesArray(stealerBlock, { keepUrl: false });
+    assert.equal(cleanedWithoutUrl.lines.length, 1);
+    assert.equal(cleanedWithoutUrl.lines[0], "testuser:testpassword123");
 });
 
 

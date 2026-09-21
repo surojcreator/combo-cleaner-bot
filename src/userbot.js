@@ -1251,9 +1251,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                 if (!m.out && !seenResultIds.has(m.id)) {
                                     if (m.media || m.document || (m.text && m.text.includes(query))) {
                                         seenResultIds.add(m.id);
-                                        if (resultSink) await resultSink(m);
-                                        if (options.onResult) await options.onResult(m);
-                                        if (chatId && typeof forwardResult === "function") {
+                                        if (options.onResult) {
+                                            await options.onResult(m);
+                                        } else if (resultSink) {
+                                            await resultSink(m);
+                                        }
+                                        if (!resultSink && chatId && typeof forwardResult === "function") {
                                             await forwardResult(chatId, m, { botUsername: options.botUsername || botUsername || cfg.botUsername }).catch(() => {});
                                         }
                                     }
@@ -1366,13 +1369,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                         if (m.media || m.document || m.file) {
                                             foundDoc = true;
                                         }
-                                        if (resultSink) {
-                                            await resultSink(m);
-                                        }
                                         if (options.onResult) {
                                             await options.onResult(m);
+                                        } else if (resultSink) {
+                                            await resultSink(m);
                                         }
-                                        if (chatId && typeof forwardResult === "function") {
+                                        if (!resultSink && chatId && typeof forwardResult === "function") {
                                             await forwardResult(chatId, m, {
                                                 botUsername: options.botUsername || botUsername || cfg.botUsername,
                                             }).catch((err) => {

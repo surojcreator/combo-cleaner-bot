@@ -59,9 +59,9 @@ if (parentPort) {
                 let lineStartPos = start;
                 if (start > 0) {
                     // Check byte immediately preceding start
-                    const prevBuf = Buffer.allocUnsafe(1);
-                    fs.readSync(fd, prevBuf, 0, 1, start - 1);
-                    if (prevBuf[0] !== 0x0a) {
+                    const prevBuf = Buffer.alloc(1);
+                    const bytesRead = fs.readSync(fd, prevBuf, 0, 1, start - 1);
+                    if (bytesRead === 1 && prevBuf[0] !== 0x0a) {
                         // start is in the middle of a line, seek to next \n
                         let cur = start;
                         let found = false;
@@ -69,8 +69,8 @@ if (parentPort) {
                         while (!found) {
                             const n = fs.readSync(fd, searchBuf, 0, 8192, cur);
                             if (n === 0) break;
-                            const idx = searchBuf.indexOf(0x0a);
-                            if (idx !== -1 && idx < n) {
+                            const idx = searchBuf.subarray(0, n).indexOf(0x0a);
+                            if (idx !== -1) {
                                 lineStartPos = cur + idx + 1;
                                 found = true;
                             } else {

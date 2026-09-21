@@ -260,6 +260,36 @@ function handleDownloadRequest(req, res) {
         return;
     }
 
+    // Verify file or buffer is actually accessible
+    const fileExists = Boolean(entry.filePath && fs.existsSync(entry.filePath));
+    const hasBuffer = Boolean(entry.buffer && Buffer.isBuffer(entry.buffer));
+
+    if (!fileExists && !hasBuffer) {
+        res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Download Not Found - Combo Cleaner Bot</title>
+  <style>
+    body { background-color: #0b0f19; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 40px; max-width: 500px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+    h1 { color: #f85149; margin-top: 0; font-size: 22px; }
+    p { color: #8b949e; line-height: 1.6; }
+    .code { font-family: monospace; background: #0d1117; padding: 4px 8px; border-radius: 6px; color: #58a6ff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>⚠️ Download Link Expired or Not Found</h1>
+    <p>This combined log file link is either invalid, already expired, or was removed from disk.</p>
+    <p>Please forward your log files again or run <span class="code">/combine</span> in Telegram to generate a fresh direct download link.</p>
+  </div>
+</body>
+</html>\n`);
+        return;
+    }
+
     // Prepare safe Content-Disposition filename
     const filename = (typeof entry.filename === "string" && entry.filename.trim())
         ? entry.filename.trim()

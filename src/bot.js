@@ -580,15 +580,17 @@ function createBot(token, meta = {}) {
         }
 
         const allZip = normalized.every((f) => f.name.toLowerCase().endsWith(".zip"));
-
         if (allZip && options.forceText !== true) {
-            const zipBuffers = normalized.map((f) => fs.readFileSync(f.path));
-            const mergedBuffer = mergeZipFiles(zipBuffers);
+            const zipItems = normalized.map((f) => ({
+                name: f.name,
+                buffer: fs.readFileSync(f.path),
+            }));
+            const mergeResult = mergeZipFiles(zipItems);
 
             const stamp = new Date().toISOString().replace(/[:.]/g, "-");
             const outName = `merged_vault_${chatId}_${stamp}.zip`;
             const outPath = path.join(root, outName);
-            fs.writeFileSync(outPath, mergedBuffer);
+            fs.writeFileSync(outPath, mergeResult.buffer);
             const stat = fs.statSync(outPath);
 
             return {
@@ -696,7 +698,9 @@ function createBot(token, meta = {}) {
             fs.renameSync(partialPath, outPath);
         } catch (err) {
             outStream.destroy();
-            fs.rmSync(partialPath, { force: true });
+            try {
+                fs.rmSync(partialPath, { force: true });
+            } catch (_) {}
             throw err;
         }
         const stat = fs.statSync(outPath);
@@ -1246,6 +1250,35 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, `⚠️ Output file #${idx + 1} not found on server disk.`, mainKeyboard());
             return;
         }
+
+        const dl = downloads.registerDownload({
+            filename: file.name,
+            filePath: file.path,
+            size: file.size,
+            chatId: ctx.chat && ctx.chat.id,
+        });
+
+        if (file.size > 48 * 1024 * 1024) {
+            await safeReply(
+                ctx,
+                [
+                    `📦  ${B("OUTPUT FILE EXCEEDS TELEGRAM UPLOAD CAP")}`,
+                    RULE,
+                    `📄  ${B(escapeHtml(file.name))} (${humanSize(file.size)}) exceeds Telegram's 50 MB Bot API limit.`,
+                    "",
+                    `🔗  ${B("Direct Download Link:")}`,
+                    `${dl.url}`,
+                    "",
+                    `${I("Tap the button below to download directly in your browser:")}`,
+                ].join("\n"),
+                createInlineKeyboard([
+                    [Markup.button.url("📥 Direct Download Link", dl.url)],
+                    [Markup.button.callback("🔙 Server Vault", "server_files")],
+                ]),
+            );
+            return;
+        }
+
         try {
             await ctx.replyWithChatAction("upload_document").catch(() => { });
             await safeSendDocument(
@@ -1257,13 +1290,25 @@ function createBot(token, meta = {}) {
                         `💎  ${B("CLEANED OUTPUT FILE")}`,
                         `📄  ${escapeHtml(file.name)} · ${CODE(humanSize(file.size))}`,
                         `📅  Created: ${CODE(formatFileDate(file.mtime))}`,
+                        `🔗  Direct link: ${dl.url}`,
                     ].join("\n"),
                     parse_mode: "HTML",
                     ...serverFilesKeyboard(scanDirFiles(localProcessRoot()), processedFiles),
                 },
             );
         } catch (err) {
-            await safeReply(ctx, `💥 Download failed: ${escapeHtml(err.message)}`, mainKeyboard());
+            await safeReply(
+                ctx,
+                [
+                    `⚠️ Telegram upload failed: ${escapeHtml(err.message)}`,
+                    "",
+                    `🔗  ${B("Direct Download Link:")} ${dl.url}`,
+                ].join("\n"),
+                createInlineKeyboard([
+                    [Markup.button.url("📥 Download Directly", dl.url)],
+                    [Markup.button.callback("🔙 Server Vault", "server_files")],
+                ]),
+            );
         }
     });
 

@@ -11,6 +11,8 @@ const downloads = require("../src/downloads");
 const store = require("../src/store");
 const messages = require("../src/messages");
 const botModule = require("../src/bot");
+const AdmZip = require("adm-zip");
+const { mergeZipFiles } = require("../src/extractor");
 const { getSharedPool } = require("../src/worker-pool");
 const { createBot, isForwardedDocument, sendCombined, localProcessedRoot } = botModule;
 
@@ -508,6 +510,206 @@ describe("Forwarded Logs Combiner & Direct Download Links Pipeline", () => {
 
             const buttons = doc.extra.reply_markup.inline_keyboard.flat();
             assert.ok(buttons.some((b) => b.text.includes("Direct Download Link") && b.url.includes("/download/")));
+        });
+    });
+
+    describe("Subsystem 5: In-Memory Zip Merging & Direct Download Link (Zero Disk Downloads)", () => {
+        test("mergeZipFiles merges entries from multiple archives into one zip and namespaces duplicates", () => {
+            const z1 = new AdmZip();
+            z1.addFile("server.log", Buffer.from("log data 1"));
+            z1.addFile("common.conf", Buffer.from("conf 1"));
+            const b1 = z1.toBuffer();
+
+            const z2 = new AdmZip();
+            z2.addFile("database.log", Buffer.from("log data 2"));
+            z2.addFile("common.conf", Buffer.from("conf 2"));
+            const b2 = z2.toBuffer();
+
+            const res = mergeZipFiles([
+                { name: "srv1.zip", buffer: b1 },
+                { name: "srv2.zip", buffer: b2 },
+            ]);
+
+            assert.ok(res.buffer && Buffer.isBuffer(res.buffer));
+            assert.equal(res.entryCount, 4, "Should have 4 total files");
+
+            const check = new AdmZip(res.buffer);
+            const entryNames = check.getEntries().map((e) => e.entryName);
+            assert.ok(entryNames.includes("server.log"));
+            assert.ok(entryNames.includes("common.conf"));
+            assert.ok(entryNames.includes("database.log"));
+            assert.ok(entryNames.includes("srv2/common.conf"), "Duplicate entry should be namespaced");
+
+            assert.equal(check.getEntry("common.conf").getData().toString(), "conf 1");
+            assert.equal(check.getEntry("srv2/common.conf").getData().toString(), "conf 2");
+        });
+
+        test("Forwarding 2 .zip files merges them into ONE master .zip and returns direct download link", async () => {
+            const chatId = 700201;
+
+            const zipA = new AdmZip();
+            zipA.addFile("auth.log", Buffer.from("Apr 10 auth success"));
+            const bufA = zipA.toBuffer();
+
+            const zipB = new AdmZip();
+            zipB.addFile("daemon.log", Buffer.from("Apr 10 daemon started"));
+            const bufB = zipB.toBuffer();
+
+            const fileStorage = new Map([
+                ["zip_id_1", bufA],
+                ["zip_id_2", bufB],
+            ]);
+
+            const botCalls = [];
+            const botApiServer = http.createServer((req, res) => {
+                if (req.url.includes("/file/bot")) {
+                    const fileId = req.url.split("/").pop();
+                    if (fileStorage.has(fileId)) {
+                        res.writeHead(200, { "Content-Type": "application/zip" });
+                        res.end(fileStorage.get(fileId));
+                        return;
+                    }
+                    res.writeHead(404);
+                    res.end();
+                    return;
+                }
+
+                let body = "";
+                req.on("data", (chunk) => { body += chunk; });
+                req.on("end", () => {
+                    const method = req.url.split("/").pop();
+                    let payload = {};
+                    try { payload = JSON.parse(body); } catch (_) {}
+                    botCalls.push({ method, p: payload });
+
+                    if (method === "getFile") {
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({
+                            ok: true,
+                            result: { file_id: payload.file_id, file_path: payload.file_id },
+                        }));
+                        return;
+                    }
+
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, result: { message_id: 6666 } }));
+                });
+            });
+
+            await new Promise((resolve) => botApiServer.listen(0, resolve));
+            const apiPort = botApiServer.address().port;
+
+            try {
+                const bot = createBot("123:MOCK_TOKEN", {
+                    forwardDebounceMs: 50,
+                    telegram: { telegram: { apiRoot: `http://127.0.0.1:${apiPort}` } },
+                });
+
+                // Forward Zip 1
+                await bot.handleUpdate({
+                    update_id: 30,
+                    message: {
+                        message_id: 301,
+                        chat: { id: chatId, type: "private" },
+                        from: { id: chatId, is_bot: false },
+                        document: { file_id: "zip_id_1", file_name: "cluster_nodeA.zip", file_size: bufA.length },
+                        forward_date: 1700000030,
+                    },
+                });
+
+                // Forward Zip 2 (within 50ms debounce)
+                await bot.handleUpdate({
+                    update_id: 31,
+                    message: {
+                        message_id: 302,
+                        chat: { id: chatId, type: "private" },
+                        from: { id: chatId, is_bot: false },
+                        document: { file_id: "zip_id_2", file_name: "cluster_nodeB.zip", file_size: bufB.length },
+                        forward_date: 1700000031,
+                    },
+                });
+
+                // Wait for bot to combine and edit message
+                let finalEdit = null;
+                for (let i = 0; i < 40; i++) {
+                    finalEdit = botCalls.find(
+                        (c) => c.method === "editMessageText" && c.p.text && c.p.text.includes("MERGED ZIP PIPELINE")
+                    );
+                    if (finalEdit) break;
+                    await new Promise((r) => setTimeout(r, 50));
+                }
+
+                assert.ok(finalEdit, "Must reply with MERGED ZIP PIPELINE report");
+                const text = finalEdit.p.text;
+                assert.ok(text.includes("cluster_nodeA.zip"));
+                assert.ok(text.includes("cluster_nodeB.zip"));
+                assert.ok(text.includes(".zip"), "Filename must end in .zip");
+
+                // Check button
+                const buttons = finalEdit.p.reply_markup.inline_keyboard.flat();
+                const zipDlBtn = buttons.find((b) => b.text.includes("Direct Download") && b.url);
+                assert.ok(zipDlBtn, "Must provide direct download link button for merged zip");
+                assert.ok(zipDlBtn.url.startsWith("http://127.0.0.1:9099/download/"));
+
+                // Download the merged zip using handleDownloadRequest
+                const token = zipDlBtn.url.split("/").pop();
+                const entry = downloads.getDownload(token);
+                assert.ok(entry, "Entry must exist in download registry");
+                assert.equal(entry.mimeType, "application/zip");
+
+                // Validate downloaded zip content directly from buffer
+                const downloadedZip = new AdmZip(entry.buffer);
+                const downloadedFiles = downloadedZip.getEntries().map((e) => e.entryName);
+                assert.ok(downloadedFiles.includes("auth.log"), "Merged zip must contain auth.log");
+                assert.ok(downloadedFiles.includes("daemon.log"), "Merged zip must contain daemon.log");
+                assert.equal(downloadedZip.getEntry("auth.log").getData().toString(), "Apr 10 auth success");
+                assert.equal(downloadedZip.getEntry("daemon.log").getData().toString(), "Apr 10 daemon started");
+            } finally {
+                botApiServer.close();
+            }
+        });
+
+        test("/mergezip command shows usage instructions when called without arguments", async () => {
+            const chatId = 700202;
+            const botCalls = [];
+            const botApiServer = http.createServer((req, res) => {
+                let body = "";
+                req.on("data", (chunk) => { body += chunk; });
+                req.on("end", () => {
+                    const method = req.url.split("/").pop();
+                    let payload = {};
+                    try { payload = JSON.parse(body); } catch (_) {}
+                    botCalls.push({ method, p: payload });
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, result: { message_id: 402 } }));
+                });
+            });
+            await new Promise((resolve) => botApiServer.listen(0, resolve));
+            const apiPort = botApiServer.address().port;
+
+            try {
+                const bot = createBot("123:MOCK_TOKEN", {
+                    botUsername: "testbot",
+                    telegram: { telegram: { apiRoot: `http://127.0.0.1:${apiPort}` } },
+                });
+
+                await bot.handleUpdate({
+                    update_id: 40,
+                    message: {
+                        message_id: 401,
+                        chat: { id: chatId, type: "private" },
+                        from: { id: chatId, is_bot: false },
+                        text: "/mergezip",
+                        entities: [{ type: "bot_command", offset: 0, length: 9 }],
+                    },
+                });
+
+                const reply = botCalls.find((c) => c.method === "sendMessage");
+                assert.ok(reply && reply.p.text.includes("ZIP MERGER PIPELINE"));
+                assert.ok(reply.p.text.includes("/mergezip &lt;url1&gt; &lt;url2&gt;") || reply.p.text.includes("/mergezip"));
+            } finally {
+                botApiServer.close();
+            }
         });
     });
 

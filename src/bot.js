@@ -5,7 +5,7 @@ const path = require("path");
 const readline = require("node:readline");
 const { once } = require("node:events");
 const { Telegraf, Markup } = require("telegraf");
-const { extractAndCleanZip, extractAndCleanText, isZipBuffer } = require("./extractor");
+const { extractAndCleanZip, extractAndCleanText, mergeZipFiles, isZipBuffer } = require("./extractor");
 const { sanitizeSiteSlug, detectSite } = require("./sites");
 const { cleanLine } = require("./cleaner");
 const { getSharedPool } = require("./worker-pool");
@@ -52,6 +52,8 @@ const {
     afterCombineKeyboard,
     forwardedLogsKeyboard,
     renderForwardedLogsCombined,
+    forwardedZipKeyboard,
+    renderForwardedZipCombined,
     emptyBatchKeyboard,
     ulpKeyboard,
     ulpResultKeyboard,
@@ -346,28 +348,134 @@ function createBot(token, meta = {}) {
         }
 
         if (lastCombined) {
+            const isZip = Boolean(lastCombined.isZip || (lastCombined.filename || "").toLowerCase().endsWith(".zip"));
             const dl = downloads.registerDownload({
-                filename: lastCombined.filename || "combolist_combined.txt",
+                filename: lastCombined.filename || (isZip ? "merged_logs.zip" : "combolist_combined.txt"),
                 buffer: lastCombined.buffer,
                 size: (lastCombined.buffer && lastCombined.buffer.length) || 0,
+                mimeType: isZip ? "application/zip" : "text/plain; charset=utf-8",
                 chatId,
-                stats: { total: lastCombined.linesCount, kept: lastCombined.linesCount },
+                stats: { total: lastCombined.linesCount, kept: lastCombined.linesCount, isZip },
             });
 
+            const countLabel = isZip ? "Archived Files:" : "Lines:";
             await safeReply(
                 ctx,
                 [
-                    `⚡  ${B("DIRECT DOWNLOAD LINK (LAST COMBINED)")}  ⚡️`,
+                    `⚡  ${B(isZip ? "DIRECT DOWNLOAD LINK (MERGED ZIP)" : "DIRECT DOWNLOAD LINK (LAST COMBINED)")}  ⚡️`,
                     RULE,
-                    `  • 📑 ${B("Lines:")}         ${num(lastCombined.linesCount || 0)}`,
+                    `  • 📑 ${B(countLabel)}         ${num(lastCombined.linesCount || 0)}`,
                     `  • 💾 ${B("Filename:")}      ${CODE(escapeHtml(lastCombined.filename || ""))}`,
+                    `  • 📦 ${B("File Size:")}     ${humanSize((lastCombined.buffer && lastCombined.buffer.length) || 0)}`,
                     RULE,
                     `🔗 ${B("Download URL:")}`,
                     `${dl.url}`,
                 ].join("\n"),
-                forwardedLogsKeyboard(dl.url, dl.token)
+                isZip ? forwardedZipKeyboard(dl.url, dl.token) : forwardedLogsKeyboard(dl.url, dl.token)
             );
         }
+    });
+
+    bot.command(["mergezip", "zipmerge"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const chatId = ctx.chat.id;
+        const text = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const urls = text.split(/\s+/).filter((u) => /^https?:\/\//i.test(u));
+
+        // 1. If URLs provided in command: fetch in-memory, merge, and output direct link
+        if (urls.length > 0) {
+            const statusMsg = await safeReply(
+                ctx,
+                `⏳  ${B("Fetching and merging remote zip files")} (${num(urls.length)} URLs) without saving to disk…`
+            );
+            const fetched = [];
+            for (let i = 0; i < urls.length; i++) {
+                try {
+                    const u = urls[i];
+                    const res = await fetch(u);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const buf = Buffer.from(await res.arrayBuffer());
+                    let name = path.basename(new URL(u).pathname) || `remote_${i + 1}.zip`;
+                    if (!name.toLowerCase().endsWith(".zip")) name += ".zip";
+                    fetched.push({ name, buffer: buf });
+                } catch (err) {
+                    console.error("Failed to fetch remote zip for /mergezip:", err);
+                }
+            }
+
+            if (fetched.length === 0) {
+                if (statusMsg) await safeEdit(ctx, statusMsg.message_id, "⚠️ Failed to fetch any valid zip files from provided URLs.");
+                return;
+            }
+
+            const mergeRes = mergeZipFiles(fetched);
+            const stamp = new Date().toISOString().slice(0, 10);
+            const filename = `merged_remote_${stamp}.zip`;
+            const outputPath = path.join(localProcessedRoot(), filename);
+
+            try {
+                fs.mkdirSync(localProcessedRoot(), { recursive: true });
+                fs.writeFileSync(outputPath, mergeRes.buffer);
+            } catch (_) {}
+
+            const dl = downloads.registerDownload({
+                filename,
+                filePath: outputPath,
+                buffer: mergeRes.buffer,
+                size: mergeRes.compressedSize,
+                mimeType: "application/zip",
+                chatId,
+                stats: { sourceFiles: mergeRes.sourceFiles, entryCount: mergeRes.entryCount, isZip: true },
+            });
+
+            store.setLastCombined(chatId, {
+                buffer: mergeRes.buffer,
+                filename,
+                linesCount: mergeRes.entryCount,
+                isZip: true,
+            });
+
+            const report = renderForwardedZipCombined({
+                files: mergeRes.sourceFiles,
+                entryCount: mergeRes.entryCount,
+                totalSize: mergeRes.totalSize,
+                compressedSize: mergeRes.compressedSize,
+                downloadUrl: dl.url,
+                filename,
+            });
+
+            if (statusMsg) {
+                await safeEdit(ctx, statusMsg.message_id, report, forwardedZipKeyboard(dl.url, dl.token));
+            } else {
+                await safeReply(ctx, report, forwardedZipKeyboard(dl.url, dl.token));
+            }
+            return;
+        }
+
+        // 2. If replied to a document
+        const replyMsg = ctx.message.reply_to_message;
+        if (replyMsg && replyMsg.document) {
+            await handleForwardedDocument(ctx, replyMsg.document);
+            return;
+        }
+
+        // 3. Otherwise show usage instructions
+        await safeReply(
+            ctx,
+            [
+                `📦  ${B("ZIP MERGER PIPELINE")}`,
+                RULE,
+                `Merge multiple .zip files into ONE master .zip file without downloading them to your device!`,
+                "",
+                `💡 ${B("How to use:")}`,
+                `  1. ${B("Forward")} 2 or more .zip files to this chat.`,
+                `  2. Or run: ${CODE("/mergezip <url1> <url2>")}`,
+                `  3. Or reply to a .zip document with ${CODE("/mergezip")}`,
+                "",
+                `The bot combines all files into a single unified .zip archive and gives you one direct download link.`,
+            ].join("\n"),
+            mainKeyboard()
+        );
     });
 
     bot.command("search", async (ctx) => {
@@ -1732,8 +1840,12 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, "⚠️ Could not locate file on server.");
             return;
         }
+        const isZip = Boolean((dl.filename || "").toLowerCase().endsWith(".zip") || (dl.stats && dl.stats.isZip));
+        const countDesc = isZip
+            ? `${compact((dl.stats && dl.stats.entryCount) || 0)} files merged`
+            : `${compact((dl.stats && dl.stats.kept) || dl.size || 0)} unique lines`;
         await safeSendDocument(ctx, ctx.chat.id, payload, {
-            caption: `📄 <b>${escapeHtml(dl.filename)}</b>\n🔑 ${compact((dl.stats && dl.stats.kept) || dl.size || 0)} unique lines`,
+            caption: `📦 <b>${escapeHtml(dl.filename)}</b>\n${isZip ? "📁" : "🔑"} ${countDesc}`,
             parse_mode: "HTML",
         });
     });
@@ -2117,40 +2229,99 @@ function createBot(token, meta = {}) {
             ).catch(() => {});
         }
 
-        const fileSummaries = [];
-        const combinedLinesSet = new Set();
-        let totalLinesSeen = 0;
-        let detectedSite = null;
-
+        // Fetch all forwarded files into in-memory buffers (no intermediate disk writes)
+        const fetchedItems = [];
         for (const item of items) {
             try {
                 const link = await ctx.telegram.getFileLink(item.doc.file_id);
                 const res = await fetch(link.href);
                 if (!res.ok) throw new Error(`Download HTTP ${res.status}`);
                 const buffer = Buffer.from(await res.arrayBuffer());
+                const isZip = (item.name && item.name.toLowerCase().endsWith(".zip")) || isZipBuffer(buffer);
+                fetchedItems.push({
+                    name: item.name,
+                    buffer,
+                    isZip,
+                    doc: item.doc,
+                });
+            } catch (itemErr) {
+                console.error(`Failed to ingest forwarded item ${item.name}:`, itemErr);
+            }
+        }
 
-                const isZip = item.name.toLowerCase().endsWith(".zip") || isZipBuffer(buffer);
-                let extractedLines = [];
-                let siteFound = null;
+        // If batch contains zip files, merge them into ONE master .zip file directly!
+        const hasZip = fetchedItems.some((it) => it.isZip);
+        if (hasZip) {
+            const mergeResult = mergeZipFiles(fetchedItems);
+            const stamp = new Date().toISOString().slice(0, 10);
+            const baseSite = (fetchedItems.length > 0 ? sanitizeSiteSlug(fetchedItems[0].name.replace(/\.[^.]+$/, "")) : null) || "logs";
+            const filename = `${baseSite}_combined_${stamp}.zip`;
+            const outputPath = path.join(localProcessedRoot(), filename);
 
-                if (isZip) {
-                    const cleanRes = extractAndCleanZip(buffer, { sourceName: item.name, keepUrl: true });
-                    extractedLines = cleanRes.lines;
-                    siteFound = cleanRes.site;
-                    totalLinesSeen += cleanRes.stats.total;
-                } else {
-                    const rawText = buffer.toString("utf8");
-                    const rawLines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-                    const cleanRes = extractAndCleanText(rawText, { sourceName: item.name, keepUrl: true });
-                    totalLinesSeen += cleanRes.stats.total;
-                    siteFound = cleanRes.site;
+            try {
+                fs.mkdirSync(localProcessedRoot(), { recursive: true });
+                fs.writeFileSync(outputPath, mergeResult.buffer);
+            } catch (writeErr) {
+                console.error("Failed to write merged zip to disk:", writeErr);
+            }
 
-                    if (cleanRes.lines.length > 0) {
-                        extractedLines = cleanRes.lines;
-                    } else {
-                        extractedLines = rawLines;
-                    }
-                }
+            store.setLastCombined(chatId, {
+                buffer: mergeResult.buffer,
+                filename,
+                linesCount: mergeResult.entryCount,
+                site: baseSite,
+                isZip: true,
+            });
+
+            const dl = downloads.registerDownload({
+                filename,
+                filePath: outputPath,
+                buffer: mergeResult.buffer,
+                size: mergeResult.compressedSize,
+                mimeType: "application/zip",
+                chatId,
+                stats: {
+                    sourceFiles: mergeResult.sourceFiles,
+                    entryCount: mergeResult.entryCount,
+                    totalSize: mergeResult.totalSize,
+                    isZip: true,
+                },
+            });
+
+            const reportText = renderForwardedZipCombined({
+                files: mergeResult.sourceFiles,
+                entryCount: mergeResult.entryCount,
+                totalSize: mergeResult.totalSize,
+                compressedSize: mergeResult.compressedSize,
+                downloadUrl: dl.url,
+                filename,
+            });
+
+            const kb = forwardedZipKeyboard(dl.url, dl.token);
+
+            if (noticeId) {
+                await safeEdit(ctx, noticeId, reportText, kb);
+            } else {
+                await safeReply(ctx, reportText, kb);
+            }
+            return;
+        }
+
+        // Otherwise (plain text / combolists), clean and merge text lines
+        const fileSummaries = [];
+        const combinedLinesSet = new Set();
+        let totalLinesSeen = 0;
+        let detectedSite = null;
+
+        for (const item of fetchedItems) {
+            try {
+                const buffer = item.buffer;
+                const rawText = buffer.toString("utf8");
+                const rawLines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+                const cleanRes = extractAndCleanText(rawText, { sourceName: item.name, keepUrl: true });
+                totalLinesSeen += cleanRes.stats.total;
+                const siteFound = cleanRes.site;
+                let extractedLines = cleanRes.lines.length > 0 ? cleanRes.lines : rawLines;
 
                 if (siteFound && !detectedSite) {
                     detectedSite = siteFound;
@@ -2162,17 +2333,11 @@ function createBot(token, meta = {}) {
 
                 fileSummaries.push({
                     name: item.name,
-                    size: (item.doc && item.doc.file_size) || 0,
+                    size: (item.doc && item.doc.file_size) || buffer.length,
                     lines: extractedLines.length,
                 });
-            } catch (itemErr) {
-                console.error(`Failed to ingest forwarded item ${item.name}:`, itemErr);
-                fileSummaries.push({
-                    name: item.name,
-                    size: (item.doc && item.doc.file_size) || 0,
-                    lines: 0,
-                    error: true,
-                });
+            } catch (err) {
+                console.error(`Failed to clean text item ${item.name}:`, err);
             }
         }
 

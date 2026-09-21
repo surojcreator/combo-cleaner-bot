@@ -210,10 +210,106 @@ function extractAndCleanText(text, options = {}) {
     };
 }
 
+/**
+ * Merges multiple zip and log buffers into one master zip buffer purely in memory
+ * without writing any temporary files to disk.
+ *
+ * @param {Array<{ name: string, buffer: Buffer }>} items
+ * @param {object} [options]
+ * @returns {{
+ *   buffer: Buffer,
+ *   entryCount: number,
+ *   totalSize: number,
+ *   compressedSize: number,
+ *   entries: Array<{ name: string, size: number }>,
+ *   sourceFiles: Array<{ name: string, size: number, entriesCount: number }>
+ * }}
+ */
+function mergeZipFiles(items, options = {}) {
+    const mergedZip = new AdmZip();
+    const seenNames = new Set();
+    const entriesList = [];
+    const sourceFiles = [];
+    let totalUncompressedSize = 0;
+
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const buffer = item.buffer;
+        if (!buffer || !Buffer.isBuffer(buffer)) continue;
+
+        const rawName = item.name || `archive_${i + 1}.zip`;
+        const baseName = rawName.replace(/\.zip$/i, "").replace(/[^a-zA-Z0-9._-]/g, "_") || `part_${i + 1}`;
+        const isZip = isZipBuffer(buffer) || looksLikeZip(rawName);
+
+        let addedEntriesFromThis = 0;
+
+        if (isZip) {
+            try {
+                const zip = new AdmZip(buffer);
+                const entries = zip.getEntries();
+                for (const entry of entries) {
+                    if (entry.isDirectory) continue;
+                    let entryName = entry.entryName;
+                    // Skip OS junk
+                    if (entryName.startsWith("__MACOSX/") || entryName.endsWith(".DS_Store")) continue;
+
+                    // If duplicate entry name across zips, namespace under the source archive name
+                    if (seenNames.has(entryName)) {
+                        entryName = `${baseName}/${entryName}`;
+                    }
+                    seenNames.add(entryName);
+
+                    const data = entry.getData();
+                    mergedZip.addFile(entryName, data, entry.comment || "");
+                    totalUncompressedSize += data.length;
+                    entriesList.push({ name: entryName, size: data.length });
+                    addedEntriesFromThis++;
+                }
+            } catch (err) {
+                console.error(`Failed to parse zip entry for ${rawName}:`, err);
+                let entryName = rawName;
+                if (seenNames.has(entryName)) entryName = `${baseName}/${rawName}`;
+                seenNames.add(entryName);
+                mergedZip.addFile(entryName, buffer);
+                totalUncompressedSize += buffer.length;
+                entriesList.push({ name: entryName, size: buffer.length });
+                addedEntriesFromThis++;
+            }
+        } else {
+            // Raw text, log, or binary file
+            let entryName = rawName;
+            if (seenNames.has(entryName)) entryName = `${baseName}/${rawName}`;
+            seenNames.add(entryName);
+            mergedZip.addFile(entryName, buffer);
+            totalUncompressedSize += buffer.length;
+            entriesList.push({ name: entryName, size: buffer.length });
+            addedEntriesFromThis++;
+        }
+
+        sourceFiles.push({
+            name: rawName,
+            size: buffer.length,
+            entriesCount: addedEntriesFromThis,
+        });
+    }
+
+    const outputBuffer = mergedZip.toBuffer();
+
+    return {
+        buffer: outputBuffer,
+        entryCount: entriesList.length,
+        totalSize: totalUncompressedSize,
+        compressedSize: outputBuffer.length,
+        entries: entriesList,
+        sourceFiles,
+    };
+}
+
 module.exports = {
     extractAndCleanZip,
     extractAndCleanText,
+    mergeZipFiles,
     isZipBuffer,
     looksLikeText,
     looksLikeZip,
-};
+};

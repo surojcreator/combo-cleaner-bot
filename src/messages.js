@@ -582,6 +582,32 @@ function forwardedLogsKeyboard(downloadUrl = "", token = null) {
 }
 
 /**
+ * Keyboard shown under forwarded zip files combined status report.
+ * @param {string} [downloadUrl]
+ * @param {string} [token]
+ */
+function forwardedZipKeyboard(downloadUrl = "", token = null) {
+    const rows = [];
+    if (downloadUrl && typeof downloadUrl === "string" && downloadUrl.startsWith("http")) {
+        rows.push([Markup.button.url("📥 Direct Download Merged ZIP", downloadUrl)]);
+    }
+    const row2 = [];
+    if (token) {
+        row2.push(Markup.button.callback("📦 Send in Telegram", `send_telegram:${token}`));
+    }
+    row2.push(Markup.button.callback("📊 Stats", "stats"));
+    rows.push(row2);
+    rows.push([
+        Markup.button.callback("📂 Server Vault", "server_files"),
+        Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+    ]);
+    rows.push([
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+    return createInlineKeyboard(rows);
+}
+
+/**
  * Keyboard shown under the server files vault.
  * Supports file cleaning, downloading, searching, individual deletion, and bulk wipe.
  * @param {Array} [rawFiles]
@@ -1228,6 +1254,48 @@ function renderForwardedLogsCombined({ files = [], stats = {}, downloadUrl = "",
         lines.push(
             "",
             `${tgEmoji("📦")}  ${B("Chat Batch Total:")} ${B(compact(chatStats.size))} unique lines across ${num(chatStats.files)} file(s)`,
+        );
+    }
+
+    return lines.join("\n");
+}
+
+/**
+ * Render report for forwarded zip files merged into a single master zip file with direct download link.
+ * @param {object} params
+ */
+function renderForwardedZipCombined({ files = [], entryCount = 0, totalSize = 0, compressedSize = 0, downloadUrl = "", filename = "" }) {
+    const fileCount = Array.isArray(files) ? files.length : 1;
+    const lines = [
+        `${tgEmoji("⚡")}  ${B("MERGED ZIP PIPELINE (DIRECT LINK)")}  ${tgEmoji("⚡️")}`,
+        RULE,
+        `${tgEmoji("📁")}  ${B(`Merged Source Archives (${num(fileCount)} forwarded files):`)}`,
+    ];
+
+    if (Array.isArray(files)) {
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            const sizeStr = f.size ? ` · ${humanSize(f.size)}` : "";
+            const entriesStr = f.entriesCount !== undefined ? ` (${num(f.entriesCount)} files${sizeStr})` : (sizeStr ? ` (${sizeStr.slice(3)})` : "");
+            lines.push(`  ${i + 1}. ${tgEmoji("📦")} ${B(escapeHtml(f.name || "archive.zip"))}${entriesStr}`);
+        }
+    }
+
+    lines.push(
+        RULE,
+        `${tgEmoji("📊")}  ${B("Combined Master Archive:")}`,
+        `  • ${tgEmoji("📑")} ${B("Total Merged Files:")}    ${B(num(entryCount))} files`,
+        `  • ${tgEmoji("💾")} ${B("Unified Zip Name:")}     ${CODE(escapeHtml(filename))}`,
+        `  • ${tgEmoji("📦")} ${B("Combined Zip Size:")}    ${B(humanSize(compressedSize || totalSize))}`,
+    );
+
+    if (downloadUrl) {
+        lines.push(
+            RULE,
+            `${tgEmoji("🔗")}  ${B("Direct Download Link:")}`,
+            `${downloadUrl}`,
+            "",
+            `${tgEmoji("💡")}  ${I("Zero download required on your end! Tap the direct link below to download the single combined zip:")}`,
         );
     }
 
@@ -2038,6 +2106,8 @@ module.exports = {
     afterCombineKeyboard,
     forwardedLogsKeyboard,
     renderForwardedLogsCombined,
+    forwardedZipKeyboard,
+    renderForwardedZipCombined,
     emptyBatchKeyboard,
     ulpKeyboard,
     ulpResultKeyboard,

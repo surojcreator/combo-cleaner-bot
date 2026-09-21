@@ -629,16 +629,16 @@ function mainKeyboard() {
             Markup.button.callback("📦 Get Combined File", "combine"),
         ],
         [
+            Markup.button.callback("📥 Save Large Files", "save:start"),
             Markup.button.callback("📂 Server Vault (Tabs)", "server_files"),
+        ],
+        [
             Markup.button.callback("📊 Batch Analytics", "stats"),
-        ],
-        [
             Markup.button.callback("🌐 Manage Domains", "sites"),
-            Markup.button.callback("⚙️ Storage & Wipes", "files:tab:tools"),
         ],
         [
+            Markup.button.callback("⚙️ Storage & Wipes", "files:tab:tools"),
             Markup.button.callback("❓ Fast /save Guide", "help:save"),
-            Markup.button.callback("🏓 Ping Health Check", "ping"),
         ],
         [
             Markup.button.callback("🔎 Search Batch", "batch:search:prompt"),
@@ -895,6 +895,9 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         ]);
     } else if (tab === "tools") {
         rows.push([
+            Markup.button.callback("📥 Save Large Files (/save)", "save:start"),
+        ]);
+        rows.push([
             Markup.button.callback(`🧹 Wipe All Raw (${rawCount})`, "files:wipe:raw:ask"),
             Markup.button.callback(`🧹 Wipe All Outputs (${procCount})`, "files:wipe:proc:ask"),
         ]);
@@ -1139,7 +1142,10 @@ function renderUlpMenuText(botUsername, activeDays, customCount = 0) {
 function saveGuideKeyboard() {
     return createInlineKeyboard([
         [
+            Markup.button.callback("📥 Start Save Mode Now", "save:start"),
             Markup.button.callback("📂 Open Server Vault", "server_files"),
+        ],
+        [
             Markup.button.callback("🔙 Main Menu", "help"),
         ],
     ]);
@@ -1320,7 +1326,7 @@ function mergeCompleteKeyboard(outName = "") {
  */
 function emptyBatchKeyboard() {
     return createInlineKeyboard([
-        [Markup.button.callback("🚀 Run ULP Search", "ulp:menu")],
+        [Markup.button.callback("🚀 Run ULP Search", "ulp:menu"), Markup.button.callback("📥 Save Large Files", "save:start")],
         [Markup.button.callback("📂 Server Vault", "server_files"), Markup.button.callback("📊 Stats", "stats")],
         [Markup.button.callback("❓ Help Manual", "help")],
     ]);

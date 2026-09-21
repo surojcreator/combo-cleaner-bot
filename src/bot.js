@@ -202,6 +202,20 @@ function createBot(token, meta = {}) {
         ...(meta.telegram || {}),
     });
 
+    // Adapter for Telegram channels: Telegram delivers channel posts under channel_post,
+    // which Telegraf by default ignores for bot.command() and bot.on("document").
+    // Normalize channel_post to update.message so all commands, documents, and forwarded
+    // files work seamlessly in channels as well as groups and private chats.
+    bot.use((ctx, next) => {
+        if (!ctx.update.message && ctx.update.channel_post) {
+            ctx.update.message = ctx.update.channel_post;
+        }
+        if (!ctx.update.edited_message && ctx.update.edited_channel_post) {
+            ctx.update.edited_message = ctx.update.edited_channel_post;
+        }
+        return next();
+    });
+
     // ULP search relay configuration (see src/searchbot.js).
     const searchOptions = (meta && meta.search) || searchbot.loadOptions();
     /** chatId -> timestamp of the last relay start */
@@ -784,7 +798,7 @@ function createBot(token, meta = {}) {
         await showServerFiles(ctx);
     });
 
-    bot.command(["mergefiles", "selectmerge"], async (ctx) => {
+    bot.command("selectmerge", async (ctx) => {
         await showVaultSelect(ctx);
     });
 
@@ -1737,12 +1751,12 @@ function createBot(token, meta = {}) {
     });
 
     // ---- /save: reply to a Telegram document in a shared group.
-    // ---- /save: interactive save mode OR reply to a Telegram document in a shared group.
+    // ---- /save & aliases (/largefiles, /ragefiles, /mergefiles, /storagefiles)
     //
     // If invoked as a reply to a document, downloads that file directly to server disk and cleans it.
     // If invoked without a reply, activates interactive Save Mode: listens for forwarded or uploaded
     // files, queueing and processing each one by one into the batch.
-    bot.command("save", async (ctx) => {
+    bot.command(["save", "largefiles", "ragefiles", "storagefiles", "mergefiles", "filesave", "savelarge"], async (ctx) => {
         let replied = ctx.message && ctx.message.reply_to_message;
         let sourceMessageId = replied && replied.message_id;
         let originalName = userbot.resolveSafeFileName(
@@ -1861,16 +1875,17 @@ function createBot(token, meta = {}) {
      * Files are buffered into the queue and only processed when /done is received.
      */
     async function queueSaveDocument(ctx, prompt) {
-        const doc = ctx.message && ctx.message.document;
+        const msg = (ctx && (ctx.message || ctx.channelPost)) || {};
+        const doc = msg.document;
         if (!doc) return;
 
-        const messageId = ctx.message.message_id;
+        const messageId = msg.message_id || Date.now();
         const originalName = userbot.resolveSafeFileName(
             doc,
             `dump_${messageId}`,
         );
 
-        const sourceInfo = userbot.extractForwardOrigin(ctx.message) || userbot.parseChannelFilename(originalName);
+        const sourceInfo = userbot.extractForwardOrigin(msg) || userbot.parseChannelFilename(originalName);
 
         prompt.queue = prompt.queue || [];
         prompt.processed = prompt.processed || [];
@@ -2914,10 +2929,12 @@ function createBot(token, meta = {}) {
 
     async function handleForwardedDocument(ctx, doc) {
         const chatId = ctx.chat.id;
+        const msg = (ctx && (ctx.message || ctx.channelPost)) || {};
         const name = userbot.resolveSafeFileName(
             doc,
             `forwarded_${(doc && (doc.file_unique_id || doc.file_id)) || Date.now()}`,
         );
+        const sourceInfo = userbot.extractForwardOrigin(msg) || userbot.parseChannelFilename(name);
 
         let batch = forwardBatches.get(chatId);
         if (!batch) {
@@ -2930,7 +2947,7 @@ function createBot(token, meta = {}) {
             forwardBatches.set(chatId, batch);
         }
 
-        batch.items.push({ doc, ctx, name, messageId: ctx.message.message_id });
+        batch.items.push({ doc, ctx, name, messageId: msg.message_id || 0, sourceInfo });
         batch.latestCtx = ctx;
 
         if (batch.timer) {
@@ -2994,17 +3011,47 @@ function createBot(token, meta = {}) {
         const fetchedItems = [];
         for (const item of items) {
             try {
-                const link = await ctx.telegram.getFileLink(item.doc.file_id);
-                const res = await fetch(link.href);
-                if (!res.ok) throw new Error(`Download HTTP ${res.status}`);
-                const buffer = Buffer.from(await res.arrayBuffer());
-                const isZip = (item.name && item.name.toLowerCase().endsWith(".zip")) || isZipBuffer(buffer);
-                fetchedItems.push({
-                    name: item.name,
-                    buffer,
-                    isZip,
-                    doc: item.doc,
-                });
+                let buffer = null;
+                if (item.doc && item.doc.file_size && item.doc.file_size <= MAX_DOWNLOAD_BYTES) {
+                    try {
+                        const link = await ctx.telegram.getFileLink(item.doc.file_id);
+                        const res = await fetch(link.href);
+                        if (res.ok) buffer = Buffer.from(await res.arrayBuffer());
+                    } catch (botApiErr) {
+                        console.error(`Bot API getFileLink failed for ${item.name}:`, botApiErr && botApiErr.message ? botApiErr.message : botApiErr);
+                    }
+                }
+
+                // If not downloaded via Bot API (e.g. > 20 MB or channel dump), download via MTProto userbot!
+                if (!buffer) {
+                    const peer = meta.userbot;
+                    if (peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.downloadMessageToDisk === "function") {
+                        const source = item.sourceInfo || userbot.extractForwardOrigin(item.ctx && (item.ctx.message || item.ctx.channelPost)) || userbot.parseChannelFilename(item.name);
+                        const targetChat = (source && source.peer) ? source.peer : chatId;
+                        const targetMsgId = (source && source.messageId) ? source.messageId : item.messageId;
+                        try {
+                            const dlRes = await peer.downloadMessageToDisk(targetChat, targetMsgId, {
+                                targetName: item.name,
+                                root: localProcessRoot(),
+                            });
+                            if (dlRes && dlRes.path && fs.existsSync(dlRes.path)) {
+                                buffer = fs.readFileSync(dlRes.path);
+                            }
+                        } catch (ubErr) {
+                            console.error(`Userbot fallback failed for ${item.name}:`, ubErr && ubErr.message ? ubErr.message : ubErr);
+                        }
+                    }
+                }
+
+                if (buffer) {
+                    const isZip = (item.name && item.name.toLowerCase().endsWith(".zip")) || isZipBuffer(buffer);
+                    fetchedItems.push({
+                        name: item.name,
+                        buffer,
+                        isZip,
+                        doc: item.doc,
+                    });
+                }
             } catch (itemErr) {
                 console.error(`Failed to ingest forwarded item ${item.name}:`, itemErr);
             }
@@ -3172,7 +3219,10 @@ function createBot(token, meta = {}) {
     bot.processForwardedBatch = processForwardedBatch;
     bot.forwardBatches = forwardBatches;
 
-    bot.on("document", async (ctx) => {
+    bot.on(["document", "channel_post"], async (ctx) => {
+        const msg = (ctx && (ctx.message || ctx.channelPost)) || {};
+        const doc = msg.document;
+        if (!doc) return;
         try {
             const prompt = userPromptState.get(ctx.chat.id);
             if (prompt && prompt.action === "save:listening") {
@@ -3180,10 +3230,10 @@ function createBot(token, meta = {}) {
                 return;
             }
             if (isForwardedDocument(ctx)) {
-                await handleForwardedDocument(ctx, ctx.message.document);
+                await handleForwardedDocument(ctx, doc);
                 return;
             }
-            await ingestDocument(ctx, ctx.message.document);
+            await ingestDocument(ctx, doc);
         } catch (err) {
             console.error("document handler error:", err);
             await safeReply(
@@ -4268,7 +4318,7 @@ function pickTransport(meta, searchOptions, ctx) {
  * @returns {boolean}
  */
 function isForwardedDocument(ctx) {
-    const msg = ctx && ctx.message;
+    const msg = (ctx && (ctx.message || ctx.channelPost)) || null;
     if (!msg || !msg.document) return false;
     return Boolean(
         msg.forward_date ||

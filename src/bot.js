@@ -12,6 +12,7 @@ const { getSharedPool } = require("./worker-pool");
 const searchbot = require("./searchbot");
 const store = require("./store");
 const userbot = require("./userbot");
+const downloads = require("./downloads");
 const {
     renderStats,
     renderSites,
@@ -49,6 +50,8 @@ const {
     mainKeyboard,
     confirmClearKeyboard,
     afterCombineKeyboard,
+    forwardedLogsKeyboard,
+    renderForwardedLogsCombined,
     emptyBatchKeyboard,
     ulpKeyboard,
     ulpResultKeyboard,
@@ -199,6 +202,9 @@ function createBot(token, meta = {}) {
     const userPromptState = new Map();
     /** chatId -> absolute path currently being processed */
     const localJobs = new Map();
+    /** chatId -> { items: Array<{ doc: any, ctx: any, name: string, messageId: number }>, timer: any, noticeId: number|null, latestCtx: any } */
+    const forwardBatches = new Map();
+    const forwardDebounceMs = Number(process.env.FORWARD_DEBOUNCE_MS || (meta && meta.forwardDebounceMs) || 1800);
 
     // Pre-warm multi-core worker pool for instantaneous zero-latency searches
     try {
@@ -276,6 +282,92 @@ function createBot(token, meta = {}) {
     bot.command("preview", async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         await sendPreview(ctx);
+    });
+
+    bot.command(["link", "directlink"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const chatId = ctx.chat.id;
+        const lines = store.getLines(chatId);
+        const lastCombined = store.getLastCombined(chatId);
+
+        if (lines.length === 0 && !lastCombined) {
+            await safeReply(
+                ctx,
+                [
+                    `📭  ${B("No log files or batch stored yet.")}`,
+                    `Forward 2 or more log files to get a combined download link, or upload files to start a batch!`,
+                ].join("\n"),
+                emptyBatchKeyboard()
+            );
+            return;
+        }
+
+        if (lines.length > 0) {
+            const base = store.getSites(chatId)[0] || "combolist";
+            const stamp = new Date().toISOString().slice(0, 10);
+            const filename = `${sanitizeSiteSlug(base) || "combolist"}_combined_${stamp}.txt`;
+            const outputPath = path.join(localProcessedRoot(), filename);
+            const content = buildOutput(lines);
+            const buffer = Buffer.from(content, "utf8");
+
+            try {
+                fs.mkdirSync(localProcessedRoot(), { recursive: true });
+                fs.writeFileSync(outputPath, buffer);
+            } catch (err) {
+                console.error("Failed to write /link combined file:", err);
+            }
+
+            const dl = downloads.registerDownload({
+                filename,
+                filePath: outputPath,
+                buffer,
+                size: buffer.length,
+                chatId,
+                stats: { total: lines.length, kept: lines.length },
+            });
+
+            await safeReply(
+                ctx,
+                [
+                    `⚡  ${B("DIRECT DOWNLOAD LINK READY")}  ⚡️`,
+                    RULE,
+                    `  • 📑 ${B("Batch Lines:")}   ${num(lines.length)} unique`,
+                    `  • 💾 ${B("Filename:")}      ${CODE(escapeHtml(filename))}`,
+                    `  • 📦 ${B("File Size:")}     ${humanSize(buffer.length)}`,
+                    RULE,
+                    `🔗 ${B("Download URL:")}`,
+                    `${dl.url}`,
+                    "",
+                    `💡 ${I("Direct high-speed HTTP link. Tap the button below to download:")}`,
+                ].join("\n"),
+                forwardedLogsKeyboard(dl.url, dl.token)
+            );
+            return;
+        }
+
+        if (lastCombined) {
+            const dl = downloads.registerDownload({
+                filename: lastCombined.filename || "combolist_combined.txt",
+                buffer: lastCombined.buffer,
+                size: (lastCombined.buffer && lastCombined.buffer.length) || 0,
+                chatId,
+                stats: { total: lastCombined.linesCount, kept: lastCombined.linesCount },
+            });
+
+            await safeReply(
+                ctx,
+                [
+                    `⚡  ${B("DIRECT DOWNLOAD LINK (LAST COMBINED)")}  ⚡️`,
+                    RULE,
+                    `  • 📑 ${B("Lines:")}         ${num(lastCombined.linesCount || 0)}`,
+                    `  • 💾 ${B("Filename:")}      ${CODE(escapeHtml(lastCombined.filename || ""))}`,
+                    RULE,
+                    `🔗 ${B("Download URL:")}`,
+                    `${dl.url}`,
+                ].join("\n"),
+                forwardedLogsKeyboard(dl.url, dl.token)
+            );
+        }
     });
 
     bot.command("search", async (ctx) => {
@@ -1622,6 +1714,30 @@ function createBot(token, meta = {}) {
         await sendCombined(ctx);
     });
 
+    // Inline button: Send Telegram Document for a direct download token
+    bot.action(/^send_telegram:(.+)$/, async (ctx) => {
+        const token = ctx.match[1];
+        const dl = downloads.getDownload(token);
+        if (!dl) {
+            await ctx.answerCbQuery("⚠️ Download link expired or file not found.", { show_alert: true }).catch(() => { });
+            return;
+        }
+        await ctx.answerCbQuery("📦 Sending file to chat…").catch(() => { });
+        let payload;
+        if (dl.filePath && fs.existsSync(dl.filePath)) {
+            payload = { source: dl.filePath, filename: dl.filename };
+        } else if (dl.buffer) {
+            payload = { source: dl.buffer, filename: dl.filename };
+        } else {
+            await safeReply(ctx, "⚠️ Could not locate file on server.");
+            return;
+        }
+        await safeSendDocument(ctx, ctx.chat.id, payload, {
+            caption: `📄 <b>${escapeHtml(dl.filename)}</b>\n🔑 ${compact((dl.stats && dl.stats.kept) || dl.size || 0)} unique lines`,
+            parse_mode: "HTML",
+        });
+    });
+
     // Inline button: Stats
     bot.action("stats", async (ctx) => {
         await ctx.answerCbQuery("\uD83D\uDCCA Loading stats\u2026").catch(() => { });
@@ -1923,8 +2039,215 @@ function createBot(token, meta = {}) {
         return next();
     });
 
+    async function handleForwardedDocument(ctx, doc) {
+        const chatId = ctx.chat.id;
+        const name = userbot.resolveSafeFileName(
+            doc,
+            `forwarded_${(doc && (doc.file_unique_id || doc.file_id)) || Date.now()}`,
+        );
+
+        let batch = forwardBatches.get(chatId);
+        if (!batch) {
+            batch = {
+                items: [],
+                timer: null,
+                noticeId: null,
+                latestCtx: ctx,
+            };
+            forwardBatches.set(chatId, batch);
+        }
+
+        batch.items.push({ doc, ctx, name, messageId: ctx.message.message_id });
+        batch.latestCtx = ctx;
+
+        if (batch.timer) {
+            clearTimeout(batch.timer);
+        }
+
+        const count = batch.items.length;
+        if (!batch.noticeId) {
+            try {
+                const notice = await safeReply(
+                    ctx,
+                    [
+                        `📥  ${B("Receiving forwarded log files")} (${num(count)} file${count === 1 ? "" : "s"} received)…`,
+                        `     ⏳  Gathering forwarded batch to merge and generate direct download link…`,
+                    ].join("\n")
+                );
+                batch.noticeId = notice ? notice.message_id : null;
+            } catch (err) {
+                console.error("Failed to send forward batch notice:", err);
+            }
+        } else {
+            void safeEdit(
+                ctx,
+                batch.noticeId,
+                [
+                    `📥  ${B("Receiving forwarded log files")} (${num(count)} files received)…`,
+                    `     ⏳  Merging incoming files into a single unified combolist…`,
+                ].join("\n")
+            ).catch(() => {});
+        }
+
+        batch.timer = setTimeout(async () => {
+            await processForwardedBatch(chatId);
+        }, forwardDebounceMs);
+    }
+
+    async function processForwardedBatch(chatId) {
+        const batch = forwardBatches.get(chatId);
+        if (!batch || batch.items.length === 0) {
+            forwardBatches.delete(chatId);
+            return;
+        }
+        forwardBatches.delete(chatId);
+
+        const ctx = batch.latestCtx;
+        const noticeId = batch.noticeId;
+        const items = batch.items;
+
+        if (noticeId) {
+            await safeEdit(
+                ctx,
+                noticeId,
+                [
+                    `⚡  ${B("Processing Forwarded Log Batch")} (${num(items.length)} file${items.length === 1 ? "" : "s"})…`,
+                    `     🧵  Downloading and combining all lines…`,
+                ].join("\n")
+            ).catch(() => {});
+        }
+
+        const fileSummaries = [];
+        const combinedLinesSet = new Set();
+        let totalLinesSeen = 0;
+        let detectedSite = null;
+
+        for (const item of items) {
+            try {
+                const link = await ctx.telegram.getFileLink(item.doc.file_id);
+                const res = await fetch(link.href);
+                if (!res.ok) throw new Error(`Download HTTP ${res.status}`);
+                const buffer = Buffer.from(await res.arrayBuffer());
+
+                const isZip = item.name.toLowerCase().endsWith(".zip") || isZipBuffer(buffer);
+                let extractedLines = [];
+                let siteFound = null;
+
+                if (isZip) {
+                    const cleanRes = extractAndCleanZip(buffer, { sourceName: item.name, keepUrl: true });
+                    extractedLines = cleanRes.lines;
+                    siteFound = cleanRes.site;
+                    totalLinesSeen += cleanRes.stats.total;
+                } else {
+                    const rawText = buffer.toString("utf8");
+                    const rawLines = rawText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+                    const cleanRes = extractAndCleanText(rawText, { sourceName: item.name, keepUrl: true });
+                    totalLinesSeen += cleanRes.stats.total;
+                    siteFound = cleanRes.site;
+
+                    if (cleanRes.lines.length > 0) {
+                        extractedLines = cleanRes.lines;
+                    } else {
+                        extractedLines = rawLines;
+                    }
+                }
+
+                if (siteFound && !detectedSite) {
+                    detectedSite = siteFound;
+                }
+
+                for (const line of extractedLines) {
+                    combinedLinesSet.add(line);
+                }
+
+                fileSummaries.push({
+                    name: item.name,
+                    size: (item.doc && item.doc.file_size) || 0,
+                    lines: extractedLines.length,
+                });
+            } catch (itemErr) {
+                console.error(`Failed to ingest forwarded item ${item.name}:`, itemErr);
+                fileSummaries.push({
+                    name: item.name,
+                    size: (item.doc && item.doc.file_size) || 0,
+                    lines: 0,
+                    error: true,
+                });
+            }
+        }
+
+        const finalLines = Array.from(combinedLinesSet);
+        const baseSite = detectedSite || (fileSummaries.length > 0 ? sanitizeSiteSlug(fileSummaries[0].name.replace(/\.[^.]+$/, "")) : null) || "logs";
+        const stamp = new Date().toISOString().slice(0, 10);
+        const filename = `${baseSite}_combined_${stamp}.txt`;
+        const outputPath = path.join(localProcessedRoot(), filename);
+
+        let combinedBuffer;
+        try {
+            fs.mkdirSync(localProcessedRoot(), { recursive: true });
+            const outputContent = buildOutput(finalLines);
+            combinedBuffer = Buffer.from(outputContent, "utf8");
+            fs.writeFileSync(outputPath, combinedBuffer);
+        } catch (writeErr) {
+            console.error("Failed to write forwarded combined log to disk:", writeErr);
+            if (!combinedBuffer) combinedBuffer = Buffer.from(buildOutput(finalLines), "utf8");
+        }
+
+        // Add to store so batch analytics & commands stay in sync
+        store.addLines(chatId, finalLines, baseSite);
+        store.setLastCombined(chatId, {
+            buffer: combinedBuffer,
+            filename,
+            linesCount: finalLines.length,
+            site: baseSite,
+        });
+
+        // Register in downloads manager for direct HTTP download link
+        const dl = downloads.registerDownload({
+            filename,
+            filePath: outputPath,
+            buffer: combinedBuffer,
+            size: combinedBuffer.length,
+            chatId,
+            stats: {
+                total: totalLinesSeen,
+                kept: finalLines.length,
+                duplicates: Math.max(0, totalLinesSeen - finalLines.length),
+                files: fileSummaries,
+            },
+        });
+
+        const reportText = renderForwardedLogsCombined({
+            files: fileSummaries,
+            stats: {
+                total: totalLinesSeen,
+                kept: finalLines.length,
+                duplicates: Math.max(0, totalLinesSeen - finalLines.length),
+            },
+            downloadUrl: dl.url,
+            filename,
+            site: baseSite,
+            chatStats: store.getStats(chatId),
+        });
+
+        const kb = forwardedLogsKeyboard(dl.url, dl.token);
+
+        if (noticeId) {
+            await safeEdit(ctx, noticeId, reportText, kb);
+        } else {
+            await safeReply(ctx, reportText, kb);
+        }
+    }
+
+    bot.processForwardedBatch = processForwardedBatch;
+    bot.forwardBatches = forwardBatches;
+
     bot.on("document", async (ctx) => {
         try {
+            if (isForwardedDocument(ctx)) {
+                await handleForwardedDocument(ctx, ctx.message.document);
+                return;
+            }
             await ingestDocument(ctx, ctx.message.document);
         } catch (err) {
             console.error("document handler error:", err);
@@ -2464,6 +2787,13 @@ async function sendCombined(ctx, force = false) {
         if (cached && cached.buffer) {
             try {
                 const cachedFilename = userbot.resolveSafeFileName(cached.filename, "combolist_combined");
+                const dl = downloads.registerDownload({
+                    filename: cachedFilename,
+                    buffer: cached.buffer,
+                    size: cached.buffer.length,
+                    chatId,
+                    stats: { total: cached.linesCount, kept: cached.linesCount },
+                });
                 await safeSendDocument(
                     ctx,
                     chatId,
@@ -2472,11 +2802,12 @@ async function sendCombined(ctx, force = false) {
                         caption: [
                             `🎁  ${B("COMBINED & DEDUPED (Latest Batch)")}`,
                             `📁  ${B(escapeHtml(cached.filename))}  ·  🔑 ${B(compact(cached.linesCount))} credentials`,
+                            `🔗  ${B("Direct link:")} ${dl.url}`,
                             "",
                             `${I("Delivering your recent search results fresh from cache! ⚡️")}`,
                         ].join("\n"),
                         parse_mode: "HTML",
-                        ...afterCombineKeyboard(),
+                        ...afterCombineKeyboard(dl.url),
                     },
                 );
                 return;
@@ -2595,6 +2926,15 @@ async function sendCombined(ctx, force = false) {
         ? `${tgEmoji("⏳")}  ${I("ULP search is actively running — delivering credentials gathered so far! Final combined file will also be delivered upon completion.")}`
         : `${I("Served fresh — tap 📥 below to grab it again anytime.")}`;
 
+    const dl = downloads.registerDownload({
+        filename: isZipped ? `${base}_combined_${stamp}.zip` : filename,
+        filePath: outputPath,
+        buffer,
+        size: buffer.length,
+        chatId,
+        stats: { total: lines.length, kept: lines.length },
+    });
+
     try {
         await safeSendDocument(
             ctx,
@@ -2606,16 +2946,17 @@ async function sendCombined(ctx, force = false) {
                     `${siteLine}  ·  🔑 ${B(compact(lines.length))} unique lines`,
                     isZipped ? `📦  ${I("Compressed to .zip to fit Telegram upload limits")}` : "",
                     `💾  Saved to server vault: ${CODE(escapeHtml(filename))}`,
+                    `🔗  ${B("Direct link:")} ${dl.url}`,
                     "",
                     statusNote,
                 ].filter(Boolean).join("\n"),
                 parse_mode: "HTML",
-                ...afterCombineKeyboard(),
+                ...afterCombineKeyboard(dl.url),
             },
         );
     } catch (uploadErr) {
         console.error("sendCombined document upload failed:", uploadErr);
-        // Fallback: Notify user with server path and vault keyboard
+        // Fallback: Notify user with server path, direct link, and vault keyboard
         await safeReply(
             ctx,
             [
@@ -2623,12 +2964,15 @@ async function sendCombined(ctx, force = false) {
                 RULE,
                 `The combined list contains ${B(compact(lines.length))} lines (${humanSize(buffer.length)}), which exceeds Telegram's Bot API cap.`,
                 "",
+                `🔗  ${B("Direct Download Link:")}`,
+                `${dl.url}`,
+                "",
                 `✅  ${B("File safely saved to Server Disk:")}`,
                 CODE(escapeHtml(outputPath)),
                 "",
-                `Use ${CODE("/files")} to inspect or download it.`,
+                `Tap the direct download link button below to download instantly!`,
             ].join("\n"),
-            serverFilesKeyboard(scanDirFiles(localProcessRoot()), scanDirFiles(localProcessedRoot())),
+            afterCombineKeyboard(dl.url),
         );
     }
 }
@@ -2944,6 +3288,28 @@ function pickTransport(meta, searchOptions, ctx) {
         classify: (err) => searchbot.classifySendError(err),
         send: (text) => ctx.telegram.sendMessage(`@${searchOptions.botUsername}`, text),
     };
+}
+
+/**
+ * Check if an incoming message contains a forwarded document.
+ * Handles Telegram 7+ forward_origin, older forward_date/forward_from,
+ * and media_group_id albums.
+ *
+ * @param {import('telegraf').Context} ctx
+ * @returns {boolean}
+ */
+function isForwardedDocument(ctx) {
+    const msg = ctx && ctx.message;
+    if (!msg || !msg.document) return false;
+    return Boolean(
+        msg.forward_date ||
+        msg.forward_origin ||
+        msg.forward_from ||
+        msg.forward_from_chat ||
+        msg.forward_sender_name ||
+        msg.forward_signature ||
+        msg.media_group_id
+    );
 }
 
 /**
@@ -3900,6 +4266,7 @@ module.exports = {
     parseUlpArg,
     isSearcherMessage,
     isSearcherForward,
+    isForwardedDocument,
     pickTransport,
     processFile,
     latestFileIn,

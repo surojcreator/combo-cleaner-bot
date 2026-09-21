@@ -7,6 +7,7 @@ const { Telegraf } = require("telegraf");
 const { createBot, ingestUserbotMessage, trackIngestion } = require("./bot");
 const searchbot = require("./searchbot");
 const userbot = require("./userbot");
+const downloads = require("./downloads");
 
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) {
@@ -66,6 +67,7 @@ async function registerCommands() {
     try {
         await bot.telegram.setMyCommands([
             { command: "combine", description: "\uD83D\uDCE6 Download the combined file" },
+            { command: "link", description: "🔗 Direct download link for batch" },
             { command: "storage", description: "💾 Manage server storage & delete files" },
             { command: "files", description: "📂 Browse server vault files" },
             { command: "stats", description: "\uD83D\uDCCA Batch dashboard" },
@@ -96,6 +98,10 @@ function startServer(webhookHandler) {
     const server = http.createServer((req, res) => {
         if (webhookHandler && req.url === WEBHOOK_PATH) {
             webhookHandler(req, res);
+            return;
+        }
+        if (downloads.isDownloadRequest(req)) {
+            downloads.handleDownloadRequest(req, res);
             return;
         }
         if (req.url === "/" || req.url === "/healthz") {
@@ -225,7 +231,15 @@ async function main() {
     process.once("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main().catch((err) => {
-    console.error("Fatal startup error:", err);
-    process.exit(1);
-});
+if (require.main === module) {
+    main().catch((err) => {
+        console.error("Fatal startup error:", err);
+        process.exit(1);
+    });
+}
+
+module.exports = {
+    startServer,
+    bot,
+    botMeta,
+};

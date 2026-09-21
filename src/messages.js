@@ -534,21 +534,51 @@ function mainKeyboard() {
 
 /**
  * Keyboard shown under the combined file.
+ * @param {string} [downloadUrl]
  */
-function afterCombineKeyboard() {
-    return createInlineKeyboard([
-        [
-            Markup.button.callback("📦 Send Again", "combine"),
-            Markup.button.callback("📊 Stats", "stats"),
-        ],
-        [
-            Markup.button.callback("📂 Server Vault", "server_files"),
-            Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
-        ],
-        [
-            Markup.button.callback("🔙 Main Menu", "help"),
-        ],
+function afterCombineKeyboard(downloadUrl = null) {
+    const rows = [];
+    if (downloadUrl && typeof downloadUrl === "string" && downloadUrl.startsWith("http")) {
+        rows.push([Markup.button.url("📥 Direct Download Link", downloadUrl)]);
+    }
+    rows.push([
+        Markup.button.callback("📦 Send Again", "combine"),
+        Markup.button.callback("📊 Stats", "stats"),
     ]);
+    rows.push([
+        Markup.button.callback("📂 Server Vault", "server_files"),
+        Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+    ]);
+    rows.push([
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+    return createInlineKeyboard(rows);
+}
+
+/**
+ * Keyboard shown under combined forwarded log files.
+ * @param {string} [downloadUrl]
+ * @param {string} [token]
+ */
+function forwardedLogsKeyboard(downloadUrl = "", token = null) {
+    const rows = [];
+    if (downloadUrl && typeof downloadUrl === "string" && downloadUrl.startsWith("http")) {
+        rows.push([Markup.button.url("📥 Direct Download Link", downloadUrl)]);
+    }
+    const row2 = [];
+    if (token) {
+        row2.push(Markup.button.callback("📦 Send in Telegram", `send_telegram:${token}`));
+    }
+    row2.push(Markup.button.callback("📊 Stats", "stats"));
+    rows.push(row2);
+    rows.push([
+        Markup.button.callback("📂 Server Vault", "server_files"),
+        Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+    ]);
+    rows.push([
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+    return createInlineKeyboard(rows);
 }
 
 /**
@@ -1144,6 +1174,63 @@ function renderFileReport(name, stats, added, chatStats, site) {
         "",
         `${tgEmoji("🎉")} Successfully ingested \u2014 tap ${tgEmoji("📦")} below to download it all!`,
     );
+    return lines.join("\n");
+}
+
+/**
+ * Render report for forwarded log files combined into a single master file with direct download link.
+ * @param {object} params
+ */
+function renderForwardedLogsCombined({ files = [], stats = {}, downloadUrl = "", filename = "", site = "", chatStats = null }) {
+    const siteEmojiOut = site ? siteEmoji(site) : "🌐";
+    const fileCount = Array.isArray(files) ? files.length : 1;
+    const lines = [
+        `${tgEmoji("⚡")}  ${B("FORWARDED LOGS UNIFIED PIPELINE")}  ${tgEmoji("⚡️")}`,
+        RULE,
+        `${tgEmoji("📁")}  ${B(`Combined Sources (${num(fileCount)} forwarded files):`)}`,
+    ];
+
+    if (Array.isArray(files)) {
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            const sizeStr = f.size ? ` · ${humanSize(f.size)}` : "";
+            const linesStr = f.lines !== undefined ? ` (${num(f.lines)} lines${sizeStr})` : (sizeStr ? ` (${sizeStr.slice(3)})` : "");
+            lines.push(`  ${i + 1}. ${tgEmoji("📄")} ${B(escapeHtml(f.name || "log_file"))}${linesStr}`);
+        }
+    }
+
+    lines.push(
+        RULE,
+        `${tgEmoji("📊")}  ${B("Combined Master Aggregation:")}`,
+        `  • ${tgEmoji("📑")} ${B("Total Lines Ingested:")}   ${num(stats.total || 0)}`,
+        `  • ${tgEmoji("💎")} ${B("Unique Lines Kept:")}      ${B(num(stats.kept || stats.size || 0))}`,
+        `  • ${tgEmoji("🔄")} ${B("Duplicates Removed:")}     ${num(stats.duplicates || 0)}`,
+    );
+
+    if (site) {
+        lines.push(`  • ${tgEmoji(siteEmojiOut)} ${B("Target Site:")}            ${B(escapeHtml(site))}`);
+    }
+    if (filename) {
+        lines.push(`  • ${tgEmoji("💾")} ${B("Master Output:")}          ${CODE(escapeHtml(filename))}`);
+    }
+
+    if (downloadUrl) {
+        lines.push(
+            RULE,
+            `${tgEmoji("🔗")}  ${B("Direct Download Link:")}`,
+            `${downloadUrl}`,
+            "",
+            `${tgEmoji("💡")}  ${I("Fast direct HTTP stream ready! Tap the button below to download instantly.")}`,
+        );
+    }
+
+    if (chatStats) {
+        lines.push(
+            "",
+            `${tgEmoji("📦")}  ${B("Chat Batch Total:")} ${B(compact(chatStats.size))} unique lines across ${num(chatStats.files)} file(s)`,
+        );
+    }
+
     return lines.join("\n");
 }
 
@@ -1949,6 +2036,8 @@ module.exports = {
     mainKeyboard,
     confirmClearKeyboard,
     afterCombineKeyboard,
+    forwardedLogsKeyboard,
+    renderForwardedLogsCombined,
     emptyBatchKeyboard,
     ulpKeyboard,
     ulpResultKeyboard,

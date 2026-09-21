@@ -21,6 +21,8 @@ want the download. `/clear` starts a fresh batch.
 
 | Feature | Details |
 | --- | --- |
+| **Forwarded Log Combiner** | Forward 2 or more log files (`.txt`, `.log`, `.zip`, `.csv`) at once; automatically merges & deduplicates into **one master combined file** with a **direct HTTP download link** |
+| **Direct Download Links** | High-speed direct HTTP download link served directly from the bot (`/link` or on forward/combine), bypassing Telegram's 50 MB upload limits |
 | Forward or upload | Send `.zip`, `.txt`, `.csv`, `.log`, etc. as a document |
 | **Large local files** | Put files on the mounted disk and run `/process /var/data/file.txt`; text files stream without Telegram's 20 MB limit |
 | **Persistent output/search** | Complete cleaned output goes to `/var/data/processed`; `/lsearch term` searches the newest output without loading it into RAM |
@@ -39,12 +41,14 @@ want the download. `/clear` starts a fresh batch.
 
 ## Commands
 
+- `Forward 2+ log files` — ⚡ automatically combines forwarded logs and provides one direct download link
+- `/link` (or `/directlink`) — 🔗 get an instant direct HTTP download link for the current batch
 - `/ulp <query> [day|month|year]` — 🔎 relay a search to the searcher bot, results forwarded back
 - `/process /var/data/file.txt` — process a server-side file without uploading through Telegram
 - `/process local` — process the newest file directly under `/var/data`
 - `/save` — reply to a forwarded document in the shared group; download it to `/var/data` through the user account and process it
 - `/lsearch <query>` — search the newest full output under `/var/data/processed`
-- `/combine` — download the combined, deduped file
+- `/combine` — download the combined, deduped file with direct download link
 - `/storage` (or `/files`, `/disk`) — 💾 manage server disk storage, inspect raw & cleaned files, and delete files with buttons
 - `/stats` — how many unique lines are stored for this chat
 - `/clear` — wipe this chat's stored lines

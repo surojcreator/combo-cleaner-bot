@@ -45,6 +45,7 @@ const {
     saveListeningKeyboard,
     renderSaveListeningComplete,
     saveListeningCompleteKeyboard,
+    renderMergeProgress,
     renderMergeComplete,
     mergeCompleteKeyboard,
     serverFilesKeyboard,
@@ -558,40 +559,111 @@ function createBot(token, meta = {}) {
 
     const vaultSelectState = new Map();
     const lastCompletedSaveSessions = new Map();
+    const vaultRawRoot = (meta && (meta.localProcessRoot || meta.processRoot)) ? path.resolve(meta.localProcessRoot || meta.processRoot) : localProcessRoot();
+    const vaultProcessedRoot = (meta && meta.localProcessedRoot) ? path.resolve(meta.localProcessedRoot) : localProcessedRoot();
+    const getVaultFiles = (sortBy = "size") => getAllVaultFiles(sortBy, vaultRawRoot, vaultProcessedRoot);
 
     /**
      * Merge multiple files on server disk into one clean, deduplicated file without returning to Telegram.
      */
     const mergeFilesOnServer = async (ctx, fileList, options = {}) => {
         const chatId = ctx.chat.id;
-        const root = localProcessedRoot();
+        const root = vaultProcessedRoot;
         fs.mkdirSync(root, { recursive: true });
 
-        // Normalize file items to { path, name }
+        // Normalize file items to { path, name, size }
         const normalized = (fileList || []).map((f) => {
             if (typeof f === "string") {
-                return { path: f, name: path.basename(f) };
+                let sz = 0;
+                try { sz = fs.statSync(f).size; } catch (_) {}
+                return { path: f, name: path.basename(f), size: sz };
             }
-            return { path: f.path, name: f.name || (f.path ? path.basename(f.path) : "unknown") };
+            let sz = f.size;
+            if (sz === undefined && f.path) {
+                try { sz = fs.statSync(f.path).size; } catch (_) {}
+            }
+            return { path: f.path, name: f.name || (f.path ? path.basename(f.path) : "unknown"), size: sz || 0 };
         }).filter((f) => f.path && fs.existsSync(f.path));
 
         if (normalized.length === 0) {
             throw new Error("None of the specified files exist on server disk.");
         }
 
+        const statusMsgId = options.statusMsgId || (options.statusMsg && options.statusMsg.message_id) || null;
+        let lastProgressTime = 0;
+
+        const reportProgress = async (prog, force = false) => {
+            const now = Date.now();
+            if (!force && now - lastProgressTime < 1500) {
+                return;
+            }
+            lastProgressTime = now;
+
+            if (typeof options.onProgress === "function") {
+                try {
+                    await options.onProgress(prog);
+                } catch (_) {}
+            }
+
+            if (statusMsgId && ctx) {
+                try {
+                    const text = renderMergeProgress({
+                        ...prog,
+                        totalFiles: normalized.length,
+                        humanSize,
+                    });
+                    await safeEdit(ctx, statusMsgId, text);
+                } catch (_) {}
+            }
+        };
+
         const allZip = normalized.every((f) => f.name.toLowerCase().endsWith(".zip"));
         if (allZip && options.forceText !== true) {
-            const zipItems = normalized.map((f) => ({
-                name: f.name,
-                buffer: fs.readFileSync(f.path),
-            }));
-            const mergeResult = mergeZipFiles(zipItems);
+            const zipItems = [];
+            for (let i = 0; i < normalized.length; i++) {
+                const f = normalized[i];
+                await reportProgress({
+                    currentFileIndex: i + 1,
+                    totalFiles: normalized.length,
+                    currentFileName: f.name,
+                    currentFileSize: f.size,
+                    phase: `Unpacking archive ${i + 1}/${normalized.length}…`,
+                }, true);
+                zipItems.push({
+                    name: f.name,
+                    buffer: fs.readFileSync(f.path),
+                });
+            }
+
+            await reportProgress({
+                currentFileIndex: normalized.length,
+                totalFiles: normalized.length,
+                currentFileName: "Master Archive",
+                phase: `Merging folder hierarchies into master zip…`,
+            }, true);
+
+            const mergeResult = mergeZipFiles(zipItems, {
+                onProgress: (zipProg) => {
+                    reportProgress({
+                        ...zipProg,
+                        totalFiles: normalized.length,
+                    }, false).catch(() => {});
+                },
+            });
 
             const stamp = new Date().toISOString().replace(/[:.]/g, "-");
             const outName = `merged_vault_${chatId}_${stamp}.zip`;
             const outPath = path.join(root, outName);
             fs.writeFileSync(outPath, mergeResult.buffer);
             const stat = fs.statSync(outPath);
+
+            await reportProgress({
+                currentFileIndex: normalized.length,
+                totalFiles: normalized.length,
+                currentFileName: outName,
+                currentFileSize: stat.size,
+                phase: `Archive complete (${humanSize(stat.size)})`,
+            }, true);
 
             return {
                 outName,
@@ -638,8 +710,20 @@ function createBot(token, meta = {}) {
         };
 
         try {
-            for (const f of normalized) {
+            for (let fileIdx = 0; fileIdx < normalized.length; fileIdx++) {
+                const f = normalized[fileIdx];
                 const isZip = f.name.toLowerCase().endsWith(".zip");
+
+                await reportProgress({
+                    currentFileIndex: fileIdx + 1,
+                    totalFiles: normalized.length,
+                    currentFileName: f.name,
+                    currentFileSize: f.size,
+                    keptLines: totalKept,
+                    duplicatesStripped: totalDupes,
+                    phase: isZip ? `Extracting entries from ${f.name}…` : `Reading and deduplicating ${f.name}…`,
+                }, true);
+
                 if (isZip) {
                     try {
                         const buf = fs.readFileSync(f.path);
@@ -647,7 +731,8 @@ function createBot(token, meta = {}) {
                             const AdmZip = require("adm-zip");
                             const zip = new AdmZip(buf);
                             const entries = zip.getEntries();
-                            for (const entry of entries) {
+                            for (let entryIdx = 0; entryIdx < entries.length; entryIdx++) {
+                                const entry = entries[entryIdx];
                                 if (entry.isDirectory) continue;
                                 const lower = entry.entryName.toLowerCase();
                                 if (lower.endsWith(".txt") || lower.endsWith(".log") || lower.endsWith(".csv") || lower.endsWith(".tsv")) {
@@ -657,6 +742,15 @@ function createBot(token, meta = {}) {
                                         await writeLine(line);
                                     }
                                     totalDupes += res.stats.duplicates || 0;
+                                    await reportProgress({
+                                        currentFileIndex: fileIdx + 1,
+                                        totalFiles: normalized.length,
+                                        currentFileName: f.name,
+                                        currentFileSize: f.size,
+                                        keptLines: totalKept,
+                                        duplicatesStripped: totalDupes,
+                                        phase: `Cleaned entry [${entryIdx + 1}/${entries.length}] ${path.basename(entry.entryName)}`,
+                                    }, false);
                                 }
                             }
                         }
@@ -679,6 +773,15 @@ function createBot(token, meta = {}) {
                                 await writeLine(cl);
                             }
                             totalDupes += res.stats.duplicates || 0;
+                            await reportProgress({
+                                currentFileIndex: fileIdx + 1,
+                                totalFiles: normalized.length,
+                                currentFileName: f.name,
+                                currentFileSize: f.size,
+                                keptLines: totalKept,
+                                duplicatesStripped: totalDupes,
+                                phase: `Deduplicating stream…`,
+                            }, false);
                         }
                     }
                     if (chunk.length > 0) {
@@ -691,6 +794,15 @@ function createBot(token, meta = {}) {
                     }
                 }
             }
+
+            await reportProgress({
+                currentFileIndex: normalized.length,
+                totalFiles: normalized.length,
+                currentFileName: outName,
+                keptLines: totalKept,
+                duplicatesStripped: totalDupes,
+                phase: `Finalizing output on server disk…`,
+            }, true);
 
             flushBatch();
             outStream.end();
@@ -722,11 +834,11 @@ function createBot(token, meta = {}) {
 
     const showVaultSelect = async (ctx, editMessageId = null, page = 0) => {
         userPromptState.delete(ctx.chat.id);
-        const rawRoot = localProcessRoot();
-        const processedRoot = localProcessedRoot();
+        const rawRoot = vaultRawRoot;
+        const processedRoot = vaultProcessedRoot;
         const rawFiles = scanDirFiles(rawRoot);
         const processedFiles = scanDirFiles(processedRoot);
-        const allFiles = [...rawFiles, ...processedFiles];
+        const allFiles = getVaultFiles();
 
         let state = vaultSelectState.get(ctx.chat.id);
         if (!state) {
@@ -764,8 +876,8 @@ function createBot(token, meta = {}) {
 
     const showServerFiles = async (ctx, editMessageId = null, page = 0, tab = "overview") => {
         userPromptState.delete(ctx.chat.id);
-        const rawRoot = localProcessRoot();
-        const processedRoot = localProcessedRoot();
+        const rawRoot = vaultRawRoot;
+        const processedRoot = vaultProcessedRoot;
         const rawFiles = scanDirFiles(rawRoot);
         const processedFiles = scanDirFiles(processedRoot);
         const diskStats = getDiskStats(rawRoot);
@@ -854,9 +966,7 @@ function createBot(token, meta = {}) {
     });
 
     bot.action("vault:sel:all", async (ctx) => {
-        const rawFiles = scanDirFiles(localProcessRoot());
-        const processedFiles = scanDirFiles(localProcessedRoot());
-        const allFiles = [...rawFiles, ...processedFiles];
+        const allFiles = getVaultFiles();
         let state = vaultSelectState.get(ctx.chat.id);
         if (!state) state = { selected: new Set(), page: 0 };
         state.selected = new Set(allFiles.map((_, i) => i));
@@ -888,9 +998,7 @@ function createBot(token, meta = {}) {
             return;
         }
         await ctx.answerCbQuery("🔀 Merging files on server disk...").catch(() => {});
-        const rawFiles = scanDirFiles(localProcessRoot());
-        const processedFiles = scanDirFiles(localProcessedRoot());
-        const allFiles = [...rawFiles, ...processedFiles];
+        const allFiles = getVaultFiles();
 
         const selectedFiles = [];
         for (const idx of state.selected) {
@@ -908,7 +1016,9 @@ function createBot(token, meta = {}) {
         const statusMsg = msg ? msg : await safeReply(ctx, "⏳ Merging and deduplicating files on server...");
 
         try {
-            const stats = await mergeFilesOnServer(ctx, selectedFiles);
+            const stats = await mergeFilesOnServer(ctx, selectedFiles, {
+                statusMsgId: statusMsg ? statusMsg.message_id : null,
+            });
             vaultSelectState.delete(ctx.chat.id);
             const report = renderMergeComplete(stats);
             const kb = mergeCompleteKeyboard(stats.outName);
@@ -2318,7 +2428,9 @@ function createBot(token, meta = {}) {
 
         const statusMsg = await safeReply(ctx, `⏳  ${B(`Merging ${sessionFiles.length} session file(s) into one clean file on disk…`)}`);
         try {
-            const stats = await mergeFilesOnServer(ctx, sessionFiles);
+            const stats = await mergeFilesOnServer(ctx, sessionFiles, {
+                statusMsgId: statusMsg ? statusMsg.message_id : null,
+            });
             const report = renderMergeComplete(stats);
             const kb = mergeCompleteKeyboard(stats.outName);
             if (statusMsg && statusMsg.message_id) {
@@ -4986,11 +5098,12 @@ function latestFileIn(dir) {
 }
 
 /**
- * Scan a directory for files, returning metadata sorted newest first.
+ * Lists files in a directory sorted by size descending (default) or modification time.
  * @param {string} dir
+ * @param {"size" | "mtime"} [sortBy="size"]
  * @returns {Array<{ name: string, path: string, size: number, mtime: Date }>}
  */
-function scanDirFiles(dir) {
+function scanDirFiles(dir, sortBy = "size") {
     let entries;
     try {
         entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -5013,8 +5126,31 @@ function scanDirFiles(dir) {
             continue;
         }
     }
-    files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    if (sortBy === "mtime") {
+        files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    } else {
+        files.sort((a, b) => ((b.size || 0) - (a.size || 0)) || ((b.mtime && a.mtime) ? b.mtime.getTime() - a.mtime.getTime() : 0));
+    }
     return files;
+}
+
+/**
+ * Returns all vault files across raw and processed folders, sorted by size descending.
+ * @param {"size" | "mtime"} [sortBy="size"]
+ * @param {string|null} [rawOverride=null]
+ * @param {string|null} [procOverride=null]
+ * @returns {Array<{ name: string, path: string, size: number, mtime: Date }>}
+ */
+function getAllVaultFiles(sortBy = "size", rawOverride = null, procOverride = null) {
+    const rawFiles = scanDirFiles(rawOverride ? path.resolve(rawOverride) : localProcessRoot(), sortBy);
+    const processedFiles = scanDirFiles(procOverride ? path.resolve(procOverride) : localProcessedRoot(), sortBy);
+    const combined = [...rawFiles, ...processedFiles];
+    if (sortBy === "mtime") {
+        combined.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+    } else {
+        combined.sort((a, b) => ((b.size || 0) - (a.size || 0)) || ((b.mtime && a.mtime) ? b.mtime.getTime() - a.mtime.getTime() : 0));
+    }
+    return combined;
 }
 
 /** Root directory from which /process is allowed to read. */
@@ -5429,6 +5565,7 @@ module.exports = {
     processedOutputPath,
     renderSaveError,
     scanDirFiles,
+    getAllVaultFiles,
     sendCombined,
     deliverCombinedAndResetBatch,
     ingestUserbotMessage,

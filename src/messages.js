@@ -835,7 +835,9 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
     const procCount = Array.isArray(processedFiles) ? processedFiles.length : 0;
 
     if (tab === "select") {
-        const selectFiles = opts.files || [...(Array.isArray(rawFiles) ? rawFiles : []), ...(Array.isArray(processedFiles) ? processedFiles : [])];
+        const selectFiles = (opts.files || [...(Array.isArray(rawFiles) ? rawFiles : []), ...(Array.isArray(processedFiles) ? processedFiles : [])])
+            .slice()
+            .sort((a, b) => ((b.size || 0) - (a.size || 0)) || ((b.mtime && a.mtime) ? b.mtime.getTime() - a.mtime.getTime() : 0));
         const selectPageSize = 5;
         const totalPages = Math.ceil(selectFiles.length / selectPageSize) || 1;
         const selStart = page * selectPageSize;
@@ -1349,6 +1351,62 @@ function saveListeningCompleteKeyboard(hasSessionFiles = true) {
         Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
     ]);
     return createInlineKeyboard(rows);
+}
+
+/**
+ * Live progress card rendered while merging server files.
+ * @param {{
+ *   currentFileIndex?: number,
+ *   totalFiles?: number,
+ *   currentFileName?: string,
+ *   currentFileSize?: number,
+ *   keptLines?: number,
+ *   duplicatesStripped?: number,
+ *   phase?: string,
+ *   humanSize?: (n: number) => string
+ * }} progress
+ */
+function renderMergeProgress(progress = {}) {
+    const {
+        currentFileIndex = 1,
+        totalFiles = 1,
+        currentFileName = "",
+        currentFileSize = 0,
+        keptLines = 0,
+        duplicatesStripped = 0,
+        phase = "Merging and deduplicating...",
+        humanSize = (n) => `${n} B`,
+    } = progress || {};
+
+    const pct = Math.min(100, Math.max(0, Math.round((currentFileIndex / Math.max(totalFiles, 1)) * 100)));
+    const filled = Math.min(10, Math.max(0, Math.round(pct / 10)));
+    const gauge = "█".repeat(filled) + "░".repeat(10 - filled);
+
+    const lines = [
+        `⏳  ${B("MERGING FILES IN VAULT")}  ${tgEmoji("⚡️")}`,
+        RULE,
+        `Progress: ${CODE(`[${gauge}]`)} ${B(`${pct}%`)} (${B(currentFileIndex)}/${B(totalFiles)} files)`,
+        "",
+    ];
+
+    if (currentFileName) {
+        const sz = currentFileSize > 0 ? ` (${humanSize(currentFileSize)})` : "";
+        lines.push(`📄  ${B("Current File:")} ${CODE(escapeHtml(currentFileName))}${sz}`);
+    }
+
+    if (keptLines > 0 || duplicatesStripped > 0) {
+        lines.push(
+            `💎  ${B("Clean Kept:")} ${CODE(num(keptLines))} · 🧹 ${B("Dupes:")} ${CODE(num(duplicatesStripped))}`,
+        );
+    }
+
+    lines.push(
+        `⚡️  ${B("Status:")} ${I(phase)}`,
+        RULE,
+        `💡 ${I("Saving output directly to your server vault (background stream)...")}`,
+    );
+
+    return lines.join("\n");
 }
 
 /**
@@ -2026,8 +2084,8 @@ function formatFileDate(d) {
  */
 function renderServerFiles(info = {}) {
     const {
-        rawFiles = [],
-        processedFiles = [],
+        rawFiles: inputRaw = [],
+        processedFiles: inputProc = [],
         rawRoot = "",
         processedRoot = "",
         humanSize = (n) => `${n} B`,
@@ -2037,6 +2095,13 @@ function renderServerFiles(info = {}) {
         page = 0,
         pageSize = 3,
     } = info || {};
+
+    const rawFiles = Array.isArray(inputRaw)
+        ? inputRaw.slice().sort((a, b) => ((b.size || 0) - (a.size || 0)) || ((b.mtime && a.mtime) ? b.mtime.getTime() - a.mtime.getTime() : 0))
+        : [];
+    const processedFiles = Array.isArray(inputProc)
+        ? inputProc.slice().sort((a, b) => ((b.size || 0) - (a.size || 0)) || ((b.mtime && a.mtime) ? b.mtime.getTime() - a.mtime.getTime() : 0))
+        : [];
 
     const totalRawBytes = rawFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
     const totalProcBytes = processedFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
@@ -2060,7 +2125,7 @@ function renderServerFiles(info = {}) {
 
     if (tab === "raw") {
         lines.push(
-            `${tgEmoji("📥")}  ${B("RAW INCOMING DUMPS BROWSER")}  ${tgEmoji("📂")}`,
+            `${tgEmoji("📥")}  ${B("RAW INCOMING DUMPS BROWSER (SORTED BY SIZE)")}  ${tgEmoji("📂")}`,
             `Directory: ${CODE(escapeHtml(rawRoot))}`,
             `Total: ${B(num(rawFiles.length))} files (${humanSize(totalRawBytes)})`,
             RULE,
@@ -2085,7 +2150,7 @@ function renderServerFiles(info = {}) {
         }
     } else if (tab === "proc") {
         lines.push(
-            `${tgEmoji("💎")}  ${B("CLEANED OUTPUTS VAULT")}  ${tgEmoji("✨")}`,
+            `${tgEmoji("💎")}  ${B("CLEANED OUTPUTS VAULT (SORTED BY SIZE)")}  ${tgEmoji("✨")}`,
             `Directory: ${CODE(escapeHtml(processedRoot))}`,
             `Total: ${B(num(processedFiles.length))} outputs (${humanSize(totalProcBytes)})`,
             RULE,
@@ -2117,11 +2182,13 @@ function renderServerFiles(info = {}) {
             `⚠️  ${I("Use the actions below to selectively wipe raw uploads, delete generated outputs, or perform a total storage purge.")}`,
         );
     } else if (tab === "select") {
-        const selectFiles = info.selectFiles || info.files || [...rawFiles, ...processedFiles];
+        const selectFiles = (info.selectFiles || info.files || [...rawFiles, ...processedFiles])
+            .slice()
+            .sort((a, b) => ((b.size || 0) - (a.size || 0)) || ((b.mtime && a.mtime) ? b.mtime.getTime() - a.mtime.getTime() : 0));
         const selected = info.selected instanceof Set ? info.selected : new Set(info.selected || []);
         const totalItems = selectFiles.length;
         lines.push(
-            `${tgEmoji("🔀")}  ${B("MULTI-FILE SELECT & MERGE")}  ${tgEmoji("⚡️")}`,
+            `${tgEmoji("🔀")}  ${B("MULTI-FILE SELECT & MERGE (SORTED BY SIZE)")}  ${tgEmoji("⚡️")}`,
             RULE,
             `Select files below to merge into ${B("one clean deduplicated file on disk")}.`,
             `💡 ${I("The clean file will be stored in your server vault (it won't be returned to Telegram).")}`,
@@ -2161,7 +2228,7 @@ function renderServerFiles(info = {}) {
         }
         lines.push(RULE);
 
-        lines.push(`${tgEmoji("📥")}  ${B("Recent Raw Dumps:")}`);
+        lines.push(`${tgEmoji("📥")}  ${B("Top Raw Dumps (by Size):")}`);
         if (rawFiles.length === 0) {
             lines.push(`  ${I("No raw files on disk — send /save to ingest.")}`);
         } else {
@@ -2178,7 +2245,7 @@ function renderServerFiles(info = {}) {
         }
 
         lines.push("");
-        lines.push(`${tgEmoji("💎")}  ${B("Recent Cleaned Outputs:")}`);
+        lines.push(`${tgEmoji("💎")}  ${B("Top Cleaned Outputs (by Size):")}`);
         if (processedFiles.length === 0) {
             lines.push(`  ${I("No processed outputs yet — tap a Clean button or use Multi-Select")}`);
         } else {
@@ -2566,6 +2633,7 @@ module.exports = {
     saveListeningKeyboard,
     renderSaveListeningComplete,
     saveListeningCompleteKeyboard,
+    renderMergeProgress,
     renderMergeComplete,
     mergeCompleteKeyboard,
     serverFilesKeyboard,

@@ -519,6 +519,18 @@ function mergeZipFiles(items, options = {}) {
 
         let addedEntriesFromThis = 0;
 
+        if (typeof options.onProgress === "function") {
+            try {
+                options.onProgress({
+                    currentFileIndex: i + 1,
+                    totalFiles: items.length,
+                    currentFileName: rawName,
+                    currentFileSize: buffer.length,
+                    phase: isZip ? "Unpacking & merging zip entries..." : "Packing file into master archive...",
+                });
+            } catch (_) {}
+        }
+
         if (isZip) {
             let collected = [];
             try {

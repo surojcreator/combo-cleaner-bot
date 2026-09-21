@@ -6,7 +6,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
-const { createBot } = require("../src/bot");
+const { createBot, scanDirFiles, getAllVaultFiles } = require("../src/bot");
 const store = require("../src/store");
 const messages = require("../src/messages");
 
@@ -17,6 +17,8 @@ const PROC_ROOT = path.join(TEST_ROOT, "proc");
 
 fs.mkdirSync(RAW_ROOT, { recursive: true });
 fs.mkdirSync(PROC_ROOT, { recursive: true });
+process.env.LOCAL_PROCESS_ROOT = RAW_ROOT;
+process.env.LOCAL_PROCESSED_ROOT = PROC_ROOT;
 
 async function startFakeApi() {
     const calls = [];
@@ -271,6 +273,94 @@ test("/mergesession merges all files saved in current session into clean disk fi
         assert.ok(procFiles.length > 0);
     } finally {
         store.clear(chatId);
+        await api.close();
+    }
+});
+
+test("scanDirFiles sorts files descending by size by default and supports mtime sorting", () => {
+    const sortTestDir = path.join(TEST_ROOT, `sort-test-${Date.now()}`);
+    fs.mkdirSync(sortTestDir, { recursive: true });
+    try {
+        const small = path.join(sortTestDir, "small.txt");
+        const med = path.join(sortTestDir, "medium.txt");
+        const large = path.join(sortTestDir, "large.txt");
+
+        fs.writeFileSync(small, "a".repeat(100));
+        fs.writeFileSync(med, "b".repeat(500));
+        fs.writeFileSync(large, "c".repeat(2000));
+
+        // Default should be size descending: large (2000), medium (500), small (100)
+        const sortedBySize = scanDirFiles(sortTestDir);
+        assert.equal(sortedBySize.length, 3);
+        assert.equal(sortedBySize[0].name, "large.txt");
+        assert.equal(sortedBySize[1].name, "medium.txt");
+        assert.equal(sortedBySize[2].name, "small.txt");
+
+        // Explicit "size" sort
+        const explicitSize = scanDirFiles(sortTestDir, "size");
+        assert.equal(explicitSize[0].name, "large.txt");
+        assert.equal(explicitSize[2].name, "small.txt");
+
+        // Explicit "mtime" sort
+        const now = Date.now();
+        fs.utimesSync(small, new Date(now + 3000), new Date(now + 3000));
+        fs.utimesSync(med, new Date(now + 2000), new Date(now + 2000));
+        fs.utimesSync(large, new Date(now + 1000), new Date(now + 1000));
+        const sortedByMtime = scanDirFiles(sortTestDir, "mtime");
+        assert.equal(sortedByMtime[0].name, "small.txt");
+        assert.equal(sortedByMtime[2].name, "large.txt");
+    } finally {
+        fs.rmSync(sortTestDir, { recursive: true, force: true });
+    }
+});
+
+test("renderMergeProgress renders visual gauge, file progress, line counts, and status phase", () => {
+    const text = messages.renderMergeProgress({
+        currentFileIndex: 3,
+        totalFiles: 10,
+        currentFileName: "dump_chunk_03.txt",
+        currentFileSize: 5242880,
+        keptLines: 45000,
+        duplicatesStripped: 6200,
+        phase: "Deduplicating credentials stream…",
+        humanSize: (n) => `${Math.round(n / (1024 * 1024))} MB`,
+    });
+
+    assert.match(text, /MERGING FILES IN VAULT/);
+    assert.match(text, /\[███░░░░░░░\].*30%/);
+    assert.ok(text.includes("(<b>3</b>/<b>10</b> files)"));
+    assert.match(text, /dump_chunk_03\.txt/);
+    assert.match(text, /5 MB/);
+    assert.match(text, /45,000/);
+    assert.match(text, /6,200/);
+    assert.match(text, /Deduplicating credentials stream/);
+});
+
+test("mergeFilesOnServer reports live progress via onProgress callback", async () => {
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot);
+        const f1 = path.join(RAW_ROOT, `progress_test1_${Date.now()}.txt`);
+        const f2 = path.join(RAW_ROOT, `progress_test2_${Date.now()}.txt`);
+        fs.writeFileSync(f1, "user1@site.com:p1\nuser2@site.com:p2\n");
+        fs.writeFileSync(f2, "user3@site.com:p3\nuser1@site.com:p1\n");
+
+        const progressList = [];
+        const ctx = { chat: { id: 8888 }, answerCbQuery: async () => {} };
+        const stats = await bot.mergeFilesOnServer(ctx, [f1, f2], {
+            onProgress: (p) => {
+                progressList.push({ ...p });
+            },
+        });
+
+        assert.ok(progressList.length >= 2, `Expected at least 2 progress events, got ${progressList.length}`);
+        assert.equal(progressList[0].totalFiles, 2);
+        assert.ok(progressList.some((p) => p.currentFileIndex === 1));
+        assert.ok(progressList.some((p) => p.currentFileIndex === 2));
+        assert.equal(stats.totalFiles, 2);
+        assert.equal(stats.keptLines, 3);
+        assert.equal(stats.duplicatesStripped, 1);
+    } finally {
         await api.close();
     }
 });

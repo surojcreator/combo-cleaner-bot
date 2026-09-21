@@ -1861,6 +1861,8 @@ function createBot(token, meta = {}) {
             `dump_${messageId}`,
         );
 
+        const sourceInfo = userbot.extractForwardOrigin(ctx.message) || userbot.parseChannelFilename(originalName);
+
         prompt.queue = prompt.queue || [];
         prompt.processed = prompt.processed || [];
         prompt.queue.push({
@@ -1869,6 +1871,7 @@ function createBot(token, meta = {}) {
             messageId,
             name: originalName,
             size: doc.file_size || 0,
+            sourceInfo,
         });
 
         const queueCount = prompt.queue.length;
@@ -1977,74 +1980,123 @@ function createBot(token, meta = {}) {
         const statusMsgId = statusMsg ? statusMsg.message_id : null;
 
         let downloaded = false;
+        let lastDlError = null;
         localJobs.set(chatId, `save:${diskFileName}`);
 
         try {
             // Attempt 1: MTProto userbot download to disk
             if (peer && typeof peer.isReady === "function" && peer.isReady()) {
-                try {
-                    let lastProgressAt = 0;
-                    const saved = await peer.downloadMessageToDisk(chatId, item.messageId, {
-                        root: destDir,
-                        fileName: diskFileName,
-                        message: ctx.message,
-                        onProgress: (done, total) => {
-                            if (Date.now() - lastProgressAt < 3000) return;
-                            lastProgressAt = Date.now();
-                            const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
-                            if (statusMsgId) {
-                                void safeEdit(
-                                    ctx,
-                                    statusMsgId,
-                                    [
-                                        `📥  ${B(`SAVING FILE #${fileIndex}`)} · ${pct}%`,
-                                        RULE,
-                                        `📄  ${escapeHtml(rawName)}`,
-                                        `📦  ${humanSize(done)} / ${humanSize(total || done)}`,
-                                        `💾  destination: ${CODE(escapeHtml(destDir))}`,
-                                    ].join("\n"),
-                                );
-                            }
-                        },
-                    });
-                    if (saved && saved.path && fs.existsSync(saved.path)) {
-                        destPath = saved.path;
-                        downloaded = true;
+                const source = item.sourceInfo || userbot.extractForwardOrigin(ctx.message) || userbot.parseChannelFilename(rawName);
+                if (source && source.peer && source.messageId) {
+                    try {
+                        let lastProgressAt = 0;
+                        const saved = await peer.downloadMessageToDisk(source.peer, source.messageId, {
+                            root: destDir,
+                            fileName: diskFileName,
+                            onProgress: (done, total) => {
+                                if (Date.now() - lastProgressAt < 3000) return;
+                                lastProgressAt = Date.now();
+                                const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
+                                if (statusMsgId) {
+                                    void safeEdit(
+                                        ctx,
+                                        statusMsgId,
+                                        [
+                                            `📥  ${B(`SAVING FILE #${fileIndex}`)} · ${pct}%`,
+                                            RULE,
+                                            `📄  ${escapeHtml(rawName)}`,
+                                            `📦  ${humanSize(done)} / ${humanSize(total || done)}`,
+                                            `💾  destination: ${CODE(escapeHtml(destDir))}`,
+                                        ].join("\n"),
+                                    );
+                                }
+                            },
+                        });
+                        if (saved && saved.path && fs.existsSync(saved.path)) {
+                            destPath = saved.path;
+                            downloaded = true;
+                        }
+                    } catch (peerErr) {
+                        console.error(`userbot download from source ${source.peer}:${source.messageId} failed:`, peerErr && peerErr.message ? peerErr.message : peerErr);
+                        lastDlError = peerErr && peerErr.message ? peerErr.message : String(peerErr);
                     }
-                } catch (peerErr) {
-                    // Fall back to Bot API download if available
+                }
+
+                // If not downloaded yet, try from current chat (works if group contains userbot)
+                if (!downloaded) {
+                    try {
+                        let lastProgressAt = 0;
+                        const saved = await peer.downloadMessageToDisk(chatId, item.messageId, {
+                            root: destDir,
+                            fileName: diskFileName,
+                            onProgress: (done, total) => {
+                                if (Date.now() - lastProgressAt < 3000) return;
+                                lastProgressAt = Date.now();
+                                const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
+                                if (statusMsgId) {
+                                    void safeEdit(
+                                        ctx,
+                                        statusMsgId,
+                                        [
+                                            `📥  ${B(`SAVING FILE #${fileIndex}`)} · ${pct}%`,
+                                            RULE,
+                                            `📄  ${escapeHtml(rawName)}`,
+                                            `📦  ${humanSize(done)} / ${humanSize(total || done)}`,
+                                            `💾  destination: ${CODE(escapeHtml(destDir))}`,
+                                        ].join("\n"),
+                                    );
+                                }
+                            },
+                        });
+                        if (saved && saved.path && fs.existsSync(saved.path)) {
+                            destPath = saved.path;
+                            downloaded = true;
+                        }
+                    } catch (peerErr) {
+                        console.error(`userbot download from chat ${chatId}:${item.messageId} failed:`, peerErr && peerErr.message ? peerErr.message : peerErr);
+                        if (!lastDlError) {
+                            lastDlError = peerErr && peerErr.message ? peerErr.message : String(peerErr);
+                        }
+                    }
                 }
             }
 
             // Attempt 2: Bot API direct download if <= MAX_DOWNLOAD_BYTES
             if (!downloaded && item.doc && item.doc.file_id) {
-                if (item.size > MAX_DOWNLOAD_BYTES && (!peer || !peer.isReady())) {
-                    const tooLargeText = [
-                        `💥  ${B("File too large for Bot API")}`,
-                        `File ${escapeHtml(rawName)} is ${humanSize(item.size)} (limit: ${humanSize(MAX_DOWNLOAD_BYTES)}).`,
-                        `Use a group containing your MTProto user account to save large files.`,
-                    ].join("\n");
-                    if (statusMsgId) {
-                        await safeEdit(ctx, statusMsgId, tooLargeText);
-                    } else {
-                        await safeReply(ctx, tooLargeText);
+                if (item.size > MAX_DOWNLOAD_BYTES) {
+                    lastDlError = `File size (${humanSize(item.size)}) exceeds Telegram Bot API 20 MB download limit`;
+                } else {
+                    try {
+                        const link = await ctx.telegram.getFileLink(item.doc.file_id);
+                        const res = await fetch(link.href);
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        const buf = Buffer.from(await res.arrayBuffer());
+                        fs.writeFileSync(destPath, buf);
+                        downloaded = true;
+                    } catch (dlErr) {
+                        console.error("Bot API file download error:", dlErr && dlErr.message ? dlErr.message : dlErr);
+                        lastDlError = dlErr && dlErr.message ? dlErr.message : String(dlErr);
                     }
-                    return;
-                }
-                try {
-                    const link = await ctx.telegram.getFileLink(item.doc.file_id);
-                    const res = await fetch(link.href);
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    const buf = Buffer.from(await res.arrayBuffer());
-                    fs.writeFileSync(destPath, buf);
-                    downloaded = true;
-                } catch (dlErr) {
-                    console.error("Bot API file download error:", dlErr && dlErr.message ? dlErr.message : dlErr);
                 }
             }
 
             if (!downloaded || !fs.existsSync(destPath)) {
-                const failText = `⚠️  Could not download or save ${CODE(escapeHtml(rawName))}.`;
+                let failLines = [
+                    `⚠️  ${B("Could not download or save")} ${CODE(escapeHtml(rawName))}.`,
+                ];
+                if (item.size > MAX_DOWNLOAD_BYTES) {
+                    failLines.push(
+                        `📦  ${B("Size:")} ${humanSize(item.size)} (exceeds Telegram Bot API 20 MB limit).`,
+                    );
+                    if (!peer || !peer.isReady()) {
+                        failLines.push(`🔌  ${I("Account downloader (userbot) is offline. Start the userbot with MTProto credentials to download files > 20 MB.")}`);
+                    } else {
+                        failLines.push(`💡  ${I("If forwarded from a channel, make sure the userbot account has access to that channel, or forward it into a group with the userbot.")}`);
+                    }
+                } else if (lastDlError) {
+                    failLines.push(`❌  ${I(escapeHtml(lastDlError))}`);
+                }
+                const failText = failLines.join("\n");
                 if (statusMsgId) {
                     await safeEdit(ctx, statusMsgId, failText);
                 } else {

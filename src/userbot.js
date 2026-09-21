@@ -288,6 +288,64 @@ async function syncCustomEmojis(peer) {
     return 0;
 }
 
+/**
+ * Extract source chat and message id from a Telegram forwarded message.
+ * Supports Telegram Bot API 7.0+ (forward_origin) and legacy forward_from_chat.
+ *
+ * @param {any} msg
+ * @returns {{ peer: string|number, messageId: number, title?: string }|null}
+ */
+function extractForwardOrigin(msg) {
+    if (!msg) return null;
+
+    // Telegram Bot API 7.0+ MessageOrigin
+    if (msg.forward_origin) {
+        const o = msg.forward_origin;
+        if (o.type === "channel" && o.chat) {
+            const peer = o.chat.username ? `@${o.chat.username.replace(/^@+/, "")}` : o.chat.id;
+            return { peer, messageId: o.message_id, title: o.chat.title || o.chat.username || "" };
+        }
+        if (o.type === "chat" && o.sender_chat) {
+            const peer = o.sender_chat.username ? `@${o.sender_chat.username.replace(/^@+/, "")}` : o.sender_chat.id;
+            return { peer, messageId: o.message_id, title: o.sender_chat.title || o.sender_chat.username || "" };
+        }
+    }
+
+    // Legacy Telegram Bot API fields
+    if (msg.forward_from_chat) {
+        const peer = msg.forward_from_chat.username
+            ? `@${msg.forward_from_chat.username.replace(/^@+/, "")}`
+            : msg.forward_from_chat.id;
+        return {
+            peer,
+            messageId: msg.forward_from_message_id,
+            title: msg.forward_from_chat.title || msg.forward_from_chat.username || "",
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Parse channel username and message id from standard channel dump filenames,
+ * e.g. "@moonulp - 213.txt", "@channel_123.txt", "moonulp - 213.txt".
+ *
+ * @param {string} fileName
+ * @returns {{ peer: string, messageId: number }|null}
+ */
+function parseChannelFilename(fileName) {
+    if (!fileName || typeof fileName !== "string") return null;
+    const m = fileName.trim().match(/^@([a-zA-Z0-9_]{3,32})\s*[-_]\s*(\d+)/);
+    if (m) {
+        const peer = `@${m[1]}`;
+        const messageId = parseInt(m[2], 10);
+        if (messageId > 0) {
+            return { peer, messageId };
+        }
+    }
+    return null;
+}
+
 module.exports = {
     ULP_MARKER,
     CALL_TIMEOUT_MS,
@@ -306,6 +364,8 @@ module.exports = {
     detectLatestBatchDate,
     createUserbot,
     syncCustomEmojis,
+    extractForwardOrigin,
+    parseChannelFilename,
 };
 
 /**
@@ -499,7 +559,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             const root = path.resolve(options.root);
             fs.mkdirSync(root, { recursive: true });
 
-            let message = options.message || null;
+            let message = (options && options.message && options.message.media) ? options.message : null;
             if (!message) {
                 const inputPeer = await resolveChatPeer(chatId);
                 const messages = await withTimeout(

@@ -351,6 +351,101 @@ test("/save buffers forwarded files without starting work until /done is trigger
     }
 });
 
+test("/save correctly resolves channel forward origin and filename pattern like @moonulp - 213.txt", async () => {
+    const chatId = 886;
+    store.clear(chatId);
+
+    const calls = [];
+    const fakePeer = {
+        isReady: () => true,
+        downloadMessageToDisk: async (cId, messageId, options) => {
+            calls.push({ targetPeer: cId, targetMsgId: messageId, fileName: options.fileName });
+            const outPath = path.join(options.root, options.fileName);
+            fs.writeFileSync(outPath, `channel_user:channel_pass\n`, "utf8");
+            return {
+                path: outPath,
+                name: options.fileName,
+                size: 25,
+            };
+        },
+    };
+
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot, fakePeer);
+
+        // 1. Activate save mode
+        await bot.handleUpdate(command("/save", chatId));
+
+        // 2. Forward document with name "@moonulp - 213.txt"
+        const forwardedDocUpdate = {
+            update_id: 99999,
+            message: {
+                message_id: 404,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: chatId, type: "private" },
+                from: { id: 999, is_bot: false },
+                document: {
+                    file_name: "@moonulp - 213.txt",
+                    file_size: 50000000, // 50MB (exceeds Bot API 20MB limit)
+                    file_id: "doc_moonulp_213",
+                },
+                forward_origin: {
+                    type: "channel",
+                    chat: { id: -1001234567890, username: "moonulp", title: "Moon ULP" },
+                    message_id: 213,
+                },
+            },
+        };
+        await bot.handleUpdate(forwardedDocUpdate);
+
+        // 3. User finishes forwarding with /done
+        await bot.handleUpdate(command("/done", chatId));
+
+        // 4. Verify fakePeer was called with the channel username/id and message 213!
+        assert.equal(await waitFor(() => calls.length === 1, 5000), true);
+        assert.equal(calls[0].targetPeer, "@moonulp");
+        assert.equal(calls[0].targetMsgId, 213);
+        assert.equal(store.getStats(chatId)?.size || 0, 1);
+
+        assert.equal(await waitFor(() => api.calls.some((c) => /SAVE SESSION COMPLETE/.test(c.payload.text || "")), 5000), true);
+    } finally {
+        store.clear(chatId);
+        await api.close();
+    }
+});
+
+test("userbot extractForwardOrigin and parseChannelFilename parse channel dump names and origins", () => {
+    const { extractForwardOrigin, parseChannelFilename } = require("../src/userbot");
+
+    assert.deepEqual(parseChannelFilename("@moonulp - 213.txt"), { peer: "@moonulp", messageId: 213 });
+    assert.deepEqual(parseChannelFilename("@target_channel_505.txt"), { peer: "@target_channel", messageId: 505 });
+    assert.deepEqual(parseChannelFilename("@somechannel - 99.log"), { peer: "@somechannel", messageId: 99 });
+    assert.equal(parseChannelFilename("somechannel - 99.log"), null);
+    assert.equal(parseChannelFilename("batch_1.txt"), null);
+    assert.equal(parseChannelFilename("regular_file.txt"), null);
+
+    // Forward origin parser
+    const modern = {
+        forward_origin: {
+            type: "channel",
+            chat: { id: -1001999, username: "moonulp" },
+            message_id: 213,
+        },
+    };
+    assert.deepEqual(extractForwardOrigin(modern), { peer: "@moonulp", messageId: 213, title: "moonulp" });
+
+    const legacy = {
+        forward_from_chat: {
+            id: -1001999,
+            username: "moonulp",
+            title: "Moon Channel",
+        },
+        forward_from_message_id: 213,
+    };
+    assert.deepEqual(extractForwardOrigin(legacy), { peer: "@moonulp", messageId: 213, title: "Moon Channel" });
+});
+
 test.after(() => {
     fs.rmSync(PROCESSED_ROOT, { recursive: true, force: true });
     const { closeSharedPool } = require("../src/worker-pool");

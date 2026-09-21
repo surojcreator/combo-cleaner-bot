@@ -497,7 +497,10 @@ function attachButtonEmoji(btn) {
  * @param {Array<Array<object>>} rows
  */
 function createInlineKeyboard(rows) {
-    const processed = (rows || []).map((row) =>
+    if (!Array.isArray(rows)) {
+        rows = rows ? [rows] : [];
+    }
+    const processed = rows.map((row) =>
         Array.isArray(row) ? row.map(attachButtonEmoji) : attachButtonEmoji(row)
     );
     return Markup.inlineKeyboard(processed);
@@ -1213,7 +1216,8 @@ function saveListeningKeyboard(queuedCount = 0) {
  * Report rendered when a save session completes.
  */
 function renderSaveListeningComplete(data = {}) {
-    const processed = data.processed || [];
+    data = data || {};
+    const processed = Array.isArray(data.processed) ? data.processed : [];
     const lines = [
         `✅  ${B("SAVE SESSION COMPLETE")}  ${tgEmoji("⚡️")}`,
         RULE,
@@ -1264,6 +1268,7 @@ function saveListeningCompleteKeyboard(hasSessionFiles = true) {
  * @param {{ outName: string, outPath: string, totalFiles: number, keptLines?: number, duplicatesStripped?: number, fileSize: number, isZip?: boolean }} stats
  */
 function renderMergeComplete(stats = {}) {
+    stats = stats || {};
     const lines = [
         `✅  ${B("FILES MERGED ON SERVER VAULT")}  ${tgEmoji("⚡️")}`,
         RULE,
@@ -1394,19 +1399,21 @@ function renderStats(stats) {
  * @param {Array<{ site: string, count: number }>|null} siteCounts
  */
 function renderSites(siteCounts) {
-    if (!siteCounts || siteCounts.length === 0) {
+    if (!Array.isArray(siteCounts) || siteCounts.length === 0) {
         return [
             `${tgEmoji("📡")}  ${B("SITE RECONNAISSANCE")}  ${tgEmoji("⚡️")}`,
             RULE,
             `  • ${tgEmoji("🌐")} ${B("Status:")} No domains detected yet \u2014 send a dump file first ${tgEmoji("📤")}`,
         ].join("\n");
     }
-    const max = Math.max(...siteCounts.map((s) => s.count));
+    const max = Math.max(...siteCounts.map((s) => (s && s.count) || 0), 1);
     const lines = [
         `${tgEmoji("📡")}  ${B("SITE RECONNAISSANCE")} \u00B7 ${B(num(siteCounts.length))} detected ${tgEmoji("🌐")}`,
         RULE,
     ];
-    for (const { site, count } of siteCounts) {
+    for (const item of siteCounts) {
+        const site = (item && item.site) || "unknown";
+        const count = (item && item.count) || 0;
         const emoji = siteEmoji(site);
         lines.push(
             `  • ${tgEmoji(emoji)} ${B(escapeHtml(site))}`,
@@ -1421,18 +1428,20 @@ function renderSites(siteCounts) {
  * /ping reply.
  * @param {{ latencyMs: number, uptimeSec: number }} info
  */
-function renderPing(info) {
-    const up = info.uptimeSec;
+function renderPing(info = {}) {
+    info = info || {};
+    const up = Number(info.uptimeSec) || 0;
+    const latency = Number(info.latencyMs) || 0;
     const h = Math.floor(up / 3600);
     const m = Math.floor((up % 3600) / 60);
     const s = Math.floor(up % 60);
     const uptime = h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
     const speed =
-        info.latencyMs < 100 ? `${tgEmoji("🚀")} Blazing Fast` : info.latencyMs < 300 ? `${tgEmoji("⚡️")} Optimal` : `${tgEmoji("⏳")} Normal`;
+        latency < 100 ? `${tgEmoji("🚀")} Blazing Fast` : latency < 300 ? `${tgEmoji("⚡️")} Optimal` : `${tgEmoji("⏳")} Normal`;
     return [
         `${tgEmoji("🏓")}  ${B("SYSTEM ENGINE STATUS: PONG")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `  • ${tgEmoji("📡")} ${B("Network Latency:")}  ${B(`${info.latencyMs} ms`)} · ${speed}`,
+        `  • ${tgEmoji("📡")} ${B("Network Latency:")}  ${B(`${latency} ms`)} · ${speed}`,
         `  • ${tgEmoji("⏱️")} ${B("System Uptime:")}    ${B(uptime)}`,
         `  • ${tgEmoji("🟢")} ${B("Engine State:")}     ${B("Online & Saturating CPU")}`,
         `  • ${tgEmoji("🛡️")} ${B("Bot Protection:")}   ${B("Active Anti-Flood & Fallback Safe")}`,
@@ -1448,8 +1457,13 @@ function renderPing(info) {
  * @param {{ size: number, files: number }|null} chatStats
  * @param {string} [site]
  */
-function renderFileReport(name, stats, added, chatStats, site) {
-    const ratio = stats.total > 0 ? Math.round((stats.kept / stats.total) * 100) : 0;
+function renderFileReport(name = "file", stats = {}, added = {}, chatStats = null, site = "") {
+    name = name || "file";
+    stats = stats || {};
+    added = added || {};
+    const total = Number(stats.total) || 0;
+    const kept = Number(stats.kept) || 0;
+    const ratio = total > 0 ? Math.round((kept / total) * 100) : 0;
     const siteEmojiOut = site ? siteEmoji(site) : "🌐";
     const lines = [
         `${tgEmoji("✨")}  ${B("MULTI-CORE CLEAN REPORT")}  ${tgEmoji("⚡️")}`,
@@ -1461,20 +1475,20 @@ function renderFileReport(name, stats, added, chatStats, site) {
     }
     lines.push(
         RULE,
-        `  • ${tgEmoji("📂")} ${B("Files Read:")}       ${num(stats.files)}`,
-        `  • ${tgEmoji("📑")} ${B("Lines Seen:")}       ${num(stats.total)}`,
-        `  • ${tgEmoji("💎")} ${B("Kept:")}             ${B(num(stats.kept))}  ${bar(stats.kept, stats.total)} ${ratio}%`,
-        `  • ${tgEmoji("🔄")} Duplicates          ${num(stats.duplicates)}`,
-        `  • ${tgEmoji("🗑️")} ${B("Dropped:")}          ${num(stats.dropped)}`,
+        `  • ${tgEmoji("📂")} ${B("Files Read:")}       ${num(stats.files || 0)}`,
+        `  • ${tgEmoji("📑")} ${B("Lines Seen:")}       ${num(total)}`,
+        `  • ${tgEmoji("💎")} ${B("Kept:")}             ${B(num(kept))}  ${bar(kept, total)} ${ratio}%`,
+        `  • ${tgEmoji("🔄")} Duplicates          ${num(stats.duplicates || 0)}`,
+        `  • ${tgEmoji("🗑️")} ${B("Dropped:")}          ${num(stats.dropped || 0)}`,
         RULE,
-        `  • ${tgEmoji("➕")} ${B("Added to batch:")}   ${B(num(added.added))}`,
-        `  • ${tgEmoji("↩️")} ${B("Already Had:")}      ${num(added.duplicates)}`,
+        `  • ${tgEmoji("➕")} ${B("Added to batch:")}   ${B(num(added.added || 0))}`,
+        `  • ${tgEmoji("↩️")} ${B("Already Had:")}      ${num(added.duplicates || 0)}`,
     );
 
     if (chatStats) {
         lines.push(
             "",
-            `${tgEmoji("📦")}  ${B("Batch Total")} \u00B7 ${B(compact(chatStats.size))} unique from ${num(chatStats.files)} file(s)`,
+            `${tgEmoji("📦")}  ${B("Batch Total")} \u00B7 ${B(compact(chatStats.size || 0))} unique from ${num(chatStats.files || 0)} file(s)`,
         );
     }
 
@@ -1507,7 +1521,10 @@ function renderFileReport(name, stats, added, chatStats, site) {
  * Render report for forwarded log files combined into a single master file with direct download link.
  * @param {object} params
  */
-function renderForwardedLogsCombined({ files = [], stats = {}, downloadUrl = "", filename = "", site = "", chatStats = null }) {
+function renderForwardedLogsCombined(params = {}) {
+    params = params || {};
+    const { files = [], stats = {}, downloadUrl = "", filename = "", site = "", chatStats = null } = params;
+    const safeStats = stats || {};
     const siteEmojiOut = site ? siteEmoji(site) : "🌐";
     const fileCount = Array.isArray(files) ? files.length : 1;
     const lines = [
@@ -1519,18 +1536,18 @@ function renderForwardedLogsCombined({ files = [], stats = {}, downloadUrl = "",
     if (Array.isArray(files)) {
         for (let i = 0; i < files.length; i++) {
             const f = files[i];
-            const sizeStr = f.size ? ` · ${humanSize(f.size)}` : "";
-            const linesStr = f.lines !== undefined ? ` (${num(f.lines)} lines${sizeStr})` : (sizeStr ? ` (${sizeStr.slice(3)})` : "");
-            lines.push(`  ${i + 1}. ${tgEmoji("📄")} ${B(escapeHtml(f.name || "log_file"))}${linesStr}`);
+            const sizeStr = f && f.size ? ` · ${humanSize(f.size)}` : "";
+            const linesStr = f && f.lines !== undefined ? ` (${num(f.lines)} lines${sizeStr})` : (sizeStr ? ` (${sizeStr.slice(3)})` : "");
+            lines.push(`  ${i + 1}. ${tgEmoji("📄")} ${B(escapeHtml((f && f.name) || "log_file"))}${linesStr}`);
         }
     }
 
     lines.push(
         RULE,
         `${tgEmoji("📊")}  ${B("Combined Master Aggregation:")}`,
-        `  • ${tgEmoji("📑")} ${B("Total Lines Ingested:")}   ${num(stats.total || 0)}`,
-        `  • ${tgEmoji("💎")} ${B("Unique Lines Kept:")}      ${B(num(stats.kept || stats.size || 0))}`,
-        `  • ${tgEmoji("🔄")} ${B("Duplicates Removed:")}     ${num(stats.duplicates || 0)}`,
+        `  • ${tgEmoji("📑")} ${B("Total Lines Ingested:")}   ${num(safeStats.total || 0)}`,
+        `  • ${tgEmoji("💎")} ${B("Unique Lines Kept:")}      ${B(num(safeStats.kept || safeStats.size || 0))}`,
+        `  • ${tgEmoji("🔄")} ${B("Duplicates Removed:")}     ${num(safeStats.duplicates || 0)}`,
     );
 
     if (site) {
@@ -1564,7 +1581,9 @@ function renderForwardedLogsCombined({ files = [], stats = {}, downloadUrl = "",
  * Render report for forwarded zip files merged into a single master zip file with direct download link.
  * @param {object} params
  */
-function renderForwardedZipCombined({ files = [], entryCount = 0, folderCount = 0, totalSize = 0, compressedSize = 0, downloadUrl = "", filename = "" }) {
+function renderForwardedZipCombined(params = {}) {
+    params = params || {};
+    const { files = [], entryCount = 0, folderCount = 0, totalSize = 0, compressedSize = 0, downloadUrl = "", filename = "" } = params;
     const fileCount = Array.isArray(files) ? files.length : 1;
     const lines = [
         `${tgEmoji("⚡")}  ${B("MERGED ZIP PIPELINE (DIRECT LINK)")}  ${tgEmoji("⚡️")}`,
@@ -1614,8 +1633,10 @@ function renderForwardedZipCombined({ files = [], entryCount = 0, folderCount = 
  * @param {string[]} sample
  * @param {number} total
  */
-function renderPreview(sample, total) {
-    if (total === 0) {
+function renderPreview(sample = [], total = 0) {
+    sample = Array.isArray(sample) ? sample : [];
+    total = Number(total) || sample.length;
+    if (total === 0 || sample.length === 0) {
         return [
             `${tgEmoji("👁")}  ${B("PREVIEW")}  ${tgEmoji("⚡️")}`,
             RULE,
@@ -1637,9 +1658,13 @@ function renderPreview(sample, total) {
  * /search reply - matching lines from the batch, capped for Telegram limits.
  * Shows at most 20 hits inline; if there are more, use /combine + search locally.
  */
-function renderSearch(query, result) {
-    const shown = result.matches.length;
-    if (result.total === 0) {
+function renderSearch(query = "", result = {}) {
+    query = String(query || "");
+    result = result || {};
+    const matches = Array.isArray(result.matches) ? result.matches : [];
+    const total = Number(result.total) || matches.length;
+    const shown = matches.length;
+    if (total === 0 || matches.length === 0) {
         return [
             `${tgEmoji("🔎")}  ${B("SEARCH RESULTS")}  ${tgEmoji("⚡️")}`,
             RULE,
@@ -1647,12 +1672,12 @@ function renderSearch(query, result) {
         ].join("\n");
     }
     const out = [
-        `${tgEmoji("🔎")}  ${B("SEARCH RESULTS")} \u00B7 ${B(num(result.total))} hit${result.total === 1 ? "" : "s"} for ${CODE(escapeHtml(query))}`,
+        `${tgEmoji("🔎")}  ${B("SEARCH RESULTS")} \u00B7 ${B(num(total))} hit${total === 1 ? "" : "s"} for ${CODE(escapeHtml(query))}`,
         RULE,
     ];
-    for (const line of result.matches) out.push(CODE(escapeHtml(line)));
-    if (result.total > shown) {
-        out.push("", I("Showing first " + shown + " of " + num(result.total) + ` \u2014 /combine for the full file ${tgEmoji("📦")}`));
+    for (const line of matches) out.push(CODE(escapeHtml(line)));
+    if (total > shown) {
+        out.push("", I("Showing first " + shown + " of " + num(total) + ` \u2014 /combine for the full file ${tgEmoji("📦")}`));
     }
     return out.join("\n");
 }
@@ -1744,8 +1769,9 @@ function ulpResultKeyboard(hasDocument = false) {
  * /ulp usage card.
  * @param {{ searcherBot: string, stepDelayMs: number, maxTries: number, daysCount?: number }} info
  */
-function renderUlpHint(info) {
-    const daysLabel = info && info.daysCount ? `${info.daysCount} days active` : "5 days default";
+function renderUlpHint(info = {}) {
+    info = info || {};
+    const daysLabel = info.daysCount ? `${info.daysCount} days active` : "5 days default";
     return [
         `${tgEmoji("🚀")}  ${B("ULP SEARCH RELAY")}  ${tgEmoji("⚡️")}`,
         RULE,
@@ -1757,7 +1783,7 @@ function renderUlpHint(info) {
         `     • ${CODE("/ulp netflix.com 20.09.2026 14")} ${I("(14 days from date)")}`,
         `     • ${CODE("/ulp 14")} ${I("(set default duration to 14 days)")}`,
         "",
-        `  ${tgEmoji("1️⃣")} ${B("Target")} — Sent to ${B(mentionOf(info.searcherBot))}`,
+        `  ${tgEmoji("1️⃣")} ${B("Target")} — Sent to ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))}`,
         `  ${tgEmoji("2️⃣")} ${B("Smart Batch")} — Auto-detects latest batch date & steps down day-by-day`,
         `  ${tgEmoji("3️⃣")} ${B("Live Forward")} — All dump results are forwarded & auto-cleaned into batch`,
         `  ${tgEmoji("4️⃣")} ${B("Auto-Delivery")} — Delivers combined file and resets batch when finished ${tgEmoji("💎")}`,
@@ -1768,14 +1794,15 @@ function renderUlpHint(info) {
  * /ulp launch card: the exact sequence that will be sent to the searcher bot.
  * @param {{ query: string, scope: string, searcherBot: string, steps: Array<{ id: string, text: string }>, stepDelayMs: number, maxTries: number, transport?: string, daysCount?: number, startDate?: string }} info
  */
-function renderUlpStart(info) {
+function renderUlpStart(info = {}) {
+    info = info || {};
     const whoRow =
         info.transport === "userbot"
             ? [
                 `  • ${tgEmoji("👤")} ${B("Transport Relay:")} ${B("MTProto Account")} ${I("(MTProto bypass)")} ${tgEmoji("⚡️")}`,
-                `  • ${tgEmoji("🤖")} ${B("Target Bot:")}      ${B(mentionOf(info.searcherBot))}`,
+                `  • ${tgEmoji("🤖")} ${B("Target Bot:")}      ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))}`,
             ]
-            : [`  • ${tgEmoji("🤖")} ${B("Target Bot:")}      ${B(mentionOf(info.searcherBot))}`];
+            : [`  • ${tgEmoji("🤖")} ${B("Target Bot:")}      ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))}`];
     const daysCount = info.daysCount || 5;
     const dateLabel = info.startDate
         ? `Last ${daysCount} days from ${info.startDate}`
@@ -1783,7 +1810,7 @@ function renderUlpStart(info) {
     return [
         `${tgEmoji("🚀")}  ${B("ULP SEARCH INITIALIZED")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `  • ${tgEmoji("🎯")} ${B("Target Query:")}   ${B(escapeHtml(info.query))}`,
+        `  • ${tgEmoji("🎯")} ${B("Target Query:")}   ${B(escapeHtml(info.query || "unknown"))}`,
         `  • ${tgEmoji("📅")} ${B("Search Scope:")}   ${B(`Day-by-Day (${dateLabel})`)}`,
         ...whoRow,
         `  • ${tgEmoji("⏳")} ${B("Flood Safety:")}   ${CODE(`${pacingLabel(info.stepDelayMs)} delay`)}`,
@@ -1797,17 +1824,18 @@ function renderUlpStart(info) {
  * Progress card after each paced send.
  * @param {{ searcherBot: string, attempt: number, maxTries: number, sends: number, stepDelayMs: number, query?: string }} info
  */
-function renderUlpProgress(info) {
+function renderUlpProgress(info = {}) {
+    info = info || {};
     const sendsLine = Array.isArray(info.sends)
         ? escapeHtml(info.sends.join(" · "))
-        : `${num(info.sends)} step(s) sent`;
+        : `${num(info.sends || 0)} step(s) sent`;
     const attempt = Number(info.attempt || 1);
     const maxTries = Number(info.maxTries || 5);
     const pct = Math.min(100, Math.round((attempt / maxTries) * 100));
     return [
         `${tgEmoji("📡")}  ${B("ULP SEARCH IN PROGRESS")} · ${B(`[Day ${attempt}/${maxTries}]`)}  ${tgEmoji("⏳")}`,
         RULE,
-        `  • ${tgEmoji("🤖")} ${B("Searcher:")} ${CODE(mentionOf(info.searcherBot))} · ${sendsLine}`,
+        `  • ${tgEmoji("🤖")} ${B("Searcher:")} ${CODE(mentionOf(info.searcherBot || "DumpNews14Bot"))} · ${sendsLine}`,
         `  • ${tgEmoji("📊")} ${B("Progress:")} ${bar(attempt, maxTries, 10)} ${B(`${pct}%`)}`,
         `  • ${tgEmoji("⏳")} ${B("Pacing:")}   ${CODE(`${pacingLabel(info.stepDelayMs)} anti-flood safe`)}`,
         RULE,
@@ -1821,12 +1849,13 @@ function renderUlpProgress(info) {
  * Header posted once, right before results are forwarded.
  * @param {{ searcherBot: string, query: string, scope: string, count: number }} info
  */
-function renderUlpResults(info) {
+function renderUlpResults(info = {}) {
+    info = info || {};
     return [
         `${tgEmoji("📥")}  ${B("RESULTS INCOMING")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `  • ${tgEmoji("🤖")} ${B(mentionOf(info.searcherBot))} answered \u2014 forwarding ${B(num(info.count))} message${info.count === 1 ? "" : "s"} ${tgEmoji("⬇️")}`,
-        `  • ${tgEmoji("🎯")} ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        `  • ${tgEmoji("🤖")} ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))} answered \u2014 forwarding ${B(num(info.count || 0))} message${info.count === 1 ? "" : "s"} ${tgEmoji("⬇️")}`,
+        `  • ${tgEmoji("🎯")} ${CODE(escapeHtml(info.query || "unknown"))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope || "day"}`))}`,
         RULE,
         `${I(`Documents are automatically ingested and deduped into your batch ${tgEmoji("💎")}`)}`,
     ].join("\n");
@@ -1836,12 +1865,13 @@ function renderUlpResults(info) {
  * Nothing came back after all paced tries.
  * @param {{ searcherBot: string, query: string, scope: string, attempts: number, stepDelayMs: number }} info
  */
-function renderUlpEmpty(info) {
+function renderUlpEmpty(info = {}) {
+    info = info || {};
     return [
         `${tgEmoji("🕳")}  ${B("NO RESULTS FOUND")}  ${tgEmoji("🕳")}`,
         RULE,
-        `Tried ${B(`${info.attempts}×`)} with ${B(pacingLabel(info.stepDelayMs))} pacing \u2014 ${B(mentionOf(info.searcherBot))} returned no dumps.`,
-        `  • ${tgEmoji("🎯")} ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
+        `Tried ${B(`${info.attempts || 0}×`)} with ${B(pacingLabel(info.stepDelayMs || 14000))} pacing \u2014 ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))} returned no dumps.`,
+        `  • ${tgEmoji("🎯")} ${CODE(escapeHtml(info.query || "unknown"))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope || "day"}`))}`,
         RULE,
         `${I(`Try another query with ${CODE(escapeHtml("/ulp <query>"))} ${tgEmoji("🔄")}`)}`,
     ].join("\n");
@@ -1851,12 +1881,13 @@ function renderUlpEmpty(info) {
  * Run completed successfully.
  * @param {{ query: string, scope?: string, count: number }} info
  */
-function renderUlpDone(info) {
+function renderUlpDone(info = {}) {
+    info = info || {};
     return [
         `${tgEmoji("✨")}  ${B("ULP SEARCH COMPLETED")}  ${tgEmoji("🚀")}`,
         RULE,
-        `  • ${tgEmoji("🎯")}  Target:      ${B(escapeHtml(info.query))}`,
-        `  • ${tgEmoji("📊")}  Relayed:     ${B(num(info.count))} message${info.count === 1 ? "" : "s"}`,
+        `  • ${tgEmoji("🎯")}  Target:      ${B(escapeHtml(info.query || "unknown"))}`,
+        `  • ${tgEmoji("📊")}  Relayed:     ${B(num(info.count || 0))} message${(info.count || 0) === 1 ? "" : "s"}`,
         `  • ${tgEmoji("📦")}  Status:      ${B("Combined file generated & batch reset")} ${tgEmoji("💎")}`,
         RULE,
         `${I(`Start another search anytime with /ulp ${tgEmoji("⚡️")}`)}`,
@@ -1867,12 +1898,13 @@ function renderUlpDone(info) {
  * Run stopped by the user (or the result window expired).
  * @param {{ query: string, scope: string, count: number }} info
  */
-function renderUlpStopped(info) {
+function renderUlpStopped(info = {}) {
+    info = info || {};
     return [
         `${tgEmoji("🛑")}  ${B("SEARCH HALTED")}  ${tgEmoji("🛑")}`,
         RULE,
-        `${tgEmoji("🎯")}  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
-        `${tgEmoji("📊")}  ${num(info.count)} result message${info.count === 1 ? "" : "s"} captured this run`,
+        `${tgEmoji("🎯")}  ${CODE(escapeHtml(info.query || "unknown"))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope || "day"}`))}`,
+        `${tgEmoji("📊")}  ${num(info.count || 0)} result message${(info.count || 0) === 1 ? "" : "s"} captured this run`,
         "",
         `${I(`Ready for your next search with /ulp ${tgEmoji("🚀")}`)}`,
     ].join("\n");
@@ -1903,7 +1935,7 @@ function formatFileDate(d) {
  *   humanSize: (n: number) => string
  * }} info
  */
-function renderServerFiles(info) {
+function renderServerFiles(info = {}) {
     const {
         rawFiles = [],
         processedFiles = [],
@@ -1915,7 +1947,7 @@ function renderServerFiles(info) {
         tab = "overview",
         page = 0,
         pageSize = 3,
-    } = info;
+    } = info || {};
 
     const totalRawBytes = rawFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
     const totalProcBytes = processedFiles.reduce((acc, f) => acc + (Number(f.size) || 0), 0);
@@ -2145,10 +2177,12 @@ function ulpErrorHeader(kind, transport = "bot") {
  *
  * @param {{ kind: string, searcherBot: string, ownBot?: string|null, steps: Array<{ id: string, text: string }>, stepDelayMs: number, reason?: string|null, transport?: string }} info
  */
-function renderUlpBlocked(info) {
+function renderUlpBlocked(info = {}) {
+    info = info || {};
     const transport = info.transport === "userbot" ? "userbot" : "bot";
     const header = ulpErrorHeader(info.kind, transport);
     const own = info.ownBot ? mentionOf(info.ownBot) : "this bot";
+    const steps = Array.isArray(info.steps) ? info.steps : [];
     const lines = [
         `${tgEmoji(header.emoji)}  ${B(header.title)}`,
         RULE,
@@ -2185,8 +2219,8 @@ function renderUlpBlocked(info) {
     lines.push(
         "",
         `${tgEmoji("🛠️")}  ${B("By hand, right now")}`,
-        ...info.steps.map((step, i) => `  ${i + 1}️⃣ ${CODE(escapeHtml(step.text))}`),
-        `  ↳ send these to ${B(mentionOf(info.searcherBot))} yourself, ${B(pacingLabel(info.stepDelayMs))} apart`,
+        ...steps.map((step, i) => `  ${i + 1}️⃣ ${CODE(escapeHtml((step && step.text) || ""))}`),
+        `  ↳ send these to ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))} yourself, ${B(pacingLabel(info.stepDelayMs || 14000))} apart`,
         `  ↳ forward its answers here — files get cleaned ${tgEmoji("🧼")}`,
     );
     return lines.join("\n");
@@ -2198,12 +2232,13 @@ function renderUlpBlocked(info) {
  * Applies to documents (with a clean button) and to everything else.
  * @param {{ searcherBot: string, query: string, scope: string, count: number, hasDocument: boolean }} info
  */
-function renderUlpSharedResult(info) {
+function renderUlpSharedResult(info = {}) {
+    info = info || {};
     return [
-        `${tgEmoji("📥")}  ${B("RESULT IN")} \u00B7 ${B(mentionOf(info.searcherBot))}  ${tgEmoji("💎")}`,
+        `${tgEmoji("📥")}  ${B("RESULT IN")} \u00B7 ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))}  ${tgEmoji("💎")}`,
         RULE,
-        `${tgEmoji("🎯")}  ${CODE(escapeHtml(info.query))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope}`))}`,
-        `${tgEmoji("📦")}  ${num(info.count)} message${info.count === 1 ? "" : "s"} relayed in this run ${tgEmoji("⬇️")}`,
+        `${tgEmoji("🎯")}  ${CODE(escapeHtml(info.query || "unknown"))} \u00B7 ${CODE(escapeHtml(`hist:full:${info.scope || "day"}`))}`,
+        `${tgEmoji("📦")}  ${num(info.count || 0)} message${(info.count || 0) === 1 ? "" : "s"} relayed in this run ${tgEmoji("⬇️")}`,
         "",
         info.hasDocument
             ? `${I("⚡ Auto-processing dump file into batch now…")}`
@@ -2291,7 +2326,13 @@ function emojisKeyboard() {
 /**
  * Render batch save progress.
  */
-function renderBatchSaveProgress({ current, total, currentName, linesAdded, totalLines }) {
+function renderBatchSaveProgress(params = {}) {
+    params = params || {};
+    const current = Number(params.current) || 0;
+    const total = Number(params.total) || 0;
+    const currentName = params.currentName || "";
+    const linesAdded = Number(params.linesAdded) || 0;
+    const totalLines = Number(params.totalLines) || 0;
     const pct = total > 0 ? Math.round((current / total) * 100) : 0;
     return [
         `${tgEmoji("📦")}  ${B("BATCH SAVE & PROCESS")}  ${tgEmoji("⏳")}`,
@@ -2307,7 +2348,12 @@ function renderBatchSaveProgress({ current, total, currentName, linesAdded, tota
 /**
  * Render batch save completion.
  */
-function renderBatchSaveComplete({ totalFiles, totalLines, files = [], durationMs = 0 }) {
+function renderBatchSaveComplete(params = {}) {
+    params = params || {};
+    const totalFiles = Number(params.totalFiles) || 0;
+    const totalLines = Number(params.totalLines) || 0;
+    const files = Array.isArray(params.files) ? params.files : [];
+    const durationMs = Number(params.durationMs) || 0;
     const s = (durationMs / 1000).toFixed(1);
     const out = [
         `${tgEmoji("✅")}  ${B("BATCH SAVE COMPLETE")}  ${tgEmoji("💎")}`,
@@ -2318,7 +2364,10 @@ function renderBatchSaveComplete({ totalFiles, totalLines, files = [], durationM
         `${B("Processed Documents:")}`,
     ];
     files.slice(0, 8).forEach((f, i) => {
-        out.push(` ${i + 1}. ${CODE(escapeHtml(f.name))} ↳ +${num(f.lines)} lines (${humanSize(f.size)})`);
+        const fname = (f && f.name) || "document";
+        const flines = (f && f.lines) || 0;
+        const fsize = (f && f.size) || 0;
+        out.push(` ${i + 1}. ${CODE(escapeHtml(fname))} ↳ +${num(flines)} lines (${humanSize(fsize)})`);
     });
     if (files.length > 8) {
         out.push(` …and ${files.length - 8} more files.`);

@@ -270,7 +270,7 @@ function createBot(token, meta = {}) {
 
     bot.command(["removedomain", "deldomain", "delsite", "rmdomain"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
-        const domain = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const domain = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         if (!domain) {
             const counts = store.getSiteCounts(ctx.chat.id);
             if (counts.length === 0) {
@@ -420,7 +420,7 @@ function createBot(token, meta = {}) {
     bot.command(["mergezip", "zipmerge"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const chatId = ctx.chat.id;
-        const text = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const text = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         const urls = text.split(/\s+/).filter((u) => /^https?:\/\//i.test(u));
 
         // 1. If URLs provided in command: fetch in-memory, merge, and output direct link
@@ -436,66 +436,60 @@ function createBot(token, meta = {}) {
                     const res = await fetch(u);
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const buf = Buffer.from(await res.arrayBuffer());
-                    let name = path.basename(new URL(u).pathname) || `remote_${i + 1}.zip`;
-                    if (!name.toLowerCase().endsWith(".zip")) name += ".zip";
-                    fetched.push({ name, buffer: buf });
+                    if (buf.length > 0 && isZipBuffer(buf)) {
+                        fetched.push({
+                            name: path.basename(new URL(u).pathname) || `archive_${i + 1}.zip`,
+                            buffer: buf,
+                            size: buf.length,
+                        });
+                    }
                 } catch (err) {
-                    console.error("Failed to fetch remote zip for /mergezip:", err);
+                    console.error(`Failed to fetch remote zip from ${urls[i]}:`, err && err.message ? err.message : err);
                 }
             }
 
             if (fetched.length === 0) {
-                if (statusMsg) await safeEdit(ctx, statusMsg.message_id, "⚠️ Failed to fetch any valid zip files from provided URLs.");
+                await safeEdit(ctx, statusMsg.message_id, `⚠️  Could not download any valid .zip archives from the provided URLs.`);
                 return;
             }
 
-            const mergeRes = mergeZipFiles(fetched);
-            const stamp = new Date().toISOString().slice(0, 10);
-            const filename = `merged_remote_${stamp}.zip`;
-            const outputPath = path.join(localProcessedRoot(), filename);
-
             try {
-                fs.mkdirSync(localProcessedRoot(), { recursive: true });
-                fs.writeFileSync(outputPath, mergeRes.buffer);
-            } catch (_) {}
+                const combinedZip = mergeZipFiles(fetched);
+                const outFilename = `merged_${sanitizeSiteSlug(fetched[0].name.replace(/\.zip$/i, ""))}_${Date.now()}.zip`;
+                const dl = downloads.registerDownload({
+                    filename: outFilename,
+                    buffer: combinedZip.buffer,
+                    size: combinedZip.compressedSize || combinedZip.buffer.length,
+                    mimeType: "application/zip",
+                    chatId,
+                    stats: {
+                        isZip: true,
+                        entryCount: combinedZip.entryCount,
+                        totalSize: combinedZip.totalSize,
+                        compressedSize: combinedZip.buffer.length,
+                    },
+                });
 
-            const dl = downloads.registerDownload({
-                filename,
-                filePath: outputPath,
-                buffer: mergeRes.buffer,
-                size: mergeRes.compressedSize,
-                mimeType: "application/zip",
-                chatId,
-                stats: { sourceFiles: mergeRes.sourceFiles, entryCount: mergeRes.entryCount, folderCount: mergeRes.folderCount, isZip: true },
-            });
+                const reportText = renderForwardedZipCombined({
+                    files: fetched.map((f) => ({ name: f.name, size: f.size })),
+                    entryCount: combinedZip.entryCount,
+                    folderCount: combinedZip.folderCount,
+                    totalSize: combinedZip.totalSize,
+                    compressedSize: combinedZip.buffer.length,
+                    downloadUrl: dl.url,
+                    filename: outFilename,
+                });
 
-            store.setLastCombined(chatId, {
-                buffer: mergeRes.buffer,
-                filename,
-                linesCount: mergeRes.entryCount,
-                isZip: true,
-            });
-
-            const report = renderForwardedZipCombined({
-                files: mergeRes.sourceFiles,
-                entryCount: mergeRes.entryCount,
-                folderCount: mergeRes.folderCount,
-                totalSize: mergeRes.totalSize,
-                compressedSize: mergeRes.compressedSize,
-                downloadUrl: dl.url,
-                filename,
-            });
-
-            if (statusMsg) {
-                await safeEdit(ctx, statusMsg.message_id, report, forwardedZipKeyboard(dl.url, dl.token));
-            } else {
-                await safeReply(ctx, report, forwardedZipKeyboard(dl.url, dl.token));
+                await safeEdit(ctx, statusMsg.message_id, reportText, forwardedZipKeyboard(dl.url, dl.token));
+            } catch (err) {
+                console.error("In-memory zip merge failed:", err);
+                await safeEdit(ctx, statusMsg.message_id, `💥  ${B("Failed to merge zip archives:")}\n${I(escapeHtml(err.message))}`);
             }
             return;
         }
 
         // 2. If replied to a document
-        const replyMsg = ctx.message.reply_to_message;
+        const replyMsg = (ctx.message || ctx.channelPost)?.reply_to_message;
         if (replyMsg && replyMsg.document) {
             await handleForwardedDocument(ctx, replyMsg.document);
             return;
@@ -522,7 +516,7 @@ function createBot(token, meta = {}) {
 
     bot.command("search", async (ctx) => {
         userPromptState.delete(ctx.chat.id);
-        const query = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const query = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         if (!query) {
             await safeReply(
                 ctx,
@@ -1570,7 +1564,7 @@ function createBot(token, meta = {}) {
     });
 
     bot.command("lsearch", async (ctx) => {
-        const raw = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const raw = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         const parts = raw.split(/\s+/);
         const query = parts[0] || "";
         const specifiedName = parts[1] || "";
@@ -1632,7 +1626,7 @@ function createBot(token, meta = {}) {
     });
 
     bot.command("name", async (ctx) => {
-        const arg = (ctx.message.text || "").replace(/^\S+\s*/, "").trim();
+        const arg = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         const chat = store.getRawChat(ctx.chat.id);
         if (!arg) {
             const current = chat && chat.customName ? chat.customName : null;
@@ -1709,7 +1703,7 @@ function createBot(token, meta = {}) {
     //   /process local          -> pick the latest file under /var/data (optional)
     bot.command("process", async (ctx) => {
         userPromptState.delete(ctx.chat.id);
-        const raw = (ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
+        const raw = (ctx.message?.text || "").replace(/^\/\S+\s*/, "").trim();
         if (!raw) {
             await safeReply(
                 ctx,
@@ -2339,7 +2333,7 @@ function createBot(token, meta = {}) {
         }
 
         // Parse optional limit: e.g. "/batchsave 20" or default to 10 (max 50)
-        const rawArg = (ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
+        const rawArg = (ctx.message?.text || "").replace(/^\/\S+\s*/, "").trim();
         let limit = 10;
         if (rawArg && /^\d+$/.test(rawArg)) {
             limit = Math.min(50, Math.max(1, parseInt(rawArg, 10)));
@@ -2632,14 +2626,12 @@ function createBot(token, meta = {}) {
     // Inline button: Stats
     bot.action("stats", async (ctx) => {
         await ctx.answerCbQuery("\uD83D\uDCCA Loading stats\u2026").catch(() => { });
-        try {
-            await ctx.editMessageText(renderStats(store.getStats(ctx.chat.id)), {
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                ...mainKeyboard(),
-            });
-        } catch {
-            await safeReply(ctx, renderStats(store.getStats(ctx.chat.id)), mainKeyboard());
+        const msgId = ctx.callbackQuery?.message?.message_id;
+        const text = renderStats(store.getStats(ctx.chat.id));
+        if (msgId) {
+            await safeEdit(ctx, msgId, text, mainKeyboard());
+        } else {
+            await safeReply(ctx, text, mainKeyboard());
         }
     });
 
@@ -2647,14 +2639,12 @@ function createBot(token, meta = {}) {
     bot.action("sites", async (ctx) => {
         await ctx.answerCbQuery("📡 Loading sites…").catch(() => { });
         const counts = store.getSiteCounts(ctx.chat.id);
-        try {
-            await ctx.editMessageText(renderSites(counts), {
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                ...sitesKeyboard(counts),
-            });
-        } catch {
-            await safeReply(ctx, renderSites(counts), sitesKeyboard(counts));
+        const msgId = ctx.callbackQuery?.message?.message_id;
+        const text = renderSites(counts);
+        if (msgId) {
+            await safeEdit(ctx, msgId, text, sitesKeyboard(counts));
+        } else {
+            await safeReply(ctx, text, sitesKeyboard(counts));
         }
     });
 
@@ -2710,14 +2700,12 @@ function createBot(token, meta = {}) {
         const page = parseInt(ctx.match[1], 10) || 0;
         await ctx.answerCbQuery().catch(() => {});
         const counts = store.getSiteCounts(ctx.chat.id);
-        try {
-            await ctx.editMessageText(renderSites(counts), {
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                ...sitesKeyboard(counts, page),
-            });
-        } catch {
-            await safeReply(ctx, renderSites(counts), sitesKeyboard(counts, page));
+        const msgId = ctx.callbackQuery?.message?.message_id;
+        const text = renderSites(counts);
+        if (msgId) {
+            await safeEdit(ctx, msgId, text, sitesKeyboard(counts, page));
+        } else {
+            await safeReply(ctx, text, sitesKeyboard(counts, page));
         }
     });
 
@@ -2739,71 +2727,65 @@ function createBot(token, meta = {}) {
     bot.action("help", async (ctx) => {
         await ctx.answerCbQuery("\u2753").catch(() => { });
         const batch = store.getStats(ctx.chat.id);
-        try {
-            await ctx.editMessageText(renderHelp(meta.botUsername, batch), {
-                parse_mode: "HTML",
-                disable_web_page_preview: true,
-                ...mainKeyboard(),
-            });
-        } catch {
-            await safeReply(ctx, renderHelp(meta.botUsername, batch), mainKeyboard());
+        const msgId = ctx.callbackQuery?.message?.message_id;
+        const text = renderHelp(meta.botUsername, batch);
+        if (msgId) {
+            await safeEdit(ctx, msgId, text, mainKeyboard());
+        } else {
+            await safeReply(ctx, text, mainKeyboard());
         }
     });
 
     // Inline buttons: Clear (two-step)
     bot.action("clear:ask", async (ctx) => {
         const stats = store.getStats(ctx.chat.id);
+        const msgId = ctx.callbackQuery?.message?.message_id;
         if (!stats || stats.size === 0) {
             await ctx.answerCbQuery("\uD83D\uDCED Nothing to clear!").catch(() => { });
-            try {
-                await ctx.editMessageText(
-                    "\uD83D\uDCED Nothing stored for this chat \u2014 all clean \u2728",
-                );
-            } catch {
-                // ignore
+            const emptyText = "\uD83D\uDCED Nothing stored for this chat \u2014 all clean \u2728";
+            if (msgId) {
+                await safeEdit(ctx, msgId, emptyText, mainKeyboard());
+            } else {
+                await safeReply(ctx, emptyText, mainKeyboard());
             }
             return;
         }
         await ctx.answerCbQuery().catch(() => { });
-        try {
-            await ctx.editMessageText(
-                [
-                    `\uD83E\uDDF9  ${B("Clear this batch?")}`,
-                    `\uD83D\uDCE6 It holds ${B(num(stats.size))} unique line${stats.size === 1 ? "" : "s"}`,
-                    "",
-                    `${I("This can't be undone \u26A0\uFE0F")}`,
-                ].join("\n"),
-                { parse_mode: "HTML", ...confirmClearKeyboard() },
-            );
-        } catch {
-            // ignore
+        const askText = [
+            `\uD83E\uDDF9  ${B("Clear this batch?")}`,
+            `\uD83D\uDCE6 It holds ${B(num(stats.size))} unique line${stats.size === 1 ? "" : "s"}`,
+            "",
+            `${I("This can't be undone \u26A0\uFE0F")}`,
+        ].join("\n");
+        if (msgId) {
+            await safeEdit(ctx, msgId, askText, confirmClearKeyboard());
+        } else {
+            await safeReply(ctx, askText, confirmClearKeyboard());
         }
     });
 
     bot.action("clear:yes", async (ctx) => {
         const existed = store.clear(ctx.chat.id);
         await ctx.answerCbQuery(existed ? "\uD83E\uDDFA Poof! Gone." : "\uD83D\uDCED Nothing to clear").catch(() => { });
-        try {
-            await ctx.editMessageText(
-                existed
-                    ? "\uD83E\uDDFA Batch wiped \u2014 fresh start! \u2728\n\uD83D\uDCE4 Send me your next file whenever you're ready."
-                    : "\uD83D\uDCED Nothing stored for this chat.",
-                { parse_mode: "HTML", ...emptyBatchKeyboard() },
-            );
-        } catch {
-            // ignore
+        const msgId = ctx.callbackQuery?.message?.message_id;
+        const wipedText = existed
+            ? "\uD83E\uDDFA Batch wiped \u2014 fresh start! \u2728\n\uD83D\uDCE4 Send me your next file whenever you're ready."
+            : "\uD83D\uDCED Nothing stored for this chat.";
+        if (msgId) {
+            await safeEdit(ctx, msgId, wipedText, emptyBatchKeyboard());
+        } else {
+            await safeReply(ctx, wipedText, emptyBatchKeyboard());
         }
     });
 
     bot.action("clear:no", async (ctx) => {
         await ctx.answerCbQuery("\uD83D\uDCCE Batch kept \u2728").catch(() => { });
-        try {
-            await ctx.editMessageText(
-                "\uD83D\uDCCE Phew \u2014 batch kept! Nothing was touched. \u2728",
-                { parse_mode: "HTML", ...mainKeyboard() },
-            );
-        } catch {
-            // ignore
+        const msgId = ctx.callbackQuery?.message?.message_id;
+        const keptText = "\uD83D\uDCCE Phew \u2014 batch kept! Nothing was touched. \u2728";
+        if (msgId) {
+            await safeEdit(ctx, msgId, keptText, mainKeyboard());
+        } else {
+            await safeReply(ctx, keptText, mainKeyboard());
         }
     });
 
@@ -2813,7 +2795,7 @@ function createBot(token, meta = {}) {
     //   query -> hist:full:<day|month|year>, 7s before every try, then every
     //   answer the searcher sends back is forwarded into this chat.
     const ulpCommand = async (ctx) => {
-        const raw = (ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
+        const raw = (ctx.message?.text || "").replace(/^\/\S+\s*/, "").trim();
         userPromptState.delete(ctx.chat.id);
         const parsed = parseUlpArg(raw, searchOptions);
         if (parsed.daysCount) {
@@ -3061,6 +3043,16 @@ function createBot(token, meta = {}) {
             } catch (itemErr) {
                 console.error(`Failed to ingest forwarded item ${item.name}:`, itemErr);
             }
+        }
+
+        if (fetchedItems.length === 0) {
+            const failMsg = `⚠️  Could not download forwarded documents. Files may be inaccessible or deleted.`;
+            if (noticeId) {
+                await safeEdit(ctx, noticeId, failMsg);
+            } else {
+                await safeReply(ctx, failMsg);
+            }
+            return;
         }
 
         // If batch contains zip files, merge them into ONE master .zip file directly!
@@ -4351,7 +4343,7 @@ function isForwardedDocument(ctx) {
  * @param {string} [marker]
  */
 function isSearcherForward(ctx, meta, searchOptions, marker = "#ulp") {
-    const msg = ctx.message;
+    const msg = (ctx && (ctx.message || ctx.channelPost)) || null;
     if (!msg || (ctx.from && ctx.from.is_bot)) return false;
     const expected = String((searchOptions && searchOptions.botUsername) || "").replace(/^@+/, "").toLowerCase();
 
@@ -4657,7 +4649,7 @@ async function beginUlpRun(ctx, params) {
  */
 async function relaySearcherMessage(ctx, params) {
     const { searchOptions } = params;
-    const msg = ctx.message;
+    const msg = (ctx && (ctx.message || ctx.channelPost)) || {};
     const searcherChatId = ctx.chat.id;
     const kind = msg.document ? "document" : msg.photo ? "photo" : msg.video ? "video" : "text";
 
@@ -4769,7 +4761,7 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
  */
 async function ackSharedResult(ctx, params) {
     const { searchOptions, meta = {} } = params;
-    const msg = ctx.message;
+    const msg = (ctx && (ctx.message || ctx.channelPost)) || {};
     let chatId = ctx.chat.id;
     let run = searchbot.getRun(chatId);
     if (!run && typeof searchbot.mostRecentRun === "function") {

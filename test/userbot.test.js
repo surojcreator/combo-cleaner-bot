@@ -193,4 +193,256 @@ test("renderUlpDone renders completed status card with query and count", () => {
     assert.match(out, /<b>7<\/b> message/);
 });
 
+test("searchDayByDay sends /start first, selects date folder, then writes domain only on first iteration", async () => {
+    const actions = [];
+    const cfg = {
+        apiId: 12345,
+        apiHash: "hash",
+        session: "session",
+        searcher: "DumpNews14Bot",
+        transport: "userbot",
+    };
+
+    let msgCounter = 100;
+    const date1 = "21.09.2026";
+    const date2 = "20.09.2026";
+
+    const mockMenuDay1 = {
+        id: ++msgCounter,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: `📅 ${date1}`, data: Buffer.from(`folder:${date1}:0`) }] },
+            ],
+        },
+    };
+
+    const mockFolderViewDay1 = {
+        id: mockMenuDay1.id,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: "📦 Full hist", data: Buffer.from(`hist:${date1}:0`) }] },
+            ],
+        },
+    };
+
+    const mockMenuDay2 = {
+        id: ++msgCounter,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: `📅 ${date2}`, data: Buffer.from(`folder:${date2}:0`) }] },
+            ],
+        },
+    };
+
+    const mockFolderViewDay2 = {
+        id: mockMenuDay2.id,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: "📦 Full hist", data: Buffer.from(`hist:${date2}:0`) }] },
+            ],
+        },
+    };
+
+    let currentDay = 1;
+    let folderOpened = false;
+
+    const mockClient = {
+        async sendMessage(target, { message }) {
+            actions.push({ type: "sendMessage", message });
+            return { id: ++msgCounter, out: true, message };
+        },
+        async getMessages(target, opts = {}) {
+            if (opts.ids && opts.ids.length) {
+                if (currentDay === 1 && folderOpened) return [mockFolderViewDay1];
+                if (currentDay === 2 && folderOpened) return [mockFolderViewDay2];
+                return currentDay === 1 ? [mockMenuDay1] : [mockMenuDay2];
+            }
+            if (folderOpened) {
+                const dumpDoc = {
+                    id: ++msgCounter,
+                    out: false,
+                    media: { document: { size: 1024 } },
+                    document: { size: 1024 },
+                };
+                return [dumpDoc, currentDay === 1 ? mockFolderViewDay1 : mockFolderViewDay2];
+            }
+            return currentDay === 1 ? [mockMenuDay1] : [mockMenuDay2];
+        },
+        async invoke(req) {
+            const dataStr = req.data ? req.data.toString() : "";
+            actions.push({ type: "callback", data: dataStr });
+            if (dataStr.startsWith("folder:")) {
+                folderOpened = true;
+            } else if (dataStr.startsWith("hist:")) {
+                currentDay = 2;
+                folderOpened = false;
+            }
+            return true;
+        },
+        async getInputEntity() { return { id: 999 }; },
+    };
+
+    const ub = userbot.createUserbot(cfg, {
+        client: mockClient,
+        searcherEntity: { id: 888 },
+    });
+
+    const receivedResults = [];
+    const res = await ub.searchDayByDay({
+        query: "netflix.com",
+        daysCount: 2,
+        startDate: new Date("2026-09-21T12:00:00Z"),
+        stepDelayMs: 10,
+        onResult: (m) => receivedResults.push(m),
+        sleep: () => Promise.resolve(),
+    });
+
+    assert.equal(res.status, "done");
+
+    // Sequence checks:
+    // 1. First sendMessage must be "/start"
+    assert.equal(actions[0].type, "sendMessage");
+    assert.equal(actions[0].message, "/start");
+
+    // 2. Second action must be selecting the date folder
+    assert.equal(actions[1].type, "callback");
+    assert.equal(actions[1].data, `folder:${date1}:0`);
+
+    // 3. Third action must be writing the domain query
+    assert.equal(actions[2].type, "sendMessage");
+    assert.equal(actions[2].message, "netflix.com");
+
+    // 4. Fourth action is clicking hist
+    assert.equal(actions[3].type, "callback");
+    assert.equal(actions[3].data, `hist:${date1}:0`);
+
+    // Day 2 checks:
+    // 5. Day 2 starts with "/start"
+    assert.equal(actions[4].type, "sendMessage");
+    assert.equal(actions[4].message, "/start");
+
+    // 6. Day 2 selects date 2
+    assert.equal(actions[5].type, "callback");
+    assert.equal(actions[5].data, `folder:${date2}:0`);
+
+    // 7. Day 2 clicks hist (domain is NOT sent again!)
+    assert.equal(actions[6].type, "callback");
+    assert.equal(actions[6].data, `hist:${date2}:0`);
+
+    // Domain is ONLY sent once in the whole run
+    const domainSends = actions.filter((a) => a.type === "sendMessage" && a.message === "netflix.com");
+    assert.equal(domainSends.length, 1, "Domain query should only be sent for the first time");
+});
+
+test("searchDayByDay navigates pagination loop when date folder is on page 2", async () => {
+    const actions = [];
+    const cfg = {
+        apiId: 12345,
+        apiHash: "hash",
+        session: "session",
+        searcher: "DumpNews14Bot",
+        transport: "userbot",
+    };
+
+    let msgCounter = 200;
+    const targetDate = "15.09.2026";
+
+    // Page 1 has other dates and a Next page button
+    const page1Msg = {
+        id: ++msgCounter,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: "📅 21.09.2026", data: Buffer.from("folder:21.09.2026:0") }] },
+                { buttons: [{ text: "➡️ Next", data: Buffer.from("menu:page:1") }] },
+            ],
+        },
+    };
+
+    // Page 2 has the target date
+    const page2Msg = {
+        id: page1Msg.id,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: `📅 ${targetDate}`, data: Buffer.from(`folder:${targetDate}:0`) }] },
+            ],
+        },
+    };
+
+    const folderViewMsg = {
+        id: page1Msg.id,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: "📦 Full hist", data: Buffer.from(`hist:${targetDate}:0`) }] },
+            ],
+        },
+    };
+
+    let currentPage = 0;
+    let folderOpened = false;
+
+    const mockClient = {
+        async sendMessage(target, { message }) {
+            actions.push({ type: "sendMessage", message });
+            return { id: ++msgCounter, out: true, message };
+        },
+        async getMessages(target, opts = {}) {
+            if (opts.ids && opts.ids.length) {
+                if (folderOpened) return [folderViewMsg];
+                return currentPage === 0 ? [page1Msg] : [page2Msg];
+            }
+            if (folderOpened) {
+                return [{ id: ++msgCounter, out: false, media: { document: { size: 500 } } }, folderViewMsg];
+            }
+            return currentPage === 0 ? [page1Msg] : [page2Msg];
+        },
+        async invoke(req) {
+            const dataStr = req.data ? req.data.toString() : "";
+            actions.push({ type: "callback", data: dataStr });
+            if (dataStr === "menu:page:1") {
+                currentPage = 1;
+            } else if (dataStr.startsWith("folder:")) {
+                folderOpened = true;
+            }
+            return true;
+        },
+        async getInputEntity() { return { id: 999 }; },
+    };
+
+    const ub = userbot.createUserbot(cfg, {
+        client: mockClient,
+        searcherEntity: { id: 888 },
+    });
+
+    const res = await ub.searchDayByDay({
+        query: "paypal.com",
+        daysCount: 1,
+        startDate: new Date("2026-09-15T12:00:00Z"),
+        stepDelayMs: 10,
+        sleep: () => Promise.resolve(),
+    });
+
+    assert.equal(res.status, "done");
+
+    // Action sequence:
+    // 1. sendMessage: "/start"
+    // 2. callback: "menu:page:1" (navigated to page 2!)
+    // 3. callback: "folder:15.09.2026:0" (selected date on page 2!)
+    // 4. sendMessage: "paypal.com" (domain sent after date selected!)
+    // 5. callback: "hist:15.09.2026:0"
+    assert.equal(actions[0].message, "/start");
+    assert.equal(actions[1].data, "menu:page:1");
+    assert.equal(actions[2].data, `folder:${targetDate}:0`);
+    assert.equal(actions[3].message, "paypal.com");
+    assert.equal(actions[4].data, `hist:${targetDate}:0`);
+});
+
+
+
 

@@ -320,12 +320,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
     const { TelegramClient, Api, StringSession, getPeerId } = loadLibs();
 
     /** @type {any} */
-    let client = null;
+    let client = opts.client || null;
     /** @type {any} */
-    let searcherEntity = null;
-    let searcherId = null;
+    let searcherEntity = opts.searcherEntity || null;
+    let searcherId = opts.searcherId || null;
     let botUsername = cfg.botUsername || (opts && opts.botUsername) || "";
-    let ready = false;
+    let ready = Boolean(opts.client || opts.ready);
 
     /**
      * Whoever cares whether a searcher message should be relayed.
@@ -903,125 +903,138 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             const totalDays = Math.max(1, Math.min(90, Number(daysCount) || 5));
             const searchTarget = searcherEntity || cfg.searcher;
             const seenResultIds = new Set();
-
-            // Step 0: Ensure the query is active in the searcher bot
-            if (shouldStop()) return { status: "stopped", daysProcessed: 0 };
-            onStatus({
-                day: startDate ? formatDateDmy(startDate) : "latest",
-                attempt: 1,
-                totalDays,
-                step: `Setting query "${query}"`,
-            });
-            await withTimeout(
-                client.sendMessage(searchTarget, { message: query }),
-                timeoutMs,
-                "userbot send query",
-            );
-            await sleep(Math.max(1500, Math.min(stepDelayMs, 2500)));
-
+            let domainSent = false;
             let currentDate = startDate ? new Date(startDate.getTime()) : null;
-
-            // Step 1: Auto-discover the latest batch date if no explicit startDate was given
-            if (!currentDate) {
-                onStatus({
-                    day: "latest",
-                    attempt: 1,
-                    totalDays,
-                    step: "Detecting latest batch date…",
-                });
-                const sentStart = await withTimeout(
-                    client.sendMessage(searchTarget, { message: "/start" }),
-                    timeoutMs,
-                    "userbot send /start for latest batch",
-                );
-                await sleep(1200);
-                const recentMsgs = await withTimeout(
-                    client.getMessages(searchTarget, { limit: 5 }),
-                    timeoutMs,
-                    "userbot getMessages for latest batch",
-                );
-                const initialMenu =
-                    recentMsgs.find((m) => !m.out && m.id > (sentStart.id || 0) && m.replyMarkup && m.replyMarkup.rows) ||
-                    recentMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows);
-                const detected = detectLatestBatchDate(initialMenu);
-                if (detected) {
-                    currentDate = detected;
-                    log.log(`userbot detected latest batch date: ${formatDateDmy(currentDate)}`);
-                } else {
-                    currentDate = new Date();
-                    log.log(`userbot could not detect batch date from menu, falling back to ${formatDateDmy(currentDate)}`);
-                }
-            }
-
             let daysProcessed = 0;
             let consecutiveMisses = 0;
 
             for (let dayIdx = 0; dayIdx < totalDays; dayIdx++) {
                 if (shouldStop()) return { status: "stopped", daysProcessed };
 
-                const dateStr = formatDateDmy(currentDate);
-                onStatus({
-                    day: dateStr,
-                    attempt: dayIdx + 1,
-                    totalDays,
-                    step: `Opening folder for ${dateStr}`,
-                });
-
-                // Send /start to get the fresh date folder menu
-                const sentStart = await withTimeout(
-                    client.sendMessage(searchTarget, { message: "/start" }),
-                    timeoutMs,
-                    "userbot send /start",
-                );
+                // =========================================================================
+                // STEP 1: First do the /start (with retry loops and response verification)
+                // =========================================================================
+                let sentStart = null;
+                for (let startAttempt = 0; startAttempt < 3; startAttempt++) {
+                    if (shouldStop()) return { status: "stopped", daysProcessed };
+                    try {
+                        onStatus({
+                            day: currentDate ? formatDateDmy(currentDate) : "init",
+                            attempt: dayIdx + 1,
+                            totalDays,
+                            step: startAttempt === 0 ? "Sending /start to open menu…" : `Retrying /start (attempt ${startAttempt + 1})…`,
+                        });
+                        sentStart = await withTimeout(
+                            client.sendMessage(searchTarget, { message: "/start" }),
+                            timeoutMs,
+                            "userbot send /start",
+                        );
+                        if (sentStart) break;
+                    } catch (startErr) {
+                        log.error(`userbot send /start attempt ${startAttempt + 1} failed:`, startErr && startErr.message ? startErr.message : startErr);
+                        await sleep(1500);
+                    }
+                }
                 await sleep(1000);
 
                 if (shouldStop()) return { status: "stopped", daysProcessed };
 
-                // Get the menu message with buttons
+                // Polling loop to get the menu message containing button rows
                 let menuMsg = null;
+                for (let pollTry = 0; pollTry < 6; pollTry++) {
+                    if (shouldStop()) return { status: "stopped", daysProcessed };
+                    try {
+                        const recents = await withTimeout(
+                            client.getMessages(searchTarget, { limit: 6 }),
+                            timeoutMs,
+                            "userbot getMessages menu",
+                        );
+                        menuMsg =
+                            recents.find((m) => !m.out && sentStart && m.id > sentStart.id && m.replyMarkup && m.replyMarkup.rows && m.replyMarkup.rows.length > 0) ||
+                            recents.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows && m.replyMarkup.rows.length > 0);
+                        if (menuMsg) break;
+                    } catch (fetchErr) {
+                        log.error("userbot poll menu error:", fetchErr && fetchErr.message ? fetchErr.message : fetchErr);
+                    }
+                    await sleep(800);
+                }
+
+                // If currentDate is not yet known, detect latest batch date from the buttons
+                if (!currentDate) {
+                    const detected = detectLatestBatchDate(menuMsg);
+                    if (detected) {
+                        currentDate = detected;
+                        log.log(`userbot detected latest batch date from menu: ${formatDateDmy(currentDate)}`);
+                    } else {
+                        currentDate = new Date();
+                        log.log(`userbot falling back to current date: ${formatDateDmy(currentDate)}`);
+                    }
+                }
+
+                const dateStr = formatDateDmy(currentDate);
+
+                // =========================================================================
+                // STEP 2: Then select the date folder (multi-page traversal loop)
+                // =========================================================================
                 let folderBtn = null;
                 let pageAttempts = 0;
+                const maxPages = 10;
 
-                while (pageAttempts < 5 && !folderBtn) {
-                    const recentMsgs = await withTimeout(
-                        client.getMessages(searchTarget, { limit: 5 }),
-                        timeoutMs,
-                        "userbot getMessages menu",
-                    );
-                    menuMsg =
-                        recentMsgs.find((m) => !m.out && m.id > (sentStart.id || 0) && m.replyMarkup && m.replyMarkup.rows) ||
-                        recentMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows);
-                    if (!menuMsg) break;
+                while (pageAttempts < maxPages && !folderBtn && menuMsg) {
+                    if (shouldStop()) return { status: "stopped", daysProcessed };
 
-                    // Search for folder button with dateStr
-                    for (const row of menuMsg.replyMarkup.rows) {
-                        for (const btn of row.buttons) {
-                            const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
-                            if (dataStr.startsWith(`folder:${dateStr}:`) || (btn.text && btn.text.includes(dateStr))) {
-                                folderBtn = { text: btn.text, data: dataStr };
-                                break;
-                            }
-                        }
-                        if (folderBtn) break;
-                    }
-
-                    // If not found on this page, try clicking next page "➡️"
-                    if (!folderBtn) {
-                        let nextPageBtn = null;
+                    if (menuMsg.replyMarkup && Array.isArray(menuMsg.replyMarkup.rows)) {
                         for (const row of menuMsg.replyMarkup.rows) {
+                            if (!Array.isArray(row.buttons)) continue;
                             for (const btn of row.buttons) {
                                 const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
-                                const text = btn.text || "";
-                                const isNext = (text.includes("➡️") || text.includes("Next") || text.includes("▶️") || text === "»") ||
-                                               (dataStr.startsWith("menu:page:") && !text.includes("⬅️") && !text.includes("Prev") && !text.includes("◀️") && dataStr !== "menu:page:0");
-                                if (isNext) {
-                                    nextPageBtn = { text, data: dataStr };
+                                const textStr = String(btn.text || "");
+                                if (
+                                    dataStr.startsWith(`folder:${dateStr}:`) ||
+                                    dataStr === `folder:${dateStr}` ||
+                                    textStr.includes(dateStr) ||
+                                    (textStr.includes(dateStr.slice(0, 5)) && textStr.includes(dateStr.slice(-4)))
+                                ) {
+                                    folderBtn = { text: textStr, data: dataStr };
                                     break;
                                 }
                             }
-                            if (nextPageBtn) break;
+                            if (folderBtn) break;
                         }
+                    }
+
+                    // If not found on this page, look for pagination button
+                    if (!folderBtn) {
+                        let nextPageBtn = null;
+                        if (menuMsg.replyMarkup && Array.isArray(menuMsg.replyMarkup.rows)) {
+                            for (const row of menuMsg.replyMarkup.rows) {
+                                if (!Array.isArray(row.buttons)) continue;
+                                for (const btn of row.buttons) {
+                                    const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
+                                    const text = String(btn.text || "");
+                                    const isNext =
+                                        text.includes("➡️") ||
+                                        text.includes("Next") ||
+                                        text.includes("▶️") ||
+                                        text.includes("»") ||
+                                        text.includes("След") ||
+                                        (dataStr.startsWith("menu:page:") && !text.includes("⬅️") && !text.includes("Prev") && !text.includes("◀️") && dataStr !== "menu:page:0");
+                                    if (isNext) {
+                                        nextPageBtn = { text, data: dataStr };
+                                        break;
+                                    }
+                                }
+                                if (nextPageBtn) break;
+                            }
+                        }
+
                         if (nextPageBtn) {
+                            onStatus({
+                                day: dateStr,
+                                attempt: dayIdx + 1,
+                                totalDays,
+                                step: `Navigating to menu page ${pageAttempts + 2} for ${dateStr}…`,
+                            });
                             await withTimeout(
                                 client.invoke(new Api.messages.GetBotCallbackAnswer({
                                     peer: searchTarget,
@@ -1032,14 +1045,17 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                 "userbot nextPage",
                             );
                             await sleep(1000);
-                            // Refresh menuMsg by ID to inspect updated buttons on edited message
-                            try {
-                                const updated = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
-                                if (updated && updated[0] && updated[0].replyMarkup) {
-                                    menuMsg = updated[0];
-                                }
-                            } catch {
-                                // ignore
+
+                            // Refresh message buttons
+                            for (let pWait = 0; pWait < 5; pWait++) {
+                                try {
+                                    const updated = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
+                                    if (updated && updated[0] && updated[0].replyMarkup) {
+                                        menuMsg = updated[0];
+                                        break;
+                                    }
+                                } catch {}
+                                await sleep(500);
                             }
                             pageAttempts++;
                         } else {
@@ -1052,70 +1068,130 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     log.log(`userbot could not find date folder for ${dateStr}`);
                     currentDate = previousDate(currentDate);
                     consecutiveMisses++;
-                    if (consecutiveMisses >= 3) {
-                        log.log(`userbot no more date folders available, stopping day search`);
+                    if (consecutiveMisses >= 5) {
+                        log.log(`userbot no more date folders available (5 misses), ending day search`);
                         break;
                     }
                     continue;
                 }
                 consecutiveMisses = 0;
 
-                // Click folder button
+                // Click the folder button to select the date
                 onStatus({
                     day: dateStr,
                     attempt: dayIdx + 1,
                     totalDays,
-                    step: `Clicking folder:${dateStr}`,
+                    step: `Selecting date folder: ${dateStr}`,
                 });
-                await withTimeout(
-                    client.invoke(new Api.messages.GetBotCallbackAnswer({
-                        peer: searchTarget,
-                        msgId: Number(menuMsg.id),
-                        data: Buffer.from(folderBtn.data),
-                    })),
-                    timeoutMs,
-                    "userbot click folder",
-                );
+                for (let clickTry = 0; clickTry < 3; clickTry++) {
+                    try {
+                        await withTimeout(
+                            client.invoke(new Api.messages.GetBotCallbackAnswer({
+                                peer: searchTarget,
+                                msgId: Number(menuMsg.id),
+                                data: Buffer.from(folderBtn.data),
+                            })),
+                            timeoutMs,
+                            "userbot click folder",
+                        );
+                        break;
+                    } catch (clickErr) {
+                        log.error(`userbot click folder error (attempt ${clickTry + 1}):`, clickErr && clickErr.message ? clickErr.message : clickErr);
+                        await sleep(1000);
+                    }
+                }
                 await sleep(1200);
 
                 if (shouldStop()) return { status: "stopped", daysProcessed };
 
-                // Get the updated folder view and find hist button
-                let folderView = null;
-                try {
-                    const byId = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
-                    if (byId && byId[0] && byId[0].replyMarkup && byId[0].replyMarkup.rows) {
-                        folderView = byId[0];
-                    }
-                } catch {
-                    // ignore
-                }
-                if (!folderView) {
-                    const folderMsgs = await withTimeout(
-                        client.getMessages(searchTarget, { limit: 5 }),
-                        timeoutMs,
-                        "userbot getMessages folder",
-                    );
-                    folderView = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuMsg;
-                }
-
-                let histBtn = null;
-                for (let histAttempt = 0; histAttempt < 3; histAttempt++) {
-                    if (histAttempt > 0) {
-                        await sleep(1000);
+                // =========================================================================
+                // STEP 3: And then write the domain but only do it for the first time
+                // =========================================================================
+                if (!domainSent && query) {
+                    onStatus({
+                        day: dateStr,
+                        attempt: dayIdx + 1,
+                        totalDays,
+                        step: `Setting domain query "${query}" (first time)`,
+                    });
+                    for (let qTry = 0; qTry < 3; qTry++) {
+                        if (shouldStop()) return { status: "stopped", daysProcessed };
                         try {
-                            const byId = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
-                            if (byId && byId[0] && byId[0].replyMarkup && byId[0].replyMarkup.rows) {
-                                folderView = byId[0];
+                            await withTimeout(
+                                client.sendMessage(searchTarget, { message: query }),
+                                timeoutMs,
+                                "userbot send query",
+                            );
+                            break;
+                        } catch (qErr) {
+                            log.error(`userbot send query error (attempt ${qTry + 1}):`, qErr && qErr.message ? qErr.message : qErr);
+                            await sleep(1500);
+                        }
+                    }
+                    domainSent = true;
+                    await sleep(Math.max(1500, Math.min(stepDelayMs, 2500)));
+
+                    // Check for immediate responses from the bot to the domain query
+                    for (let qResp = 0; qResp < 4; qResp++) {
+                        if (shouldStop()) return { status: "stopped", daysProcessed };
+                        try {
+                            const recents = await client.getMessages(searchTarget, { limit: 8 });
+                            for (const m of recents) {
+                                if (!m.out && !seenResultIds.has(m.id)) {
+                                    if (m.media || m.document || (m.text && m.text.includes(query))) {
+                                        seenResultIds.add(m.id);
+                                        if (resultSink) await resultSink(m);
+                                        if (options.onResult) await options.onResult(m);
+                                        if (chatId) await forwardResult(chatId, m, { botUsername: options.botUsername || botUsername || cfg.botUsername });
+                                    }
+                                }
                             }
                         } catch {}
+                        await sleep(500);
                     }
-                    if (folderView && folderView.replyMarkup && folderView.replyMarkup.rows) {
+                }
+
+                if (shouldStop()) return { status: "stopped", daysProcessed };
+
+                // =========================================================================
+                // STEP 4: Locate and click hist: button (with polling and retry loops)
+                // =========================================================================
+                let folderView = null;
+                let histBtn = null;
+
+                for (let histScan = 0; histScan < 5; histScan++) {
+                    if (shouldStop()) return { status: "stopped", daysProcessed };
+                    try {
+                        const byId = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
+                        if (byId && byId[0] && byId[0].replyMarkup && byId[0].replyMarkup.rows) {
+                            folderView = byId[0];
+                        }
+                    } catch {}
+                    if (!folderView) {
+                        const folderMsgs = await withTimeout(
+                            client.getMessages(searchTarget, { limit: 6 }),
+                            timeoutMs,
+                            "userbot getMessages folder",
+                        );
+                        folderView = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuMsg;
+                    }
+
+                    if (folderView && folderView.replyMarkup && Array.isArray(folderView.replyMarkup.rows)) {
                         for (const row of folderView.replyMarkup.rows) {
+                            if (!Array.isArray(row.buttons)) continue;
                             for (const btn of row.buttons) {
                                 const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (btn.data ? btn.data.toString() : "");
-                                if (dataStr.startsWith(`hist:${dateStr}`) || dataStr.includes("hist:") || (btn.text && (btn.text.includes("hist") || btn.text.includes("Full")))) {
-                                    histBtn = { text: btn.text, data: dataStr };
+                                const textStr = String(btn.text || "");
+                                if (
+                                    dataStr.startsWith(`hist:${dateStr}`) ||
+                                    dataStr.includes("hist:") ||
+                                    textStr.includes("hist") ||
+                                    textStr.includes("Full") ||
+                                    textStr.includes("History") ||
+                                    textStr.includes("Скачать") ||
+                                    textStr.includes("Dump")
+                                ) {
+                                    histBtn = { text: textStr, data: dataStr };
                                     break;
                                 }
                             }
@@ -1123,38 +1199,54 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         }
                     }
                     if (histBtn) break;
+                    await sleep(800);
                 }
 
-                if (histBtn) {
+                if (histBtn && folderView) {
                     onStatus({
                         day: dateStr,
                         attempt: dayIdx + 1,
                         totalDays,
-                        step: `Clicking hist:${dateStr}`,
+                        step: `Requesting dump: ${histBtn.text || dateStr}`,
                     });
-                    await withTimeout(
-                        client.invoke(new Api.messages.GetBotCallbackAnswer({
-                            peer: searchTarget,
-                            msgId: Number(folderView.id),
-                            data: Buffer.from(histBtn.data),
-                        })),
-                        timeoutMs,
-                        "userbot click hist",
-                    );
+                    for (let histClickTry = 0; histClickTry < 3; histClickTry++) {
+                        try {
+                            await withTimeout(
+                                client.invoke(new Api.messages.GetBotCallbackAnswer({
+                                    peer: searchTarget,
+                                    msgId: Number(folderView.id),
+                                    data: Buffer.from(histBtn.data),
+                                })),
+                                timeoutMs,
+                                "userbot click hist",
+                            );
+                            break;
+                        } catch (clickErr) {
+                            log.error(`userbot click hist error (attempt ${histClickTry + 1}):`, clickErr && clickErr.message ? clickErr.message : clickErr);
+                            await sleep(1000);
+                        }
+                    }
                     daysProcessed++;
 
-                    // Wait for result message from DumpNews14Bot and forward
+                    // =========================================================================
+                    // STEP 5: Ingestion and result polling loop (catching documents and text)
+                    // =========================================================================
                     let foundDoc = false;
                     let foundAny = false;
-                    const maxWaitAttempts = 6;
+                    const maxWaitAttempts = 8;
                     for (let waitAttempt = 0; waitAttempt < maxWaitAttempts; waitAttempt++) {
-                        await sleep(waitAttempt === 0 ? 1800 : 1500);
+                        if (shouldStop()) return { status: "stopped", daysProcessed };
+                        await sleep(waitAttempt === 0 ? 2000 : 1500);
                         if (chatId) {
                             try {
-                                const latest = await client.getMessages(searchTarget, { limit: 10 });
+                                const latest = await client.getMessages(searchTarget, { limit: 12 });
                                 for (const m of latest) {
-                                    const isTargetMsg = !m.out && !seenResultIds.has(m.id) &&
-                                        (m.id > (folderView.id || 0) || m.id > (sentStart.id || 0) || (waitAttempt > 0 && (m.media || m.document)));
+                                    const isTargetMsg =
+                                        !m.out &&
+                                        !seenResultIds.has(m.id) &&
+                                        (m.id > (folderView.id || 0) ||
+                                            (sentStart && m.id > sentStart.id) ||
+                                            (waitAttempt > 0 && (m.media || m.document)));
                                     if (isTargetMsg) {
                                         seenResultIds.add(m.id);
                                         foundAny = true;
@@ -1167,7 +1259,9 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                         if (options.onResult) {
                                             await options.onResult(m);
                                         }
-                                        await forwardResult(chatId, m, { botUsername: options.botUsername || botUsername || cfg.botUsername });
+                                        await forwardResult(chatId, m, {
+                                            botUsername: options.botUsername || botUsername || cfg.botUsername,
+                                        });
                                     }
                                 }
                             } catch (err) {
@@ -1175,27 +1269,28 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             }
                         }
                         if (foundDoc) {
-                            await sleep(500);
+                            await sleep(600);
                             break;
                         }
-                        if (foundAny && waitAttempt >= 3) break;
+                        if (foundAny && waitAttempt >= 4) break;
                     }
                 } else {
                     log.log(`userbot could not find hist button in folder for ${dateStr}`);
                 }
 
-                // Wait before moving to previous day to comply with DumpNews14Bot rate limiter
+                // =========================================================================
+                // STEP 6: Pacing delay between days and date step backward
+                // =========================================================================
                 if (dayIdx < totalDays - 1) {
                     onStatus({
                         day: dateStr,
                         attempt: dayIdx + 1,
                         totalDays,
-                        step: `Pacing before next day…`,
+                        step: "Pacing before next day…",
                     });
                     await sleep(stepDelayMs);
                 }
 
-                // Go down one day at a time
                 currentDate = previousDate(currentDate);
             }
 

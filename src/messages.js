@@ -1002,6 +1002,81 @@ function renderSaveGuide() {
 }
 
 /**
+ * Prompt rendered when /save is invoked without a direct reply,
+ * activating interactive listening mode for forwarded / uploaded files.
+ */
+function renderSaveListeningPrompt(botUsername = null) {
+    return [
+        `📥  ${B("SAVE MODE ACTIVE")}  (OR ${B("REPLY TO A FILE")})  ${tgEmoji("⚡️")}`,
+        RULE,
+        `Forward or upload your log files now!`,
+        `The bot is listening and will save & clean them ${B("one by one")} into your batch.`,
+        "",
+        `📁  Supported: ${B(".zip")}, ${B(".txt")}, ${B(".log")}, ${B(".csv")}, ${B(".tsv")}`,
+        `⚡️  Forward from any group or channel — files are queued and processed sequentially.`,
+        `📌  ${I("Tip: You can also reply directly to an existing document with /save.")}`,
+        "",
+        `${I("When finished, tap Done below or send /done to finalize.")}`,
+    ].join("\n");
+}
+
+/**
+ * Inline keyboard while /save listening mode is active.
+ */
+function saveListeningKeyboard() {
+    return createInlineKeyboard([
+        [
+            Markup.button.callback("✅ Done / Finish Saving", "save:done"),
+            Markup.button.callback("❌ Cancel", "save:cancel"),
+        ],
+        [
+            Markup.button.callback("📦 Get Combined File", "combine"),
+        ],
+    ]);
+}
+
+/**
+ * Report rendered when a save session completes.
+ */
+function renderSaveListeningComplete(data = {}) {
+    const processed = data.processed || [];
+    const lines = [
+        `✅  ${B("SAVE SESSION COMPLETE")}  ${tgEmoji("⚡️")}`,
+        RULE,
+        `Successfully saved and processed ${B(processed.length)} file(s) one by one:`,
+        "",
+    ];
+    if (processed.length === 0) {
+        lines.push(`  ${I("No files were received during this session.")}`);
+    } else {
+        for (let i = 0; i < processed.length; i++) {
+            const f = processed[i];
+            lines.push(`  ${i + 1}. 📄 ${B(escapeHtml(f.name))} (${humanSize(f.size || 0)}) → ${B("+" + num(f.linesAdded || 0))} lines`);
+        }
+    }
+    lines.push("");
+    lines.push(`📦  ${B("Active Batch Total:")} ${B(num(data.totalBatchLines || 0))} lines`);
+    lines.push(`${I("Tap below to download the combined clean file or manage your batch.")}`);
+    return lines.join("\n");
+}
+
+/**
+ * Keyboard after finishing a save session.
+ */
+function saveListeningCompleteKeyboard() {
+    return createInlineKeyboard([
+        [
+            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback("📊 Batch Analytics", "stats"),
+        ],
+        [
+            Markup.button.callback("📥 Save More Files", "save:start"),
+            Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+        ],
+    ]);
+}
+
+/**
  * Keyboard when the batch is empty.
  */
 function emptyBatchKeyboard() {
@@ -2098,6 +2173,10 @@ module.exports = {
     renderUlpSharedResult,
     renderServerFiles,
     renderSaveGuide,
+    renderSaveListeningPrompt,
+    saveListeningKeyboard,
+    renderSaveListeningComplete,
+    saveListeningCompleteKeyboard,
     serverFilesKeyboard,
     confirmFileDeleteKeyboard,
     formatFileDate,

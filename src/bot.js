@@ -36,6 +36,10 @@ const {
     renderUlpSharedResult,
     renderServerFiles,
     renderSaveGuide,
+    renderSaveListeningPrompt,
+    saveListeningKeyboard,
+    renderSaveListeningComplete,
+    saveListeningCompleteKeyboard,
     serverFilesKeyboard,
     confirmFileDeleteKeyboard,
     formatFileDate,
@@ -1418,12 +1422,12 @@ function createBot(token, meta = {}) {
     });
 
     // ---- /save: reply to a Telegram document in a shared group.
+    // ---- /save: interactive save mode OR reply to a Telegram document in a shared group.
     //
-    // The Bot API only downloads files up to 20 MB. The logged-in MTProto
-    // account can see the replied-to group message and stream its document
-    // directly to /var/data, then the existing /process pipeline takes over.
+    // If invoked as a reply to a document, downloads that file directly to server disk and cleans it.
+    // If invoked without a reply, activates interactive Save Mode: listens for forwarded or uploaded
+    // files, queueing and processing each one by one into the batch.
     bot.command("save", async (ctx) => {
-        userPromptState.delete(ctx.chat.id);
         let replied = ctx.message && ctx.message.reply_to_message;
         let sourceMessageId = replied && replied.message_id;
         let originalName = replied && replied.document && (replied.document.file_name || `telegram-${sourceMessageId}.bin`);
@@ -1434,7 +1438,7 @@ function createBot(token, meta = {}) {
 
         // If Bot API didn't deliver the replied document (e.g. Telegram Bot Privacy Mode in private groups),
         // use the MTProto userbot to inspect the chat's actual replied message or recent documents!
-        if ((!replied || !replied.document) && peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.findRepliedOrRecentDocument === "function") {
+        if ((!replied || !replied.document) && sourceMessageId && peer && typeof peer.isReady === "function" && peer.isReady() && typeof peer.findRepliedOrRecentDocument === "function") {
             try {
                 const found = await peer.findRepliedOrRecentDocument(
                     ctx.chat.id,
@@ -1454,24 +1458,23 @@ function createBot(token, meta = {}) {
         }
 
         if (!replied || !replied.document) {
+            // Interactive listening mode: wait for forwarded / uploaded documents to save one by one!
+            userPromptState.set(ctx.chat.id, {
+                action: "save:listening",
+                startedAt: Date.now(),
+                queue: [],
+                active: false,
+                processed: [],
+            });
             await safeReply(
                 ctx,
-                [
-                    `📌  ${B("REPLY TO A FILE")}`,
-                    RULE,
-                    `Forward or upload the document into a private group containing:`,
-                    `  • your MTProto user account`,
-                    `  • ${B(meta.botUsername ? `@${escapeHtml(meta.botUsername)}` : "this bot")}`,
-                    `Then reply directly to the document with ${CODE("/save")}.`,
-                    "",
-                    `${I("Tip: If you already replied and see this message, make the bot an admin in this group or disable Group Privacy in @BotFather so Telegram sends replies directly.")}`,
-                    "",
-                    `${I("Direct private forwarding to the bot stays limited to 20 MB. Telegram itself usually caps user files at 2 GB, or 4 GB with Premium.")}`,
-                ].join("\n"),
+                renderSaveListeningPrompt(meta.botUsername),
+                saveListeningKeyboard(),
             );
             return;
         }
 
+        userPromptState.delete(ctx.chat.id);
         if (!peer || typeof peer.isReady !== "function" || !peer.isReady()) {
             await safeReply(
                 ctx,
@@ -1533,6 +1536,304 @@ function createBot(token, meta = {}) {
             ))
             .finally(() => localJobs.delete(ctx.chat.id));
     });
+
+    /**
+     * Enqueue a document received while in save:listening mode.
+     */
+    async function queueSaveDocument(ctx, prompt) {
+        const doc = ctx.message && ctx.message.document;
+        if (!doc) return;
+
+        const messageId = ctx.message.message_id;
+        const originalName = userbot.resolveSafeFileName(
+            doc,
+            `dump_${messageId}`,
+        );
+
+        prompt.queue = prompt.queue || [];
+        prompt.processed = prompt.processed || [];
+        prompt.queue.push({
+            ctx,
+            doc,
+            messageId,
+            name: originalName,
+            size: doc.file_size || 0,
+        });
+
+        if (prompt.active) {
+            const queuePos = prompt.queue.length;
+            await safeReply(
+                ctx,
+                `📥  ${B("Queued for saving")} (#${prompt.processed.length + queuePos})\n📄 ${CODE(escapeHtml(originalName))} · ${humanSize(doc.file_size || 0)}`,
+            );
+        }
+
+        void processSaveQueue(ctx.chat.id, prompt);
+    }
+
+    /**
+     * Process queued files sequentially one by one.
+     */
+    async function processSaveQueue(chatId, prompt) {
+        if (prompt.active) return;
+        prompt.active = true;
+
+        try {
+            while (prompt.queue && prompt.queue.length > 0) {
+                const item = prompt.queue.shift();
+                await processSingleSaveItem(chatId, item, prompt);
+            }
+        } catch (err) {
+            console.error("processSaveQueue error:", err);
+        } finally {
+            prompt.active = false;
+        }
+    }
+
+    /**
+     * Download and clean a single queued file into the active batch.
+     */
+    async function processSingleSaveItem(chatId, item, prompt) {
+        const ctx = item.ctx;
+        const fileIndex = (prompt.processed ? prompt.processed.length : 0) + 1;
+        const rawName = item.name;
+        const lowerName = rawName.toLowerCase();
+        const isZip = lowerName.endsWith(".zip");
+        const isText = [".txt", ".csv", ".tsv", ".log", ".lst", ".list", ".dat"].some((e) => lowerName.endsWith(e));
+
+        if (!isZip && !isText) {
+            await safeReply(
+                ctx,
+                [
+                    `⛔  ${B("Unsupported file type")}`,
+                    `Skipping ${CODE(escapeHtml(rawName))}: only ${B(".zip")} archives and plain text files are supported.`,
+                ].join("\n"),
+            );
+            return;
+        }
+
+        const peer = meta.userbot;
+        const destDir = (meta && (meta.localProcessRoot || meta.processRoot)) || localProcessRoot();
+        fs.mkdirSync(destDir, { recursive: true });
+
+        // Ensure unique filename on server disk
+        let diskFileName = rawName;
+        const ext = path.extname(rawName) || (isZip ? ".zip" : ".txt");
+        const base = path.basename(rawName, ext);
+        if (fs.existsSync(path.join(destDir, diskFileName))) {
+            diskFileName = `${base}_${item.messageId}${ext}`;
+        }
+        let destPath = path.join(destDir, diskFileName);
+
+        const statusMsg = await safeReply(
+            ctx,
+            [
+                `📥  ${B(`SAVING FILE #${fileIndex}`)}`,
+                RULE,
+                `📄  ${escapeHtml(rawName)}`,
+                `📦  ${humanSize(item.size)}`,
+                `💾  destination: ${CODE(escapeHtml(destDir))}`,
+                "",
+                `${I("Downloading and saving to disk…")}`,
+            ].join("\n"),
+        );
+        const statusMsgId = statusMsg ? statusMsg.message_id : null;
+
+        let downloaded = false;
+        localJobs.set(chatId, `save:${diskFileName}`);
+
+        try {
+            // Attempt 1: MTProto userbot download to disk
+            if (peer && typeof peer.isReady === "function" && peer.isReady()) {
+                try {
+                    let lastProgressAt = 0;
+                    const saved = await peer.downloadMessageToDisk(chatId, item.messageId, {
+                        root: destDir,
+                        fileName: diskFileName,
+                        message: ctx.message,
+                        onProgress: (done, total) => {
+                            if (Date.now() - lastProgressAt < 3000) return;
+                            lastProgressAt = Date.now();
+                            const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
+                            if (statusMsgId) {
+                                void safeEdit(
+                                    ctx,
+                                    statusMsgId,
+                                    [
+                                        `📥  ${B(`SAVING FILE #${fileIndex}`)} · ${pct}%`,
+                                        RULE,
+                                        `📄  ${escapeHtml(rawName)}`,
+                                        `📦  ${humanSize(done)} / ${humanSize(total || done)}`,
+                                        `💾  destination: ${CODE(escapeHtml(destDir))}`,
+                                    ].join("\n"),
+                                );
+                            }
+                        },
+                    });
+                    if (saved && saved.path && fs.existsSync(saved.path)) {
+                        destPath = saved.path;
+                        downloaded = true;
+                    }
+                } catch (peerErr) {
+                    // Fall back to Bot API download if available
+                }
+            }
+
+            // Attempt 2: Bot API direct download if <= MAX_DOWNLOAD_BYTES
+            if (!downloaded && item.doc && item.doc.file_id) {
+                if (item.size > MAX_DOWNLOAD_BYTES && (!peer || !peer.isReady())) {
+                    const tooLargeText = [
+                        `💥  ${B("File too large for Bot API")}`,
+                        `File ${escapeHtml(rawName)} is ${humanSize(item.size)} (limit: ${humanSize(MAX_DOWNLOAD_BYTES)}).`,
+                        `Use a group containing your MTProto user account to save large files.`,
+                    ].join("\n");
+                    if (statusMsgId) {
+                        await safeEdit(ctx, statusMsgId, tooLargeText);
+                    } else {
+                        await safeReply(ctx, tooLargeText);
+                    }
+                    return;
+                }
+                try {
+                    const link = await ctx.telegram.getFileLink(item.doc.file_id);
+                    const res = await fetch(link.href);
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const buf = Buffer.from(await res.arrayBuffer());
+                    fs.writeFileSync(destPath, buf);
+                    downloaded = true;
+                } catch (dlErr) {
+                    console.error("Bot API file download error:", dlErr && dlErr.message ? dlErr.message : dlErr);
+                }
+            }
+
+            if (!downloaded || !fs.existsSync(destPath)) {
+                const failText = `⚠️  Could not download or save ${CODE(escapeHtml(rawName))}.`;
+                if (statusMsgId) {
+                    await safeEdit(ctx, statusMsgId, failText);
+                } else {
+                    await safeReply(ctx, failText);
+                }
+                return;
+            }
+
+            // Clean & process file into batch
+            const beforeStats = store.getStats(chatId);
+            const beforeSize = beforeStats ? beforeStats.size : 0;
+
+            await processFile(ctx, destPath, statusMsgId, { root: destDir });
+
+            const afterStats = store.getStats(chatId);
+            const afterSize = afterStats ? afterStats.size : 0;
+            const linesAdded = Math.max(0, afterSize - beforeSize);
+
+            prompt.processed.push({
+                name: rawName,
+                size: item.size,
+                linesAdded,
+                path: destPath,
+            });
+        } catch (err) {
+            console.error(`Error saving item ${rawName}:`, err);
+            const errText = `⚠️  Error processing ${CODE(escapeHtml(rawName))}: ${escapeHtml(err.message || String(err))}`;
+            if (statusMsgId) {
+                await safeEdit(ctx, statusMsgId, errText);
+            } else {
+                await safeReply(ctx, errText);
+            }
+        } finally {
+            localJobs.delete(chatId);
+        }
+    }
+
+    /**
+     * Finish the current save session and display complete summary.
+     */
+    const finishSaveSession = async (ctx) => {
+        const prompt = userPromptState.get(ctx.chat.id);
+        if (!prompt || prompt.action !== "save:listening") {
+            const batch = store.getStats(ctx.chat.id);
+            await safeReply(
+                ctx,
+                [
+                    `ℹ️  ${B("No active save session.")}`,
+                    `To start saving forwarded or uploaded files one by one, send ${CODE("/save")}.`,
+                    "",
+                    `📦  Active batch: ${B(num(batch ? batch.size : 0))} lines (${batch ? batch.files : 0} files)`,
+                ].join("\n"),
+                mainKeyboard(),
+            );
+            return;
+        }
+
+        if (prompt.active || (prompt.queue && prompt.queue.length > 0)) {
+            await safeReply(
+                ctx,
+                `⏳  ${B("Still saving remaining files…")}\nPlease wait a moment for the current queue to finish.`,
+            );
+            return;
+        }
+
+        userPromptState.delete(ctx.chat.id);
+        const batch = store.getStats(ctx.chat.id);
+        await safeReply(
+            ctx,
+            renderSaveListeningComplete({
+                processed: prompt.processed || [],
+                totalBatchLines: batch ? batch.size : 0,
+            }),
+            saveListeningCompleteKeyboard(),
+        );
+    };
+
+    /**
+     * Cancel the active save session.
+     */
+    const cancelSaveSession = async (ctx) => {
+        if (userPromptState.has(ctx.chat.id)) {
+            userPromptState.delete(ctx.chat.id);
+            await safeReply(ctx, `❌  ${B("Save mode cancelled.")}`, mainKeyboard());
+        } else {
+            await safeReply(ctx, `ℹ️  No active save session to cancel.`, mainKeyboard());
+        }
+    };
+
+    bot.command(["done", "finish"], finishSaveSession);
+    bot.command("cancel", cancelSaveSession);
+
+    bot.action("save:done", async (ctx) => {
+        try {
+            await ctx.answerCbQuery().catch(() => {});
+        } catch (_) {}
+        await finishSaveSession(ctx);
+    });
+
+    bot.action("save:cancel", async (ctx) => {
+        try {
+            await ctx.answerCbQuery().catch(() => {});
+        } catch (_) {}
+        await cancelSaveSession(ctx);
+    });
+
+    bot.action("save:start", async (ctx) => {
+        try {
+            await ctx.answerCbQuery().catch(() => {});
+        } catch (_) {}
+        userPromptState.set(ctx.chat.id, {
+            action: "save:listening",
+            startedAt: Date.now(),
+            queue: [],
+            active: false,
+            processed: [],
+        });
+        await safeReply(
+            ctx,
+            renderSaveListeningPrompt(meta.botUsername),
+            saveListeningKeyboard(),
+        );
+    });
+
+    bot.queueSaveDocument = queueSaveDocument;
+    bot.processSaveQueue = processSaveQueue;
 
     // ---- /batchsave [count] & /savebatch: batch save & clean multiple forwarded/uploaded files
     //
@@ -2412,6 +2713,11 @@ function createBot(token, meta = {}) {
 
     bot.on("document", async (ctx) => {
         try {
+            const prompt = userPromptState.get(ctx.chat.id);
+            if (prompt && prompt.action === "save:listening") {
+                await queueSaveDocument(ctx, prompt);
+                return;
+            }
             if (isForwardedDocument(ctx)) {
                 await handleForwardedDocument(ctx, ctx.message.document);
                 return;
@@ -2422,7 +2728,7 @@ function createBot(token, meta = {}) {
             await safeReply(
                 ctx,
                 [
-                    `\uD83D\uDCA5  ${B("Oops \u2014 something went wrong")}`,
+                    `💥  ${B("Oops — something went wrong")}`,
                     `That file couldn't be processed. It may be corrupt,`,
                     `password-protected, or too large. Try re-sending it.`,
                 ].join("\n"),
@@ -2439,6 +2745,29 @@ function createBot(token, meta = {}) {
         if (msg.text && userPromptState.has(ctx.chat.id)) {
             const prompt = userPromptState.get(ctx.chat.id);
             const input = msg.text.trim();
+
+            if (prompt.action === "save:listening") {
+                const lower = input.toLowerCase();
+                if (lower === "done" || lower === "finish" || lower === "complete") {
+                    await finishSaveSession(ctx);
+                    return;
+                }
+                if (lower === "cancel" || lower === "stop") {
+                    await cancelSaveSession(ctx);
+                    return;
+                }
+                await safeReply(
+                    ctx,
+                    [
+                        `📥  ${B("SAVE MODE ACTIVE")}`,
+                        RULE,
+                        `Forward or upload log files now to save them one by one.`,
+                        `Or send ${CODE("/done")} or tap Done when finished.`,
+                    ].join("\n"),
+                    saveListeningKeyboard(),
+                );
+                return;
+            }
 
             if (prompt.action === "ulp:search_domain") {
                 const query = searchbot.normalizeQuery(input);
@@ -4069,8 +4398,8 @@ function processMaxZipBytes() {
  * @param {string} inputPath
  * @returns {{ path: string, root: string }}
  */
-function resolveLocalInput(inputPath) {
-    const root = fs.realpathSync(localProcessRoot());
+function resolveLocalInput(inputPath, rootOverride = null) {
+    const root = fs.realpathSync(rootOverride ? path.resolve(rootOverride) : localProcessRoot());
     const candidate = fs.realpathSync(path.resolve(inputPath));
     const relative = path.relative(root, candidate);
     if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
@@ -4144,7 +4473,7 @@ async function processFile(ctx, inputPath, progressMessageId = null, options = {
     let allowedRoot;
 
     try {
-        const resolved = resolveLocalInput(inputPath);
+        const resolved = resolveLocalInput(inputPath, options && options.root);
         fullPath = resolved.path;
         allowedRoot = resolved.root;
     } catch (err) {

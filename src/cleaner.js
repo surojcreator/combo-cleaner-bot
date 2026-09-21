@@ -52,6 +52,22 @@ const SCHEMES = new Set([
     "javascript",
 ]);
 
+// Labels that represent metadata / form headers and are NEVER valid usernames.
+const PURE_FIELD_LABELS = new Set([
+    "url", "uri", "link", "href", "host", "site", "website", "page", "target", "domain", "server", "address",
+    "action", "form_action", "form", "submit", "submit_url", "post_url", "login_url", "auth_url",
+    "soft", "software", "browser", "app", "application", "client",
+    "hwid", "ip", "country", "time", "date", "token", "cookie", "cookies", "profile", "path", "port",
+    "id", "category", "data", "info", "note", "notes", "type", "stat", "status"
+]);
+
+// Labels that indicate credential fields (user:, pass:) in key-value dumps.
+const CREDENTIAL_LABELS = new Set([
+    "user", "username", "login", "account", "acc", "usr", "user_name", "user_login", "userid", "user_id", "login_id",
+    "email", "mail",
+    "pass", "password", "pwd", "passwd", "passw", "secret"
+]);
+
 // Matches an email address.
 const EMAIL_RE = /^[^\s@:|]+@[^\s@:|]+\.[^\s@:|]+$/;
 
@@ -215,18 +231,142 @@ function isPhone(left) {
 }
 
 /**
+ * Strip trailing metadata tags attached to passwords in stealer logs,
+ * e.g. "secret123 | IP: 1.2.3.4", "pass [Google Chrome]", "secret;".
+ *
+ * @param {string} password
+ * @returns {string}
+ */
+function stripTrailingMetadata(password) {
+    if (!password) return "";
+    let p = String(password).trim();
+    p = p.replace(
+        /\s+[|;,]\s*(?:ip|hwid|country|soft|software|browser|date|time|token|cookie|cookies|profile|status|note)\s*[:=].*$/i,
+        "",
+    );
+    p = p.replace(
+        /\s+(?:\[|\()(?:google\s+)?(?:chrome|firefox|edge|opera|brave|safari|chromium|yandex|vivaldi)[\w\s.-]*(?:\]|\)).*$/i,
+        "",
+    );
+    p = p.replace(/[|;]+$/, "").trim();
+    return p;
+}
+
+/**
  * Decide whether a token is a usable plain-username login.
+ * Rejects pure metadata field labels, scheme words, passwords, and URLs.
+ *
  * @param {string} login
  * @param {string} password
  * @returns {boolean}
  */
 function isUsername(login, password) {
     if (!USERNAME_RE.test(login)) return false;
-    if (SCHEMES.has(login.toLowerCase())) return false;
+    const lower = login.toLowerCase();
+    if (SCHEMES.has(lower)) return false;
+    if (PURE_FIELD_LABELS.has(lower)) return false;
+    if (
+        lower === "login" ||
+        lower === "password" ||
+        lower === "pass" ||
+        lower === "pwd" ||
+        lower === "passwd" ||
+        lower === "secret"
+    ) {
+        return false;
+    }
     if (isUrlOrDomain(login)) return false;
     // A scheme like "https" is followed by "//"; reject that shape.
     if (password.startsWith("//")) return false;
     return true;
+}
+
+/**
+ * Attempt to extract login:password from explicit key-value label pairs on a single line,
+ * e.g. "USER: admin PASS: secret", "Host: site.com | User: bob | Pass: 123", "action: ... user: bob pass: 123".
+ *
+ * @param {string} line
+ * @param {{ keepUrl?: boolean }} [options]
+ * @returns {string|null}
+ */
+function extractFromKeyValueLabels(line, options = {}) {
+    const keepUrl = Boolean(options && options.keepUrl);
+
+    const userMatch = line.match(
+        /(?:^|[\s|;,:])(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr|email|mail)\s*[:=]\s*([^\s|;,:]+)/i,
+    );
+    const passMatch = line.match(
+        /(?:^|[\s|;,:])(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=]\s*(.+)$/i,
+    );
+
+    if (userMatch && passMatch) {
+        const user = userMatch[1].trim();
+        let pass = user === passMatch[1].trim() ? "" : passMatch[1].trim();
+        pass = stripTrailingMetadata(pass);
+
+        const nextLabelMatch = pass.match(
+            /\s+(?:ip|hwid|date|time|browser|soft|country|token|cookie|profile|url|host)\s*[:=]/i,
+        );
+        if (nextLabelMatch) {
+            pass = pass.slice(0, nextLabelMatch.index).trim();
+        }
+
+        if (user && pass) {
+            const userLower = user.toLowerCase();
+            if (!PURE_FIELD_LABELS.has(userLower) && userLower !== "http" && userLower !== "https") {
+                if (keepUrl) {
+                    const urlMatch = line.match(
+                        /(?:^|[\s|;,])(?:url|uri|host|site|website|link|action|form_action)\s*[:=]\s*([^\s|;,]+)/i,
+                    );
+                    if (urlMatch && isUrlOrDomain(urlMatch[1])) {
+                        return `${urlMatch[1]}:${user}:${pass}`;
+                    }
+                }
+                return `${user}:${pass}`;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Strips leading metadata labels like "action:", "form_action:", "url:", "user:", "login:".
+ *
+ * @param {string} line
+ * @returns {{ line: string, strippedLabel: string|null }}
+ */
+function stripLabelPrefixes(line) {
+    const LEADING_LABEL_RE =
+        /^(?:action|form_action|form|submit|submit_url|post_url|login_url|url|uri|host|site|website|page|target|domain|user|username|login|account|acc|usr|user_name|user_login|email|mail|soft|software|browser|app|application|client)\s*[:=|]\s*/i;
+
+    let s = line;
+    let lastStripped = null;
+
+    while (true) {
+        const m = s.match(LEADING_LABEL_RE);
+        if (!m) break;
+
+        const token = m[0].split(/[:=|]/)[0].trim().toLowerCase();
+        if (SCHEMES.has(token)) break;
+
+        const remainder = s.slice(m[0].length).trim();
+        if (!remainder) break;
+
+        // If the token is a credential label (like "user" or "login") and the remainder
+        // has NO separator (no colon or pipe), then "user" or "username" was the username,
+        // not a prefix label (e.g. "username:pass word", "user:pass123").
+        if (CREDENTIAL_LABELS.has(token)) {
+            const hasSep = remainder.includes(":") || remainder.includes("|");
+            if (!hasSep) {
+                break;
+            }
+        }
+
+        s = remainder;
+        lastStripped = token;
+    }
+
+    return { line: s, strippedLabel: lastStripped };
 }
 
 /**
@@ -241,7 +381,7 @@ function extractCandidates(line) {
     let match;
     while ((match = CANDIDATE_RE.exec(line)) !== null) {
         const password = line.slice(match.index + match[0].length).trim();
-        out.push({ login: match[1], password });
+        out.push({ login: match[1], password: stripTrailingMetadata(password) });
     }
     return out;
 }
@@ -257,34 +397,83 @@ function cleanLine(rawLine, options = {}) {
     const line = normalizeLine(rawLine);
     if (!line) return null;
 
-    // Fast reject lines with no candidate separator
-    const hasColon = line.includes(":");
-    const hasPipe = line.includes("|");
-    if (!hasColon && !hasPipe) return null;
+    // Fast check for single-line key-value pairs (e.g. "USER: admin PASS: secret")
+    const kv = extractFromKeyValueLabels(line, options);
+    if (kv !== null) return kv;
+
+    // Check for "user: login pass" or "user:login pass"
+    const userSpaceMatch = line.match(
+        /^(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr)\s*[:=|]\s*([^\s:|]+)\s+([^\s]+)$/i,
+    );
+    if (userSpaceMatch) {
+        const first = userSpaceMatch[1].trim();
+        const second = stripTrailingMetadata(userSpaceMatch[2].trim());
+        const firstLower = first.toLowerCase();
+        if (
+            firstLower !== "pass" &&
+            firstLower !== "password" &&
+            firstLower !== "pwd" &&
+            firstLower !== "secret" &&
+            !PURE_FIELD_LABELS.has(firstLower) &&
+            !SCHEMES.has(firstLower)
+        ) {
+            return `${first}:${second}`;
+        }
+    }
+
+    // Pass 0: card dumps like `number|mm|yy|cvv|...extras`
+    const cc = cleanCcLine(line);
+    if (cc !== null) return cc;
+
+    // Check for leading label prefixes (e.g. "action:user:pass" -> "user:pass", "user:login:pass" -> "login:pass")
+    const { line: strippedLine, strippedLabel } = stripLabelPrefixes(line);
+    const hasColon = strippedLine.includes(":");
+    const hasPipe = strippedLine.includes("|");
+
+    // Check for space-separated pair (e.g. "user:login pass" -> "login:pass", "user: admin 123456" -> "admin:123456")
+    if (!hasColon && !hasPipe) {
+        const spaceIdx = strippedLine.search(/\s+/);
+        if (spaceIdx > 0) {
+            const first = strippedLine.slice(0, spaceIdx).trim();
+            const second = stripTrailingMetadata(strippedLine.slice(spaceIdx).trim());
+            const isUserLabel =
+                strippedLabel &&
+                (strippedLabel === "user" ||
+                    strippedLabel === "username" ||
+                    strippedLabel === "login" ||
+                    strippedLabel === "account" ||
+                    strippedLabel === "usr");
+            if (first && second && !second.includes(" ")) {
+                if (
+                    isEmail(first) ||
+                    isPhone(first) ||
+                    (isUserLabel && (isUsername(first, second) || /^[A-Za-z0-9._-]+$/.test(first)))
+                ) {
+                    return `${first}:${second}`;
+                }
+            }
+        }
+        return null;
+    }
 
     // Fast path: standard email:password or phone:password lines with no URL/pipe
     if (!hasPipe) {
-        const firstSep = line.indexOf(":");
+        const firstSep = strippedLine.indexOf(":");
         if (firstSep > 0) {
-            const firstToken = line.slice(0, firstSep).trim();
-            const rest = line.slice(firstSep + 1).trim();
+            const firstToken = strippedLine.slice(0, firstSep).trim();
+            const rest = stripTrailingMetadata(strippedLine.slice(firstSep + 1).trim());
             if (rest && !rest.startsWith("//")) {
                 if (firstToken.includes("@") && isEmail(firstToken)) {
-                    return keepUrl ? line : `${firstToken}:${rest}`;
+                    return keepUrl ? strippedLine : `${firstToken}:${rest}`;
                 }
                 if (isPhone(firstToken)) {
-                    return keepUrl ? line : `${firstToken}:${rest}`;
+                    return keepUrl ? strippedLine : `${firstToken}:${rest}`;
                 }
             }
         }
     }
 
-    // Pass 0: card dumps like `number|mm|yy|cvv|...extras` strip down to
-    // just the first four fields, normalized to `number|mm|yy|cvv`.
-    const cc = cleanCcLine(line);
-    if (cc !== null) return cc;
-
-    const candidates = extractCandidates(line);
+    const candidates = extractCandidates(strippedLine);
 
     // Pass 1: prefer an email or number login anywhere on the line. Scanning the
     // whole line (not just the first token) is what lets us skip URL/domain
@@ -292,16 +481,16 @@ function cleanLine(rawLine, options = {}) {
     for (const { login, password } of candidates) {
         if (!password) continue;
         if (isEmail(login) || isPhone(login)) {
-            return keepUrl ? line : `${login}:${password}`;
+            return keepUrl ? strippedLine : `${login}:${password}`;
         }
     }
 
     // Pass 2: fall back to a plain username login (only if no email/number was
-    // found), skipping URL schemes and domains.
+    // found), skipping URL schemes, domain tokens, and pure field labels.
     for (const { login, password } of candidates) {
         if (!password) continue;
         if (isUsername(login, password)) {
-            return keepUrl ? line : `${login}:${password}`;
+            return keepUrl ? strippedLine : `${login}:${password}`;
         }
     }
 
@@ -313,16 +502,155 @@ function cleanLine(rawLine, options = {}) {
             if (!password) continue;
             if (
                 !SCHEMES.has(login.toLowerCase()) &&
+                !PURE_FIELD_LABELS.has(login.toLowerCase()) &&
                 !isUrlOrDomain(login) &&
                 !password.startsWith("//") &&
                 login.length >= 1
             ) {
-                return line;
+                return strippedLine;
             }
         }
     }
 
     return null;
+}
+
+/**
+ * Clean an array of lines, with support for multi-line stealer record blocks
+ * (e.g. URL:\nUsername:\nPassword:).
+ *
+ * @param {string[]} rawLines
+ * @param {{ dedupe?: boolean, keepUrl?: boolean }} [options]
+ * @returns {{ lines: string[], stats: { total: number, kept: number, dropped: number, duplicates: number } }}
+ */
+function cleanLinesArray(rawLines, options = {}) {
+    const keepUrl = Boolean(options && options.keepUrl);
+    const dedupe = options && options.dedupe !== false;
+    const seen = dedupe ? new Set() : null;
+    const cleaned = [];
+    let kept = 0;
+    let dropped = 0;
+    let duplicates = 0;
+
+    const len = rawLines.length;
+    let i = 0;
+
+    while (i < len) {
+        const raw = rawLines[i];
+        const trimmed = normalizeLine(raw);
+
+        // Multi-line stealer record detection (blocks of URL / User / Pass)
+        if (
+            trimmed &&
+            /^(?:url|uri|host|site|website|link|page|action|form_action|application|app|browser|soft|software|client|username|user|login|account|usr)\s*[:=]/i.test(
+                trimmed,
+            )
+        ) {
+            let recordUser = null;
+            let recordPass = null;
+            let recordUrl = null;
+            let j = i;
+            let foundRecord = false;
+            let blockConsumed = 0;
+
+            for (; j < Math.min(i + 8, len); j++) {
+                const lineJ = normalizeLine(rawLines[j]);
+                if (!lineJ || /^[-=_*#]{3,}$/.test(lineJ)) {
+                    if (recordUser && recordPass) {
+                        foundRecord = true;
+                        break;
+                    }
+                    continue;
+                }
+
+                // If line already contains a full combo without field labels, stop multi-line block
+                const isFieldLabelLine =
+                    /^(?:url|uri|host|site|website|application|app|browser|soft|software|username|user|login|pass|password|pwd|secret|action)\s*[:=]/i.test(
+                        lineJ,
+                    );
+                if (!isFieldLabelLine && (lineJ.includes(":") || lineJ.includes("|"))) {
+                    break;
+                }
+
+                const uMatch = lineJ.match(
+                    /^(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr|email|mail)\s*[:=]\s*(.+)$/i,
+                );
+                const pMatch = lineJ.match(/^(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=]\s*(.+)$/i);
+                const urlMatch = lineJ.match(
+                    /^(?:url|uri|host|site|website|link|page|action|form_action)\s*[:=]\s*(.+)$/i,
+                );
+
+                if (uMatch) {
+                    recordUser = uMatch[1].trim();
+                } else if (pMatch) {
+                    recordPass = stripTrailingMetadata(pMatch[1].trim());
+                } else if (urlMatch) {
+                    recordUrl = urlMatch[1].trim();
+                }
+
+                if (recordUser && recordPass) {
+                    foundRecord = true;
+                    blockConsumed = j - i + 1;
+                    break;
+                }
+            }
+
+            if (foundRecord && recordUser && recordPass) {
+                let res;
+                if (keepUrl && recordUrl && isUrlOrDomain(recordUrl)) {
+                    res = `${recordUrl}:${recordUser}:${recordPass}`;
+                } else {
+                    res = `${recordUser}:${recordPass}`;
+                }
+
+                if (seen) {
+                    if (seen.has(res)) {
+                        duplicates++;
+                    } else {
+                        seen.add(res);
+                        cleaned.push(res);
+                        kept++;
+                    }
+                } else {
+                    cleaned.push(res);
+                    kept++;
+                }
+                dropped += Math.max(0, blockConsumed - 1);
+                i += blockConsumed;
+                continue;
+            }
+        }
+
+        // Standard single-line processing
+        const res = cleanLine(raw, options);
+        if (res === null) {
+            if (trimmed !== "") dropped++;
+            i++;
+            continue;
+        }
+
+        if (seen) {
+            if (seen.has(res)) {
+                duplicates++;
+                i++;
+                continue;
+            }
+            seen.add(res);
+        }
+        cleaned.push(res);
+        kept++;
+        i++;
+    }
+
+    return {
+        lines: cleaned,
+        stats: {
+            total: rawLines.length,
+            kept,
+            dropped,
+            duplicates,
+        },
+    };
 }
 
 /**
@@ -333,41 +661,8 @@ function cleanLine(rawLine, options = {}) {
  * @returns {{ lines: string[], stats: { total: number, kept: number, dropped: number, duplicates: number } }}
  */
 function cleanText(text, options = {}) {
-    const dedupe = options.dedupe !== false;
-    const rawLines = String(text).split(/\r?\n/);
-
-    const seen = new Set();
-    const lines = [];
-    let kept = 0;
-    let dropped = 0;
-    let duplicates = 0;
-
-    for (const raw of rawLines) {
-        const cleaned = cleanLine(raw, options);
-        if (cleaned === null) {
-            if (normalizeLine(raw) !== "") dropped += 1;
-            continue;
-        }
-        if (dedupe) {
-            if (seen.has(cleaned)) {
-                duplicates += 1;
-                continue;
-            }
-            seen.add(cleaned);
-        }
-        lines.push(cleaned);
-        kept += 1;
-    }
-
-    return {
-        lines,
-        stats: {
-            total: rawLines.length,
-            kept,
-            dropped,
-            duplicates,
-        },
-    };
+    const rawLines = String(text || "").split(/\r?\n/);
+    return cleanLinesArray(rawLines, options);
 }
 
 function isCcLine(line) {
@@ -380,6 +675,12 @@ module.exports = {
     isCcLine,
     isCreditCardLine: isCcLine,
     cleanText,
+    cleanLinesArray,
+    stripTrailingMetadata,
+    stripLabelPrefixes,
+    extractFromKeyValueLabels,
+    PURE_FIELD_LABELS,
+    CREDENTIAL_LABELS,
     isUrlOrDomain,
     isEmail,
     isPhone,

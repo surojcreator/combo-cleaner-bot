@@ -469,6 +469,87 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
         }
     }
 
+    async function forwardResult(toChatId, msg, forwardOpts = {}) {
+        if (!ready || !client) return "skipped";
+        if (!msg || !msg.id) return "skipped";
+        const fwdKey = `${toChatId}:${msg.id}`;
+        if (forwardedMsgKeys.has(fwdKey)) {
+            return "already_forwarded";
+        }
+        forwardedMsgKeys.add(fwdKey);
+        if (forwardedMsgKeys.size > 2000) {
+            const first = forwardedMsgKeys.values().next().value;
+            forwardedMsgKeys.delete(first);
+        }
+
+        const targetBot = (forwardOpts && forwardOpts.botUsername) || botUsername || cfg.botUsername;
+        const isPrivateChat = Number(toChatId) > 0;
+        let targetPeer = toChatId;
+
+        // In private 1-on-1 chats with the bot, forward/copy to the bot so it arrives in the bot conversation
+        if (isPrivateChat && targetBot) {
+            try {
+                targetPeer = await client.getInputEntity(targetBot.replace(/^@+/, ""));
+            } catch {
+                targetPeer = `@${targetBot.replace(/^@+/, "")}`;
+            }
+        } else {
+            try {
+                targetPeer = await resolveChatPeer(toChatId);
+            } catch (err) {
+                log.log(`userbot resolveChatPeer fallback for ${toChatId}: ${err && err.message ? err.message : err}`);
+            }
+        }
+
+        try {
+            await withTimeout(
+                client.forwardMessages(targetPeer, { messages: [msg.id], fromPeer: searcherEntity }),
+                timeoutMs,
+                "userbot forwardMessages",
+            );
+            return "forward";
+        } catch (err) {
+            log.log(`forward blocked (${err && err.message ? err.message : err}) - copying instead`);
+        }
+
+        const text = msg.message || "";
+        const media = msg.media;
+        if (media) {
+            const buffer = await withTimeout(client.downloadMedia(msg, {}), timeoutMs, "userbot downloadMedia").catch(() => null);
+            if (buffer) {
+                const candidateName = (msg.file && (msg.file.name || msg.file.fileName)) ||
+                    resolveSafeFileName(msg, "ulp_result", ".txt");
+                const safeName = resolveSafeFileName(candidateName, "ulp_result", ".txt");
+                buffer.name = safeName;
+                const sendPayload = {
+                    file: buffer,
+                    caption: `${ULP_MARKER} ${safeName}`,
+                    forceDocument: true,
+                };
+                if (Api && typeof Api.DocumentAttributeFilename === "function") {
+                    sendPayload.attributes = [
+                        new Api.DocumentAttributeFilename({ fileName: safeName }),
+                    ];
+                }
+                await withTimeout(
+                    client.sendFile(targetPeer, sendPayload),
+                    timeoutMs,
+                    "userbot sendFile",
+                );
+                return "copy";
+            }
+        }
+        if (text) {
+            await withTimeout(
+                client.sendMessage(targetPeer, { message: `${ULP_MARKER} ${text}` }),
+                timeoutMs,
+                "userbot copy",
+            );
+            return "copy";
+        }
+        return "skipped";
+    }
+
     return {
         kind: "userbot",
         get searcherId() {
@@ -659,86 +740,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             );
         },
 
-        async forwardResult(toChatId, msg, forwardOpts = {}) {
-            if (!ready || !client) return "skipped";
-            if (!msg || !msg.id) return "skipped";
-            const fwdKey = `${toChatId}:${msg.id}`;
-            if (forwardedMsgKeys.has(fwdKey)) {
-                return "already_forwarded";
-            }
-            forwardedMsgKeys.add(fwdKey);
-            if (forwardedMsgKeys.size > 2000) {
-                const first = forwardedMsgKeys.values().next().value;
-                forwardedMsgKeys.delete(first);
-            }
-
-            const targetBot = (forwardOpts && forwardOpts.botUsername) || botUsername || cfg.botUsername;
-            const isPrivateChat = Number(toChatId) > 0;
-            let targetPeer = toChatId;
-
-            // In private 1-on-1 chats with the bot, forward/copy to the bot so it arrives in the bot conversation
-            if (isPrivateChat && targetBot) {
-                try {
-                    targetPeer = await client.getInputEntity(targetBot.replace(/^@+/, ""));
-                } catch {
-                    targetPeer = `@${targetBot.replace(/^@+/, "")}`;
-                }
-            } else {
-                try {
-                    targetPeer = await resolveChatPeer(toChatId);
-                } catch (err) {
-                    log.log(`userbot resolveChatPeer fallback for ${toChatId}: ${err && err.message ? err.message : err}`);
-                }
-            }
-
-            try {
-                await withTimeout(
-                    client.forwardMessages(targetPeer, { messages: [msg.id], fromPeer: searcherEntity }),
-                    timeoutMs,
-                    "userbot forwardMessages",
-                );
-                return "forward";
-            } catch (err) {
-                log.log(`forward blocked (${err && err.message ? err.message : err}) - copying instead`);
-            }
-
-            const text = msg.message || "";
-            const media = msg.media;
-            if (media) {
-                const buffer = await withTimeout(client.downloadMedia(msg, {}), timeoutMs, "userbot downloadMedia").catch(() => null);
-                if (buffer) {
-                    const candidateName = (msg.file && (msg.file.name || msg.file.fileName)) ||
-                        resolveSafeFileName(msg, "ulp_result", ".txt");
-                    const safeName = resolveSafeFileName(candidateName, "ulp_result", ".txt");
-                    buffer.name = safeName;
-                    const sendPayload = {
-                        file: buffer,
-                        caption: `${ULP_MARKER} ${safeName}`,
-                        forceDocument: true,
-                    };
-                    if (Api && typeof Api.DocumentAttributeFilename === "function") {
-                        sendPayload.attributes = [
-                            new Api.DocumentAttributeFilename({ fileName: safeName }),
-                        ];
-                    }
-                    await withTimeout(
-                        client.sendFile(targetPeer, sendPayload),
-                        timeoutMs,
-                        "userbot sendFile",
-                    );
-                    return "copy";
-                }
-            }
-            if (text) {
-                await withTimeout(
-                    client.sendMessage(targetPeer, { message: `${ULP_MARKER} ${text}` }),
-                    timeoutMs,
-                    "userbot copy",
-                );
-                return "copy";
-            }
-            return "skipped";
-        },
+        forwardResult,
 
         /**
          * Find a document from the replied message or the most recent message in the chat.

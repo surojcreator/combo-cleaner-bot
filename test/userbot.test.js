@@ -443,6 +443,92 @@ test("searchDayByDay navigates pagination loop when date folder is on page 2", a
     assert.equal(actions[4].data, `hist:${targetDate}:0`);
 });
 
+test("searchDayByDay invokes forwardResult without error when chatId is specified", async () => {
+    const cfg = {
+        apiId: 12345,
+        apiHash: "hash123",
+        session: "sess123",
+        searcher: "DumpNews14Bot",
+        botUsername: "ComboCleanerBot",
+    };
+
+    const targetDate = "15.09.2026";
+    let msgCounter = 100;
+    const actions = [];
+
+    const menuMsg = {
+        id: 101,
+        message: "Menu",
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: targetDate, data: Buffer.from(`folder:${targetDate}:0`) }] },
+            ],
+        },
+    };
+
+    const folderViewMsg = {
+        id: 102,
+        message: `Date folder: ${targetDate}`,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: "📦 Full hist", data: Buffer.from(`hist:${targetDate}:0`) }] },
+            ],
+        },
+    };
+
+    let folderOpened = false;
+    let forwardCalled = false;
+
+    const mockClient = {
+        async sendMessage(target, { message }) {
+            actions.push({ type: "sendMessage", message });
+            return { id: ++msgCounter, out: true, message };
+        },
+        async getMessages(target, opts = {}) {
+            if (opts.ids && opts.ids.length) {
+                return folderOpened ? [folderViewMsg] : [menuMsg];
+            }
+            if (folderOpened) {
+                return [
+                    { id: ++msgCounter, out: false, media: { document: { size: 500 } }, message: "dump.txt" },
+                    folderViewMsg,
+                ];
+            }
+            return [menuMsg];
+        },
+        async invoke(req) {
+            const dataStr = req.data ? req.data.toString() : "";
+            actions.push({ type: "callback", data: dataStr });
+            if (dataStr.startsWith("folder:")) folderOpened = true;
+            return true;
+        },
+        async getInputEntity() { return { id: 999 }; },
+        async forwardMessages(targetPeer, { messages, fromPeer }) {
+            forwardCalled = true;
+            actions.push({ type: "forwardMessages", targetPeer, messages });
+            return true;
+        },
+    };
+
+    const ub = userbot.createUserbot(cfg, {
+        client: mockClient,
+        searcherEntity: { id: 888 },
+    });
+
+    const res = await ub.searchDayByDay({
+        query: "domain.com",
+        daysCount: 1,
+        startDate: new Date("2026-09-15T12:00:00Z"),
+        chatId: 12345,
+        stepDelayMs: 10,
+        sleep: () => Promise.resolve(),
+    });
+
+    assert.equal(res.status, "done");
+    assert.equal(forwardCalled, true, "forwardResult should be called when chatId and results are present");
+});
+
+
 
 
 

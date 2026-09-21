@@ -492,6 +492,82 @@ function attachButtonEmoji(btn) {
     return btn;
 }
 
+const callbackPayloadMap = new Map();
+const callbackPayloadReverse = new Map();
+let callbackPayloadSeq = 0;
+
+/**
+ * Register a callback data string, ensuring it never exceeds Telegram's 64-byte limit.
+ * If prefix + payload is <= 64 bytes, it is returned unchanged.
+ * If > 64 bytes, a short reference ID is generated and returned as `${prefix}ref:${id}`.
+ *
+ * @param {string} prefix
+ * @param {string} payload
+ * @returns {string} Safe callback_data string <= 64 bytes
+ */
+function registerCallbackPayload(prefix = "", payload = "") {
+    const pfx = typeof prefix === "symbol" ? "" : String(prefix || "");
+    const raw = typeof payload === "symbol" ? "" : String(payload || "");
+    const full = pfx + raw;
+    if (Buffer.byteLength(full, "utf8") <= 64) {
+        return full;
+    }
+    let id = callbackPayloadReverse.get(raw);
+    if (!id) {
+        callbackPayloadSeq = (callbackPayloadSeq + 1) % 1000000;
+        id = `r${Date.now().toString(36)}${callbackPayloadSeq}`;
+        callbackPayloadMap.set(id, raw);
+        callbackPayloadReverse.set(raw, id);
+        if (callbackPayloadMap.size > 5000) {
+            const oldest = callbackPayloadMap.keys().next().value;
+            const oldVal = callbackPayloadMap.get(oldest);
+            callbackPayloadMap.delete(oldest);
+            if (oldVal) callbackPayloadReverse.delete(oldVal);
+        }
+    }
+    const safePrefix = Buffer.byteLength(pfx, "utf8") <= 35 ? pfx : "cb:";
+    return `${safePrefix}ref:${id}`;
+}
+
+/**
+ * Resolve a possibly shortened callback payload back to its full value.
+ *
+ * @param {string} token
+ * @returns {string}
+ */
+function resolveCallbackPayload(token) {
+    if (typeof token === "symbol" || !token) return "";
+    const str = String(token);
+    if (str.startsWith("ref:")) {
+        const id = str.slice(4);
+        return callbackPayloadMap.get(id) || id;
+    }
+    return str;
+}
+
+/**
+ * Attaches emojis and guarantees that any callback_data never exceeds Telegram's 64-byte limit.
+ * @param {object} btn
+ */
+function prepareButton(btn) {
+    if (!btn || typeof btn !== "object") return btn;
+    attachButtonEmoji(btn);
+    if (typeof btn.callback_data === "string" && Buffer.byteLength(btn.callback_data, "utf8") > 64) {
+        const firstColon = btn.callback_data.indexOf(":");
+        const prefix = firstColon > 0 && firstColon <= 30
+            ? btn.callback_data.slice(0, firstColon + 1)
+            : "cb:";
+        const payload = firstColon > 0 && firstColon <= 30
+            ? btn.callback_data.slice(firstColon + 1)
+            : btn.callback_data;
+        btn.callback_data = registerCallbackPayload(prefix, payload);
+        if (Buffer.byteLength(btn.callback_data, "utf8") > 64) {
+            btn.callback_data = registerCallbackPayload("cb:", btn.callback_data);
+        }
+    }
+    return btn;
+}
+
 /**
  * Build inline keyboard with animated emojis automatically attached to buttons.
  * @param {Array<Array<object>>} rows
@@ -501,7 +577,7 @@ function createInlineKeyboard(rows) {
         rows = rows ? [rows] : [];
     }
     const processed = rows.map((row) =>
-        Array.isArray(row) ? row.map(attachButtonEmoji) : attachButtonEmoji(row)
+        Array.isArray(row) ? row.map(prepareButton) : prepareButton(row)
     );
     return Markup.inlineKeyboard(processed);
 }
@@ -1029,9 +1105,13 @@ function ulpMenuKeyboard(selectedDays = 5, customDomains = []) {
     // If user has custom saved domains, display them at the top as quick 1-tap buttons
     if (Array.isArray(customDomains) && customDomains.length > 0) {
         for (let i = 0; i < customDomains.length; i += 2) {
-            const pair = [Markup.button.callback(`🌐 ${customDomains[i]}`, `ulp:quick:${customDomains[i]}`)];
+            const d1 = customDomains[i];
+            const l1 = d1.length > 24 ? d1.slice(0, 21) + "…" : d1;
+            const pair = [Markup.button.callback(`🌐 ${l1}`, registerCallbackPayload("ulp:quick:", d1))];
             if (i + 1 < customDomains.length) {
-                pair.push(Markup.button.callback(`🌐 ${customDomains[i + 1]}`, `ulp:quick:${customDomains[i + 1]}`));
+                const d2 = customDomains[i + 1];
+                const l2 = d2.length > 24 ? d2.slice(0, 21) + "…" : d2;
+                pair.push(Markup.button.callback(`🌐 ${l2}`, registerCallbackPayload("ulp:quick:", d2)));
             }
             rows.push(pair);
         }
@@ -1077,9 +1157,10 @@ function ulpEditDomainsKeyboard(customDomains = []) {
     const rows = [];
     if (Array.isArray(customDomains) && customDomains.length > 0) {
         for (const domain of customDomains) {
+            const l = domain.length > 22 ? domain.slice(0, 19) + "…" : domain;
             rows.push([
-                Markup.button.callback(`🌐 ${domain}`, `ulp:quick:${domain}`),
-                Markup.button.callback("❌ Delete", `ulp:custom:del:${domain}`),
+                Markup.button.callback(`🌐 ${l}`, registerCallbackPayload("ulp:quick:", domain)),
+                Markup.button.callback("❌ Delete", registerCallbackPayload("ulp:custom:del:", domain)),
             ]);
         }
         rows.push([
@@ -1346,7 +1427,8 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
     const mention = botUsername ? `@${escapeHtml(botUsername)}` : "this bot";
     const batchSize = batch ? Number(batch.size || 0) : 0;
     const batchFiles = batch ? Number(batch.files || 0) : 0;
-    const cpus = require("os").cpus().length || 8;
+    const osCpus = require("os").cpus();
+    const cpus = (Array.isArray(osCpus) && osCpus.length) || 4;
     const mem = process.memoryUsage ? process.memoryUsage() : {};
     const ramMb = mem.rss ? Math.round(mem.rss / (1024 * 1024)) : 64;
 
@@ -1701,7 +1783,7 @@ function searchResultKeyboard(query, total = 0) {
     if (total > 0 && cleanQ) {
         const shortQ = cleanQ.length > 25 ? cleanQ.slice(0, 22) + "…" : cleanQ;
         rows.push([
-            Markup.button.callback(`📥 Download "${shortQ}" (${num(total)})`, `search:dl:${cleanQ}`),
+            Markup.button.callback(`📥 Download "${shortQ}" (${num(total)})`, registerCallbackPayload("search:dl:", cleanQ)),
         ]);
     }
     rows.push([
@@ -2408,8 +2490,8 @@ function sitesKeyboard(siteCounts = [], page = 0) {
         const s = typeof item.site === "string" ? item.site : (typeof item.site === "symbol" ? "" : String(item.site || ""));
         const sName = s.length > 18 ? s.slice(0, 16) + "…" : s;
         rows.push([
-            Markup.button.callback(`🌐 ${sName} (${compact(item.count)})`, `site:view:${s}`),
-            Markup.button.callback(`🗑 Del ${sName}`, `site:del:ask:${s}`),
+            Markup.button.callback(`🌐 ${sName} (${compact(item.count)})`, registerCallbackPayload("site:view:", s)),
+            Markup.button.callback(`🗑 Del ${sName}`, registerCallbackPayload("site:del:ask:", s)),
         ]);
     }
 
@@ -2448,9 +2530,10 @@ function sitesKeyboard(siteCounts = [], page = 0) {
  */
 function confirmDomainDeleteKeyboard(domain) {
     const dom = typeof domain === "symbol" ? "" : String(domain || "");
+    const shortDom = dom.length > 25 ? dom.slice(0, 22) + "…" : dom;
     return createInlineKeyboard([
         [
-            Markup.button.callback(`⚠️ Yes, remove ${dom}`, `site:del:confirm:${dom}`),
+            Markup.button.callback(`⚠️ Yes, remove ${shortDom}`, registerCallbackPayload("site:del:confirm:", dom)),
             Markup.button.callback("❌ Cancel", "sites"),
         ],
     ]);
@@ -2527,6 +2610,8 @@ module.exports = {
     resetDefaultCustomEmojis,
     DEFAULT_CUSTOM_ANIMATED_EMOJIS,
     EMOJI_KEY_MAP,
+    registerCallbackPayload,
+    resolveCallbackPayload,
 };
 
 

@@ -77,6 +77,7 @@ const {
     CODE,
     RULE,
     compact,
+    resolveCallbackPayload,
 } = require("./messages");
 
 // Telegram Bot API caps bot downloads at 20 MB.
@@ -284,7 +285,7 @@ function createBot(token, meta = {}) {
                     mainKeyboard()
                 );
             }
-            userPromptState.set(ctx.chat.id, { action: "remove_domain" });
+            userPromptState.set(ctx.chat.id, { action: "remove_domain", createdAt: Date.now() });
             return safeReply(
                 ctx,
                 [
@@ -294,6 +295,13 @@ function createBot(token, meta = {}) {
                     `Example: ${CODE("netflix.com")}`,
                 ].join("\n"),
                 sitesKeyboard(counts)
+            );
+        }
+        if (domain.length < 2) {
+            return safeReply(
+                ctx,
+                `⚠️ Please specify a valid domain or keyword with at least 2 characters.`,
+                mainKeyboard()
             );
         }
         const res = store.removeDomain(ctx.chat.id, domain);
@@ -1372,7 +1380,7 @@ function createBot(token, meta = {}) {
 
     bot.action("ulp:custom:prompt", async (ctx) => {
         await ctx.answerCbQuery().catch(() => { });
-        userPromptState.set(ctx.chat.id, { action: "ulp:search_domain" });
+        userPromptState.set(ctx.chat.id, { action: "ulp:search_domain", createdAt: Date.now() });
         const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         const text = [
             `🌐  ${B("ENTER CUSTOM DOMAIN TO SEARCH")}  ⚡️`,
@@ -1393,7 +1401,7 @@ function createBot(token, meta = {}) {
 
     bot.action("ulp:custom:add:prompt", async (ctx) => {
         await ctx.answerCbQuery().catch(() => { });
-        userPromptState.set(ctx.chat.id, { action: "ulp:add_domain" });
+        userPromptState.set(ctx.chat.id, { action: "ulp:add_domain", createdAt: Date.now() });
         const text = [
             `➕  ${B("ADD CUSTOM DOMAIN PRESET")}  ⚡️`,
             RULE,
@@ -1429,7 +1437,7 @@ function createBot(token, meta = {}) {
     });
 
     bot.action(/^ulp:custom:del:(.+)$/, async (ctx) => {
-        const domain = ctx.match[1];
+        const domain = resolveCallbackPayload(ctx.match[1]);
         if (store && store.removeCustomDomain) store.removeCustomDomain(ctx.chat.id, domain);
         await safeAnswerCbQuery(ctx, `🗑 Removed ${domain}`);
         const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
@@ -1466,7 +1474,7 @@ function createBot(token, meta = {}) {
 
     bot.action("ulp:custom:days_prompt", async (ctx) => {
         await ctx.answerCbQuery().catch(() => { });
-        userPromptState.set(ctx.chat.id, { action: "ulp:set_days" });
+        userPromptState.set(ctx.chat.id, { action: "ulp:set_days", createdAt: Date.now() });
         const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         const text = [
             `📅  ${B("EDIT SEARCH DURATION (DAYS)")}  ⚡️`,
@@ -1529,7 +1537,7 @@ function createBot(token, meta = {}) {
     });
 
     bot.action(/^search:dl:(.+)$/, async (ctx) => {
-        const query = ctx.match[1];
+        const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Preparing "${query}" export…`);
         let matches = [];
         const chatStats = store.getStats(ctx.chat.id);
@@ -1629,7 +1637,9 @@ function createBot(token, meta = {}) {
 
     bot.command("ping", async (ctx) => {
         const t0 = Date.now();
-        await ctx.telegram.getMe();
+        try {
+            await ctx.telegram.getMe();
+        } catch (_) {}
         const latencyMs = Date.now() - t0;
         const uptimeSec = (Date.now() - STARTED_AT) / 1000;
         await safeReply(ctx, renderPing({ latencyMs, uptimeSec }));
@@ -2221,9 +2231,18 @@ function createBot(token, meta = {}) {
      * Cancel the active save session.
      */
     const cancelSaveSession = async (ctx) => {
-        if (userPromptState.has(ctx.chat.id)) {
+        const prompt = userPromptState.get(ctx.chat.id);
+        if (prompt) {
             userPromptState.delete(ctx.chat.id);
-            await safeReply(ctx, `❌  ${B("Save mode cancelled.")}`, mainKeyboard());
+            if (prompt.action === "save:listening") {
+                await safeReply(ctx, `❌  ${B("Save mode cancelled.")}`, mainKeyboard());
+            } else if (prompt.action === "remove_domain") {
+                await safeReply(ctx, `❌  ${B("Domain removal cancelled.")}`, mainKeyboard());
+            } else if (prompt.action && String(prompt.action).startsWith("ulp:")) {
+                await safeReply(ctx, `❌  ${B("ULP setup cancelled.")}`, mainKeyboard());
+            } else {
+                await safeReply(ctx, `❌  ${B("Action cancelled.")}`, mainKeyboard());
+            }
         } else {
             await safeReply(ctx, `ℹ️  No active save session to cancel.`, mainKeyboard());
         }
@@ -2660,7 +2679,7 @@ function createBot(token, meta = {}) {
 
     // Inline button: site:del:ask:<site>
     bot.action(/^site:del:ask:(.+)$/, async (ctx) => {
-        const domain = ctx.match[1];
+        const domain = resolveCallbackPayload(ctx.match[1]);
         await ctx.answerCbQuery().catch(() => {});
         await safeReply(
             ctx,
@@ -2671,7 +2690,7 @@ function createBot(token, meta = {}) {
 
     // Inline button: site:del:confirm:<site>
     bot.action(/^site:del:confirm:(.+)$/, async (ctx) => {
-        const domain = ctx.match[1];
+        const domain = resolveCallbackPayload(ctx.match[1]);
         await ctx.answerCbQuery(`Removing ${domain}…`).catch(() => {});
         const res = store.removeDomain(ctx.chat.id, domain);
         const counts = store.getSiteCounts(ctx.chat.id);
@@ -2690,7 +2709,7 @@ function createBot(token, meta = {}) {
     // Inline button: site:del:prompt
     bot.action("site:del:prompt", async (ctx) => {
         await ctx.answerCbQuery().catch(() => {});
-        userPromptState.set(ctx.chat.id, { action: "remove_domain" });
+        userPromptState.set(ctx.chat.id, { action: "remove_domain", createdAt: Date.now() });
         await safeReply(
             ctx,
             [
@@ -2721,7 +2740,7 @@ function createBot(token, meta = {}) {
 
     // Inline button: site:view:<site>
     bot.action(/^site:view:(.+)$/, async (ctx) => {
-        const domain = ctx.match[1];
+        const domain = resolveCallbackPayload(ctx.match[1]);
         await ctx.answerCbQuery(`Searching for ${domain}…`).catch(() => {});
         const res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), domain, 20);
         await safeReply(ctx, renderSearch(domain, res), searchResultKeyboard(domain, res.total));
@@ -3260,10 +3279,14 @@ function createBot(token, meta = {}) {
         const msg = ctx.message;
         if (!msg) return;
         if (msg.text && msg.text.startsWith("/")) return;
-        if (msg.document) return;
         if (msg.text && userPromptState.has(ctx.chat.id)) {
             const prompt = userPromptState.get(ctx.chat.id);
-            const input = msg.text.trim();
+            const promptStart = prompt.startedAt || prompt.createdAt || 0;
+            const promptTtl = prompt.action === "save:listening" ? 60 * 60 * 1000 : 15 * 60 * 1000;
+            if (promptStart > 0 && (Date.now() - promptStart > promptTtl)) {
+                userPromptState.delete(ctx.chat.id);
+            } else {
+                const input = msg.text.trim();
 
             if (prompt.action === "save:listening") {
                 const lower = input.toLowerCase();
@@ -3386,6 +3409,7 @@ function createBot(token, meta = {}) {
                 return;
             }
         }
+    }
         if (msg.photo || msg.video || msg.audio || msg.voice || msg.sticker) {
             await safeReply(
                 ctx,
@@ -4564,7 +4588,7 @@ async function beginUlpRun(ctx, params) {
                         stepDelayMs: searchOptions.stepDelayMs,
                     }),
                     ulpKeyboard(scope),
-                );
+                ).catch(() => {});
             },
             onResult: async (m) => {
                 const p = ingestUserbotMessage(chatId, m, transport.userbot, query);
@@ -4627,7 +4651,7 @@ async function beginUlpRun(ctx, params) {
                         stepDelayMs: searchOptions.stepDelayMs,
                     }),
                     ulpKeyboard(scope),
-                );
+                ).catch(() => {});
             },
         });
     }

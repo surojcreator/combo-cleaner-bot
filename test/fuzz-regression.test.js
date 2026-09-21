@@ -159,3 +159,43 @@ test("fuzz: parseChannelFilename validates integer messageId", () => {
     assert.equal(userbot.parseChannelFilename(null), null);
 });
 
+test("regression: callback_data limits and payload registration guarantee <= 64 bytes", () => {
+    const longDomain = "super-long-subdomain-that-normally-breaks-telegram.enterprise-telecom-cluster.co.uk";
+    const reg = messages.registerCallbackPayload("site:del:ask:", longDomain);
+    assert.ok(Buffer.byteLength(reg, "utf8") <= 64, `Expected <= 64 bytes, got ${Buffer.byteLength(reg, "utf8")}`);
+    assert.ok(reg.startsWith("site:del:ask:ref:"));
+    const resolved = messages.resolveCallbackPayload(reg.slice("site:del:ask:".length));
+    assert.equal(resolved, longDomain);
+
+    // Short strings remain untouched
+    const short = messages.registerCallbackPayload("site:del:ask:", "netflix.com");
+    assert.equal(short, "site:del:ask:netflix.com");
+    assert.equal(messages.resolveCallbackPayload("netflix.com"), "netflix.com");
+
+    // Universal inline keyboard guard shortens any oversized button callback
+    const kb = messages.createInlineKeyboard([
+        [{ text: "Test", callback_data: `custom:action:${"a".repeat(100)}` }]
+    ]);
+    const btn = kb.reply_markup.inline_keyboard[0][0];
+    assert.ok(Buffer.byteLength(btn.callback_data, "utf8") <= 64);
+});
+
+test("regression: handleDownloadRequest handles missing or non-string entry.filename without throwing", () => {
+    let statusCode = null;
+    let headers = null;
+    const req = { method: "GET", url: "/download/fake-token" };
+    const res = {
+        writeHead: (code, h) => {
+            statusCode = code;
+            headers = h;
+        },
+        end: () => {},
+        on: () => {},
+    };
+
+    // Test with invalid token (404)
+    assert.doesNotThrow(() => downloads.handleDownloadRequest(req, res));
+    assert.equal(statusCode, 404);
+});
+
+

@@ -261,8 +261,11 @@ function handleDownloadRequest(req, res) {
     }
 
     // Prepare safe Content-Disposition filename
-    const safeName = entry.filename.replace(/["\r\n\0]/g, "_");
-    const encodedName = encodeURIComponent(entry.filename);
+    const filename = (typeof entry.filename === "string" && entry.filename.trim())
+        ? entry.filename.trim()
+        : "combined_logs.txt";
+    const safeName = filename.replace(/["\r\n\0]/g, "_");
+    const encodedName = encodeURIComponent(filename);
 
     const headers = {
         "Content-Type": entry.mimeType,

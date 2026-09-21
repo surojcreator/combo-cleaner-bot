@@ -124,6 +124,7 @@ function positiveInt(raw, fallback) {
  * @param {NodeJS.ProcessEnv} [env]
  */
 function loadOptions(env = process.env) {
+    env = env || process.env || {};
     return {
         botUsername: String(env.SEARCH_BOT_USERNAME || DEFAULT_SEARCH_BOT).replace(/^@+/, ""),
         histTemplate: env.SEARCH_HIST_TEMPLATE || DEFAULT_HIST_TEMPLATE,
@@ -194,11 +195,12 @@ function classifySendError(err) {
  * }} opts
  * @returns {Promise<{ status: "results"|"exhausted"|"blocked"|"error"|"stopped", kind?: string, attempts: number, sends: string[], messageIds: number[], error?: any }>}
  */
-async function runSearch(opts) {
+async function runSearch(opts = {}) {
+    opts = opts || {};
     const {
-        steps,
-        send,
-        sleep,
+        steps = [],
+        send = async () => {},
+        sleep = async () => {},
         hasResults = () => false,
         shouldStop = () => false,
         onEvent = () => { },
@@ -332,18 +334,19 @@ function pruneRuns(now = Date.now()) {
  * @param {{ query: string, scope: string, windowMs?: number, now?: number }} opts
  * @returns {UlpRun}
  */
-function startRun(chatId, opts) {
-    const now = opts.now || Date.now();
+function startRun(chatId, opts = {}) {
+    opts = opts || {};
+    const now = (opts && opts.now) || Date.now();
     pruneRuns(now);
     /** @type {UlpRun} */
     const run = {
-        chatId: Number(chatId),
-        query: opts.query,
-        scope: opts.scope,
+        chatId: Number(chatId || 0),
+        query: (opts && opts.query) || "",
+        scope: (opts && opts.scope) || "day",
         status: "running",
         startedAt: now,
         updatedAt: now,
-        deadline: now + (opts.windowMs || DEFAULT_WINDOW_MS),
+        deadline: now + ((opts && opts.windowMs) || DEFAULT_WINDOW_MS),
         results: [],
         seen: new Set(),
         attempts: 0,
@@ -393,9 +396,10 @@ function finishRun(chatId, status = "done", now = Date.now()) {
  * @returns {number[]} owner chat ids to forward the message to
  */
 function noteResult(searcherChatId, opts = {}) {
-    const now = opts.now || Date.now();
-    const messageId = opts.messageId == null ? null : Number(opts.messageId);
-    const kind = opts.kind || "text";
+    opts = opts || {};
+    const now = (opts && opts.now) || Date.now();
+    const messageId = (opts && opts.messageId != null) ? Number(opts.messageId) : null;
+    const kind = (opts && opts.kind) || "text";
     pruneRuns(now);
 
     const live = [...runs.values()].filter((run) => run.status === "running" && now < run.deadline);
@@ -427,10 +431,11 @@ function noteResult(searcherChatId, opts = {}) {
 
 /**
  * The most recently updated run, if it is fresh enough to receive late answers.
- * @param {number} now
+ * @param {number} [now]
  * @returns {UlpRun|null}
  */
-function mostRecentRun(now) {
+function mostRecentRun(now = Date.now()) {
+    now = Number(now) || Date.now();
     let best = null;
     for (const run of runs.values()) {
         if (now - run.updatedAt > LAST_OWNER_TTL_MS) continue;

@@ -7,9 +7,9 @@ const { Markup } = require("telegraf");
 // italic and monospace — escaped entities would display as literal "<b>".
 const LT = String.fromCharCode(60); // <
 const GT = String.fromCharCode(62); // >
-const B = (s) => `${LT}b${GT}${s}${LT}/b${GT}`;
-const I = (s) => `${LT}i${GT}${s}${LT}/i${GT}`;
-const CODE = (s) => `${LT}code${GT}${s}${LT}/code${GT}`;
+const B = (s) => `${LT}b${GT}${typeof s === "symbol" ? "" : (s ?? "")}${LT}/b${GT}`;
+const I = (s) => `${LT}i${GT}${typeof s === "symbol" ? "" : (s ?? "")}${LT}/i${GT}`;
+const CODE = (s) => `${LT}code${GT}${typeof s === "symbol" ? "" : (s ?? "")}${LT}/code${GT}`;
 
 // Registry for Telegram custom animated emojis (symbol/name -> custom_emoji_id)
 const customAnimatedEmojis = new Map();
@@ -532,6 +532,7 @@ const AMP = String.fromCharCode(38); // &
  * @param {string} s
  */
 function escapeHtml(s) {
+    if (s === null || s === undefined || typeof s === "symbol") return "";
     return String(s)
         .replace(/&/g, `${AMP}amp;`)
         .replace(/</g, `${AMP}lt;`)
@@ -542,6 +543,7 @@ function escapeHtml(s) {
  * @param {number|undefined} n
  */
 function num(n) {
+    if (typeof n === "symbol") return "0";
     return Number(n || 0).toLocaleString("en-US");
 }
 
@@ -550,6 +552,7 @@ function num(n) {
  * @param {number|undefined} n
  */
 function compact(n) {
+    if (typeof n === "symbol") return "0";
     const v = Number(n || 0);
     if (v < 1000) return String(v);
     if (v < 1_000_000) {
@@ -996,9 +999,11 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
  * Confirmation dialog keyboard for deleting individual files or bulk storage.
  */
 function confirmFileDeleteKeyboard(actionType, targetId, fileName = "") {
+    const act = typeof actionType === "symbol" ? "" : String(actionType || "");
+    const tid = typeof targetId === "symbol" ? "" : String(targetId || "");
     return createInlineKeyboard([
         [
-            Markup.button.callback("⚠️ Yes, permanently delete", `file:del:confirm:${actionType}:${targetId}`),
+            Markup.button.callback("⚠️ Yes, permanently delete", `file:del:confirm:${act}:${tid}`),
             Markup.button.callback("❌ Cancel", "server_files"),
         ],
     ]);
@@ -1010,7 +1015,8 @@ function confirmFileDeleteKeyboard(actionType, targetId, fileName = "") {
  * @param {string[]} [customDomains]
  */
 function ulpMenuKeyboard(selectedDays = 5, customDomains = []) {
-    const days = Math.max(1, Math.min(90, Number(selectedDays) || 5));
+    const rawDays = typeof selectedDays === "symbol" ? 5 : Number(selectedDays) || 5;
+    const days = Math.max(1, Math.min(90, rawDays));
     const daysRow1 = [1, 3, 5].map((d) =>
         Markup.button.callback(d === days ? `📅 ${d}d ✅` : `📅 ${d} Day${d > 1 ? "s" : ""}`, `ulp:setdays:${d}`)
     );
@@ -1199,7 +1205,8 @@ function renderSaveListeningPrompt(botUsername = null) {
  * @param {number} [queuedCount]
  */
 function saveListeningKeyboard(queuedCount = 0) {
-    const doneText = queuedCount > 0 ? `✅ Done / Finish Saving (${queuedCount})` : "✅ Done / Finish Saving";
+    const qCount = typeof queuedCount === "number" ? queuedCount : (typeof queuedCount === "symbol" ? 0 : Number(queuedCount) || 0);
+    const doneText = qCount > 0 ? `✅ Done / Finish Saving (${qCount})` : "✅ Done / Finish Saving";
     return createInlineKeyboard([
         [
             Markup.button.callback(doneText, "save:done"),
@@ -2247,6 +2254,7 @@ function renderUlpSharedResult(info = {}) {
 }
 
 function humanSize(bytes) {
+    if (typeof bytes === "symbol") return "0 B";
     const b = Number(bytes || 0);
     if (b < 1024) return `${b} B`;
     if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
@@ -2390,15 +2398,18 @@ function sitesKeyboard(siteCounts = [], page = 0) {
     const pageSize = 6;
     const list = Array.isArray(siteCounts) ? siteCounts : [];
     const totalPages = Math.ceil(list.length / pageSize) || 1;
-    const curPage = Math.max(0, Math.min(page, totalPages - 1));
+    const pageNum = typeof page === "number" ? page : (typeof page === "symbol" ? 0 : Number(page) || 0);
+    const curPage = Math.max(0, Math.min(pageNum, totalPages - 1));
     const start = curPage * pageSize;
     const pageItems = list.slice(start, start + pageSize);
 
     for (const item of pageItems) {
-        const sName = item.site.length > 18 ? item.site.slice(0, 16) + "…" : item.site;
+        if (!item || typeof item !== "object") continue;
+        const s = typeof item.site === "string" ? item.site : (typeof item.site === "symbol" ? "" : String(item.site || ""));
+        const sName = s.length > 18 ? s.slice(0, 16) + "…" : s;
         rows.push([
-            Markup.button.callback(`🌐 ${sName} (${compact(item.count)})`, `site:view:${item.site}`),
-            Markup.button.callback(`🗑 Del ${sName}`, `site:del:ask:${item.site}`),
+            Markup.button.callback(`🌐 ${sName} (${compact(item.count)})`, `site:view:${s}`),
+            Markup.button.callback(`🗑 Del ${sName}`, `site:del:ask:${s}`),
         ]);
     }
 
@@ -2436,9 +2447,10 @@ function sitesKeyboard(siteCounts = [], page = 0) {
  * @param {string} domain
  */
 function confirmDomainDeleteKeyboard(domain) {
+    const dom = typeof domain === "symbol" ? "" : String(domain || "");
     return createInlineKeyboard([
         [
-            Markup.button.callback(`⚠️ Yes, remove ${domain}`, `site:del:confirm:${domain}`),
+            Markup.button.callback(`⚠️ Yes, remove ${dom}`, `site:del:confirm:${dom}`),
             Markup.button.callback("❌ Cancel", "sites"),
         ],
     ]);

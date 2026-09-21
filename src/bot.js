@@ -117,11 +117,13 @@ function escapeHtml(s) {
  * @param {number} bytes
  */
 function humanSize(bytes) {
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-    if (bytes < 1024 ** 4) return `${(bytes / (1024 ** 3)).toFixed(2)} GB`;
-    return `${(bytes / (1024 ** 4)).toFixed(2)} TB`;
+    if (typeof bytes === "symbol") return "0 B";
+    const b = Number(bytes || 0);
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1024 * 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(2)} MB`;
+    if (b < 1024 ** 4) return `${(b / (1024 ** 3)).toFixed(2)} GB`;
+    return `${(b / (1024 ** 4)).toFixed(2)} TB`;
 }
 
 /**
@@ -129,6 +131,7 @@ function humanSize(bytes) {
  * @param {number|undefined} n
  */
 function num(n) {
+    if (typeof n === "symbol") return "0";
     return Number(n || 0).toLocaleString("en-US");
 }
 
@@ -137,6 +140,7 @@ function num(n) {
  * @param {string[]} lines
  */
 function buildOutput(lines) {
+    if (!Array.isArray(lines)) return "";
     return lines.join("\n") + (lines.length ? "\n" : "");
 }
 
@@ -4262,9 +4266,10 @@ function parseUlpArg(raw, fallbackScope = "day") {
  * @param {{ botUsername: string }} searchOptions
  */
 function isSearcherMessage(ctx, meta, searchOptions) {
+    if (!ctx || typeof ctx !== "object") return false;
     const from = ctx.from;
     if (!from || !from.is_bot || !ctx.message) return false;
-    const expected = String(searchOptions.botUsername || "").toLowerCase();
+    const expected = String((searchOptions && searchOptions.botUsername) || "").toLowerCase();
     const username = String(from.username || "").toLowerCase();
     if (expected && username === expected) return true;
     if (meta && meta.searcherBotId && from.id === meta.searcherBotId) return true;
@@ -4924,6 +4929,11 @@ function processMaxZipBytes() {
  * @returns {{ path: string, root: string }}
  */
 function resolveLocalInput(inputPath, rootOverride = null) {
+    if (!inputPath || typeof inputPath !== "string") {
+        const err = new Error("Invalid input path: must be a non-empty string");
+        err.code = "INVALID_INPUT_PATH";
+        throw err;
+    }
     const root = fs.realpathSync(rootOverride ? path.resolve(rootOverride) : localProcessRoot());
     const candidate = fs.realpathSync(path.resolve(inputPath));
     const relative = path.relative(root, candidate);
@@ -4978,9 +4988,11 @@ async function searchTextFile(filePath, query, limit = 20) {
 function processedOutputPath(name, chatId) {
     const root = localProcessedRoot();
     fs.mkdirSync(root, { recursive: true });
-    const stem = sanitizeSiteSlug(name.replace(/\.[^.]+$/, "")) || "cleaned";
+    const safeName = typeof name === "string" ? name : (typeof name === "symbol" ? "cleaned" : String(name || "cleaned"));
+    const stem = sanitizeSiteSlug(safeName.replace(/\.[^.]+$/, "")) || "cleaned";
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    return path.join(root, `${stem}_${chatId}_${stamp}.txt`);
+    const safeChatId = typeof chatId === "symbol" ? "chat" : String(chatId || "chat");
+    return path.join(root, `${stem}_${safeChatId}_${stamp}.txt`);
 }
 
 /**

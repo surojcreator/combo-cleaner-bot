@@ -6,15 +6,15 @@ const { cleanLinesArray } = require("./cleaner");
 
 if (parentPort) {
     parentPort.on("message", (msg) => {
-        const { id, type, lines, options, query } = msg;
-
-        if (type === "clean") {
-            const result = cleanLinesArray(Array.isArray(lines) ? lines : [], options);
-            parentPort.postMessage({
-                id,
-                result,
-            });
-        } else if (type === "search") {
+        const { id, type, lines, options, query } = msg || {};
+        try {
+            if (type === "clean") {
+                const result = cleanLinesArray(Array.isArray(lines) ? lines : [], options);
+                parentPort.postMessage({
+                    id,
+                    result,
+                });
+            } else if (type === "search") {
             const q = String(query || "").trim();
             const qLower = q.toLowerCase();
             const maxMatches = typeof msg.limit === "number" && msg.limit > 0 ? msg.limit : 50;
@@ -153,5 +153,13 @@ if (parentPort) {
                 result: { total, matches },
             });
         }
-    });
+    } catch (workerErr) {
+        console.error("Worker unhandled error:", workerErr);
+        parentPort.postMessage({
+            id,
+            error: workerErr && workerErr.message ? workerErr.message : String(workerErr),
+            result: null,
+        });
+    }
+});
 }

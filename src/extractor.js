@@ -32,6 +32,7 @@ const TEXT_EXTENSIONS = [
  * @returns {boolean}
  */
 function looksLikeText(name) {
+    if (typeof name !== "string") return false;
     const lower = name.toLowerCase();
     if (TEXT_EXTENSIONS.some((ext) => lower.endsWith(ext))) return true;
     // Entries with no extension are commonly plain credential dumps.
@@ -43,6 +44,7 @@ function looksLikeText(name) {
  * @returns {boolean}
  */
 function looksLikeZip(name) {
+    if (typeof name !== "string") return false;
     return name.toLowerCase().endsWith(".zip");
 }
 
@@ -52,6 +54,7 @@ function looksLikeZip(name) {
  * @returns {boolean}
  */
 function isZipBuffer(buffer) {
+    if (!buffer || !Buffer.isBuffer(buffer)) return false;
     return (
         buffer.length >= 4 &&
         buffer[0] === 0x50 &&
@@ -494,6 +497,9 @@ function resolveZipEntryCollision(targetPath, data, existingFiles, baseName) {
  * }}
  */
 function mergeZipFiles(items, options = {}) {
+    if (!Array.isArray(items)) {
+        items = items ? [items] : [];
+    }
     const mergedZip = new AdmZip();
     const existingFiles = new Map();
     const uniqueFolders = new Set();

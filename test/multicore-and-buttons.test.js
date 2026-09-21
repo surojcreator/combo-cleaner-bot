@@ -372,6 +372,7 @@ test("bot handles ULP custom domains and days editing workflow", async () => {
         const bot = createBot("123456:fake-token", {
             botUsername: "TestBot",
             telegram: { telegram: { apiRoot: api.apiRoot } },
+            search: { botUsername: "DumpNews14Bot", stepDelayMs: 10, maxTries: 1 },
         });
 
         const callbackUpdate = (data) => ({

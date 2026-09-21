@@ -86,8 +86,10 @@ function addLines(chatId, lines, site, options = {}) {
     let duplicates = 0;
     let capped = false;
     const maxLines = getMaxLinesPerChat();
+    const safeLines = Array.isArray(lines) ? lines : (lines ? [lines] : []);
 
-    for (const line of lines) {
+    for (const line of safeLines) {
+        if (!line || typeof line !== "string") continue;
         if (chat.lines.size >= maxLines) {
             capped = true;
             break;
@@ -101,7 +103,7 @@ function addLines(chatId, lines, site, options = {}) {
     }
 
     chat.totalKept += added;
-    if (options.countFile === true || (options.countFile !== false && lines.length > 0 && !options.isTextResponse)) {
+    if (options.countFile === true || (options.countFile !== false && safeLines.length > 0 && !options.isTextResponse)) {
         chat.files += 1;
     }
     if (site && added > 0) {

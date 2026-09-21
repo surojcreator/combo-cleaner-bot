@@ -216,6 +216,7 @@ function cleanCcLine(line) {
  * @returns {boolean}
  */
 function isUrlOrDomain(left) {
+    if (typeof left !== "string") return false;
     const value = left.trim();
     if (!value) return false;
     if (SCHEME_URL_RE.test(value)) return true;
@@ -229,6 +230,7 @@ function isUrlOrDomain(left) {
  * @returns {boolean}
  */
 function isEmail(left) {
+    if (typeof left !== "string") return false;
     return EMAIL_RE.test(left.trim());
 }
 
@@ -237,6 +239,7 @@ function isEmail(left) {
  * @returns {boolean}
  */
 function isPhone(left) {
+    if (typeof left !== "string") return false;
     const value = left.trim();
     if (!PHONE_RE.test(value)) return false;
     const digits = value.replace(/\D/g, "");
@@ -380,6 +383,7 @@ function extractFromKeyValueLabels(line, options = {}) {
  * @returns {{ line: string, strippedLabel: string|null }}
  */
 function stripLabelPrefixes(line) {
+    if (typeof line !== "string") return { line: "", strippedLabel: null };
     const LEADING_LABEL_RE =
         /^(?:action|form_action|form|submit|submit_url|post_url|login_url|url|uri|host|site|website|page|target|domain|user|username|login|account|acc|usr|user_name|user_login|email|mail|soft|software|browser|app|application|client|[a-z0-9_.-]*handler|[a-z0-9_.-]*logon)\s*[:=|]\s*/i;
 
@@ -616,6 +620,9 @@ const STEALER_LABEL_RE =
     /^(?:url|uri|host|site|website|link|page|action|form_action|application|app|browser|soft|software|client|username|user|login|account|usr)\s*[:=]/i;
 
 function cleanLinesArray(rawLines, options = {}) {
+    if (!Array.isArray(rawLines)) {
+        rawLines = rawLines ? [rawLines] : [];
+    }
     const keepUrl = Boolean(options && options.keepUrl);
     const dedupe = options && options.dedupe !== false;
     const seen = dedupe ? new Set() : null;

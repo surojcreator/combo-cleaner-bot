@@ -43,11 +43,15 @@ class WorkerPool {
             const worker = new Worker(this.workerPath);
             worker.unref();
             worker.on("message", (msg) => {
-                const { id, result } = msg;
+                const { id, result, error } = msg || {};
                 const task = this.pending.get(id);
                 if (task) {
                     this.pending.delete(id);
-                    task.resolve(result);
+                    if (error) {
+                        task.reject(new Error(error));
+                    } else {
+                        task.resolve(result);
+                    }
                 }
                 if (!this.isClosed) {
                     this.freeWorkers.push(worker);

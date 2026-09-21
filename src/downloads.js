@@ -125,7 +125,8 @@ function getDownloadUrl(token) {
  * @param {number} [params.ttlMs] - Time-to-live in milliseconds
  * @returns {{ token: string, url: string, filename: string, size: number, expiresAt: number }}
  */
-function registerDownload(params) {
+function registerDownload(params = {}) {
+    params = params || {};
     purgeExpired();
 
     const token = crypto.randomBytes(16).toString("hex");
@@ -220,7 +221,7 @@ function isDownloadRequest(req) {
  * @param {import('node:http').ServerResponse} res
  */
 function handleDownloadRequest(req, res) {
-    if (!req || !res) return;
+    if (!req || !res || typeof res.writeHead !== "function") return;
 
     if (req.method !== "GET" && req.method !== "HEAD") {
         res.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });

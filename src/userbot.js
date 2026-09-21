@@ -33,6 +33,7 @@ const CALL_TIMEOUT_MS = 25000;
  * @param {NodeJS.ProcessEnv} [env]
  */
 function loadConfig(env = process.env) {
+    env = env || process.env || {};
     const apiId = Number(env.TELEGRAM_API_ID || 0);
     return {
         apiId: Number.isFinite(apiId) ? apiId : 0,
@@ -204,11 +205,12 @@ function resolveSafeFileName(doc, defaultBase = "combolist", ext = ".txt") {
 
 /** Build a collision-resistant destination path under the configured root. */
 function downloadPath(root, rawName, messageId) {
+    const safeRoot = typeof root === "string" && root ? root : ".";
     const name = safeDownloadName(rawName);
     const ext = path.extname(name).slice(0, 16);
     const stem = path.basename(name, ext).slice(0, 140) || "telegram-file";
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    return path.join(path.resolve(root), `${stem}_${messageId}_${stamp}${ext}`);
+    return path.join(path.resolve(safeRoot), `${stem}_${messageId || Date.now()}_${stamp}${ext}`);
 }
 
 /** Normalize Telegram's marked peer ids (including -100... supergroups). */
@@ -222,9 +224,10 @@ function markedPeerId(value) {
  * @returns {string}
  */
 function formatDateDmy(date = new Date()) {
-    const d = String(date.getDate()).padStart(2, "0");
-    const m = String(date.getMonth() + 1).padStart(2, "0");
-    const y = String(date.getFullYear());
+    const dObj = (date instanceof Date && !Number.isNaN(date.getTime())) ? date : new Date();
+    const d = String(dObj.getDate()).padStart(2, "0");
+    const m = String(dObj.getMonth() + 1).padStart(2, "0");
+    const y = String(dObj.getFullYear());
     return `${d}.${m}.${y}`;
 }
 
@@ -234,7 +237,8 @@ function formatDateDmy(date = new Date()) {
  * @returns {Date}
  */
 function previousDate(date) {
-    const prev = new Date(date.getTime());
+    const dObj = (date instanceof Date && !Number.isNaN(date.getTime())) ? date : new Date();
+    const prev = new Date(dObj.getTime());
     prev.setDate(prev.getDate() - 1);
     return prev;
 }
@@ -1247,7 +1251,9 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                         seenResultIds.add(m.id);
                                         if (resultSink) await resultSink(m);
                                         if (options.onResult) await options.onResult(m);
-                                        if (chatId) await forwardResult(chatId, m, { botUsername: options.botUsername || botUsername || cfg.botUsername });
+                                        if (chatId && typeof forwardResult === "function") {
+                                            await forwardResult(chatId, m, { botUsername: options.botUsername || botUsername || cfg.botUsername }).catch(() => {});
+                                        }
                                     }
                                 }
                             }
@@ -1364,9 +1370,13 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                         if (options.onResult) {
                                             await options.onResult(m);
                                         }
-                                        await forwardResult(chatId, m, {
-                                            botUsername: options.botUsername || botUsername || cfg.botUsername,
-                                        });
+                                        if (chatId && typeof forwardResult === "function") {
+                                            await forwardResult(chatId, m, {
+                                                botUsername: options.botUsername || botUsername || cfg.botUsername,
+                                            }).catch((err) => {
+                                                log.log(`userbot forwardResult error: ${err && err.message ? err.message : err}`);
+                                            });
+                                        }
                                     }
                                 }
                             } catch (err) {

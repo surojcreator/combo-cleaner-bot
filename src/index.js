@@ -8,6 +8,16 @@ const searchbot = require("./searchbot");
 const userbot = require("./userbot");
 const downloads = require("./downloads");
 
+// Process-level crash guards to ensure the bot process never terminates
+// unexpectedly due to transient network issues, MTProto drops, or unhandled rejections.
+process.on("unhandledRejection", (reason, promise) => {
+    console.error("CRITICAL GUARD: Unhandled Promise Rejection at:", promise, "reason:", reason);
+});
+
+process.on("uncaughtException", (err, origin) => {
+    console.error(`CRITICAL GUARD: Uncaught Exception (${origin}):`, err);
+});
+
 const TOKEN = process.env.BOT_TOKEN;
 if (!TOKEN) {
     console.error(
@@ -139,7 +149,11 @@ async function connectUserbot() {
         }
         const { id, username } = await peer.start();
         if (id) botMeta.searcherBotId = id;
-        peer.onResult((msg) => relayUserbotResult(peer, msg));
+        peer.onResult((msg) => {
+            relayUserbotResult(peer, msg).catch((err) => {
+                console.error("Userbot relayUserbotResult error:", err && err.message ? err.message : err);
+            });
+        });
         botMeta.userbot = peer;
         console.log(`Userbot: connected as your account, listening to @${username} (id ${id}).`);
         if (typeof peer.syncCustomEmojis === "function") {
@@ -166,7 +180,7 @@ async function relayUserbotResult(peer, msg) {
     const messageId = Number(msg && msg.id) || null;
     const kind = msg && (msg.media || msg.document) ? "document" : "text";
     const targets = searchbot.noteResult(searcherChatId, { messageId, kind });
-    if (targets.length === 0) return; // nobody asked — leave the user's dialog alone
+    if (!Array.isArray(targets) || targets.length === 0) return; // nobody asked — leave the user's dialog alone
     for (const chatId of targets) {
         try {
             const run = searchbot.getRun(chatId);
@@ -181,7 +195,20 @@ async function relayUserbotResult(peer, msg) {
 }
 
 async function main() {
-    const me = await bot.telegram.getMe();
+    let me = null;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+            me = await bot.telegram.getMe();
+            if (me) break;
+        } catch (err) {
+            console.error(`Telegram getMe attempt ${attempt}/5 failed:`, err && err.message ? err.message : err);
+            if (attempt < 5) await new Promise((r) => setTimeout(r, 2000));
+        }
+    }
+    if (!me) {
+        console.error("Fatal startup error: Could not reach Telegram API after 5 attempts. Check your connection or BOT_TOKEN.");
+        process.exit(1);
+    }
     botMeta.botUsername = me.username;
     console.log(`Bot started as @${me.username} (id ${me.id})`);
     await connectUserbot();
@@ -209,9 +236,13 @@ async function main() {
         // Long-polling mode: works anywhere, no public URL needed.
         await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => { });
         startServer(null);
-        await bot.launch();
-        launched = true;
-        console.log("Running in long-polling mode.");
+        try {
+            await bot.launch({ dropPendingUpdates: true });
+            launched = true;
+            console.log("Running in long-polling mode.");
+        } catch (launchErr) {
+            console.error("bot.launch() error:", launchErr && launchErr.message ? launchErr.message : launchErr);
+        }
     }
 
     // Graceful shutdown. bot.stop() is only valid after bot.launch() (polling

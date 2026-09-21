@@ -3153,8 +3153,10 @@ function createBot(token, meta = {}) {
             ).catch(() => {});
         }
 
-        batch.timer = setTimeout(async () => {
-            await processForwardedBatch(chatId);
+        batch.timer = setTimeout(() => {
+            processForwardedBatch(chatId).catch((err) => {
+                console.error(`Error in processForwardedBatch for ${chatId}:`, err && err.message ? err.message : err);
+            });
         }, forwardDebounceMs);
     }
 
@@ -4701,69 +4703,102 @@ async function beginUlpRun(ctx, params) {
 
     // Hard stop for the result window, so a run can never linger forever.
     clearUlpWindow(ulpWindows, chatId);
-    const timer = setTimeout(async () => {
-        const live = searchbot.getRun(chatId);
-        if (!live || live.status !== "running") return;
-        searchbot.finishRun(chatId, "done");
-        if (card) {
-            const count = live.results ? live.results.length : 0;
-            const text = count > 0
-                ? renderUlpDone({ query: live.query, scope: live.scope, count })
-                : renderUlpStopped({ query: live.query, scope: live.scope, count: 0 });
-            await safeEdit(
-                ctx,
-                card.message_id,
-                text,
-                ulpKeyboard("done"),
-            );
-        }
-        await deliverCombinedAndResetBatch(ctx);
+    const timer = setTimeout(() => {
+        (async () => {
+            const live = searchbot.getRun(chatId);
+            if (!live || live.status !== "running") return;
+            searchbot.finishRun(chatId, "done");
+            if (card) {
+                const count = live.results ? live.results.length : 0;
+                const text = count > 0
+                    ? renderUlpDone({ query: live.query, scope: live.scope, count })
+                    : renderUlpStopped({ query: live.query, scope: live.scope, count: 0 });
+                await safeEdit(
+                    ctx,
+                    card.message_id,
+                    text,
+                    ulpKeyboard("done"),
+                );
+            }
+            await deliverCombinedAndResetBatch(ctx);
+        })().catch((timerErr) => {
+            console.error("ULP window timer error:", timerErr && timerErr.message ? timerErr.message : timerErr);
+        });
     }, calculatedWindowMs);
     if (timer && typeof timer.unref === "function") timer.unref();
     ulpWindows.set(chatId, timer);
 
     let result;
     if (scope === "day" && transport.kind === "userbot" && typeof transport.userbot.searchDayByDay === "function") {
-        const dayRes = await transport.userbot.searchDayByDay({
-            query,
-            daysCount,
-            startDate: startDate || null,
-            chatId,
-            botUsername: meta && meta.botUsername,
-            stepDelayMs: searchOptions.stepDelayMs,
-            shouldStop: () => !searchbot.isRunning(chatId),
-            onStatus: (st) => {
-                if (!card) return;
-                safeEdit(
-                    ctx,
-                    card.message_id,
-                    renderUlpProgress({
-                        searcherBot: searchOptions.botUsername,
-                        attempt: st.attempt,
-                        maxTries: st.totalDays,
-                        sends: [`${st.day}: ${st.step}`],
-                        stepDelayMs: searchOptions.stepDelayMs,
-                    }),
-                    ulpKeyboard(scope),
-                ).catch(() => {});
-            },
-            onResult: async (m) => {
-                const p = ingestUserbotMessage(chatId, m, transport.userbot, query);
-                trackIngestion(chatId, p);
-                await p;
-                searchbot.noteResult(transport.userbot && transport.userbot.searcherId ? transport.userbot.searcherId : 0, {
-                    messageId: m && m.id,
-                    kind: m && (m.media || m.document) ? "document" : "text",
-                });
-            },
-            sleep,
-        });
+        let dayRes;
+        try {
+            dayRes = await transport.userbot.searchDayByDay({
+                query,
+                daysCount,
+                startDate: startDate || null,
+                chatId,
+                botUsername: meta && meta.botUsername,
+                stepDelayMs: searchOptions.stepDelayMs,
+                shouldStop: () => !searchbot.isRunning(chatId),
+                onStatus: (st) => {
+                    if (!card) return;
+                    safeEdit(
+                        ctx,
+                        card.message_id,
+                        renderUlpProgress({
+                            searcherBot: searchOptions.botUsername,
+                            attempt: st.attempt,
+                            maxTries: st.totalDays,
+                            sends: [`${st.day}: ${st.step}`],
+                            stepDelayMs: searchOptions.stepDelayMs,
+                        }),
+                        ulpKeyboard(scope),
+                    ).catch(() => {});
+                },
+                onResult: async (m) => {
+                    try {
+                        const p = ingestUserbotMessage(chatId, m, transport.userbot, query);
+                        trackIngestion(chatId, p);
+                        await p;
+                        searchbot.noteResult(transport.userbot && transport.userbot.searcherId ? transport.userbot.searcherId : 0, {
+                            messageId: m && m.id,
+                            kind: m && (m.media || m.document) ? "document" : "text",
+                        });
+                    } catch (ingestErr) {
+                        console.error("ULP onResult ingestion error:", ingestErr && ingestErr.message ? ingestErr.message : ingestErr);
+                    }
+                },
+                sleep,
+            });
+        } catch (dayErr) {
+            console.error("searchDayByDay error:", dayErr && dayErr.message ? dayErr.message : dayErr);
+            dayRes = { status: "error", error: dayErr && dayErr.message ? dayErr.message : String(dayErr) };
+        }
 
-        await waitForIngestions(chatId);
+        await waitForIngestions(chatId).catch(() => {});
         clearUlpWindow(ulpWindows, chatId);
-        if (dayRes.status === "stopped") {
+
+        if (!dayRes || dayRes.status === "stopped") {
             return;
         }
+
+        if (dayRes.status === "error") {
+            searchbot.finishRun(chatId, "done");
+            if (card) {
+                const text = renderUlpBlocked({
+                    kind: "userbot_error",
+                    searcherBot: searchOptions.botUsername,
+                    ownBot: meta.botUsername || null,
+                    steps: [],
+                    stepDelayMs: searchOptions.stepDelayMs,
+                    reason: dayRes.error || "Userbot encountered an unexpected error during search.",
+                    transport: transport.kind,
+                });
+                await safeEdit(ctx, card.message_id, text, ulpKeyboard(scope));
+            }
+            return;
+        }
+
         searchbot.finishRun(chatId, "done");
         if (card) {
             const resultCount = (searchbot.getRun(chatId) || {}).results?.length || 0;
@@ -4778,39 +4813,50 @@ async function beginUlpRun(ctx, params) {
         await deliverCombinedAndResetBatch(ctx);
         return;
     } else {
-        result = await searchbot.runSearch({
-            steps,
-            sleep,
-            stepDelayMs: searchOptions.stepDelayMs,
-            resultWaitMs: searchOptions.resultWaitMs,
-            maxTries: searchOptions.maxTries,
-            classify: transport.classify,
-            send: async (step) => {
-                const sent = await transport.send(step.text);
-                if (sent && sent.chat) searchbot.rememberOwner(sent.chat.id, chatId);
-                return sent;
-            },
-            hasResults: () => {
-                const live = searchbot.getRun(chatId);
-                return Boolean(live && live.results.length > 0);
-            },
-            shouldStop: () => !searchbot.isRunning(chatId),
-            onEvent: (event) => {
-                if (event.type !== "sent" || !card) return;
-                safeEdit(
-                    ctx,
-                    card.message_id,
-                    renderUlpProgress({
-                        searcherBot: searchOptions.botUsername,
-                        attempt: event.attempt,
-                        maxTries: searchOptions.maxTries,
-                        sends: event.sends,
-                        stepDelayMs: searchOptions.stepDelayMs,
-                    }),
-                    ulpKeyboard(scope),
-                ).catch(() => {});
-            },
-        });
+        try {
+            result = await searchbot.runSearch({
+                steps,
+                sleep,
+                stepDelayMs: searchOptions.stepDelayMs,
+                resultWaitMs: searchOptions.resultWaitMs,
+                maxTries: searchOptions.maxTries,
+                classify: transport.classify,
+                send: async (step) => {
+                    const sent = await transport.send(step.text);
+                    if (sent && sent.chat) searchbot.rememberOwner(sent.chat.id, chatId);
+                    return sent;
+                },
+                hasResults: () => {
+                    const live = searchbot.getRun(chatId);
+                    return Boolean(live && live.results.length > 0);
+                },
+                shouldStop: () => !searchbot.isRunning(chatId),
+                onEvent: (event) => {
+                    if (event.type !== "sent" || !card) return;
+                    safeEdit(
+                        ctx,
+                        card.message_id,
+                        renderUlpProgress({
+                            searcherBot: searchOptions.botUsername,
+                            attempt: event.attempt,
+                            maxTries: searchOptions.maxTries,
+                            sends: event.sends,
+                            stepDelayMs: searchOptions.stepDelayMs,
+                        }),
+                        ulpKeyboard(scope),
+                    ).catch(() => {});
+                },
+            });
+        } catch (searchErr) {
+            console.error("searchbot.runSearch error:", searchErr && searchErr.message ? searchErr.message : searchErr);
+            result = { status: "error", error: searchErr };
+        }
+    }
+
+    if (!result) {
+        clearUlpWindow(ulpWindows, chatId);
+        searchbot.finishRun(chatId, "done");
+        return;
     }
 
     // Results keep landing in the open window — deliver when finished.

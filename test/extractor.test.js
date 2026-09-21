@@ -6,6 +6,8 @@ const AdmZip = require("adm-zip");
 const {
     extractAndCleanZip,
     extractAndCleanText,
+    extractAndCleanZipAsync,
+    extractAndCleanTextAsync,
     isZipBuffer,
 } = require("../src/extractor");
 
@@ -76,5 +78,30 @@ test("extractAndCleanText handles raw text", () => {
         "user@example.com:pass1\nhttps://x.com:443",
     );
     assert.deepEqual(lines, ["user@example.com:pass1"]);
+    assert.equal(stats.files, 1);
+});
+
+test("extractAndCleanTextAsync handles raw text", async () => {
+    const { lines, stats } = await extractAndCleanTextAsync(
+        "user@example.com:pass1\nhttps://x.com:443\nadmin:secret",
+    );
+    assert.deepEqual(lines, ["user@example.com:pass1", "admin:secret"]);
+    assert.equal(stats.files, 1);
+});
+
+test("extractAndCleanZipAsync extracts and cleans a zip", async () => {
+    const zip = makeZip({
+        "combo.txt": [
+            "user@example.com:pass1",
+            "15551234567:pass2",
+            "https://example.com:443",
+            "example.com:80",
+        ].join("\n"),
+    });
+
+    const { lines, stats } = await extractAndCleanZipAsync(zip);
+    assert.deepEqual(lines, ["user@example.com:pass1", "15551234567:pass2"]);
+    assert.equal(stats.kept, 2);
+    assert.equal(stats.dropped, 2);
     assert.equal(stats.files, 1);
 });

@@ -5,7 +5,14 @@ const path = require("path");
 const readline = require("node:readline");
 const { once } = require("node:events");
 const { Telegraf, Markup } = require("telegraf");
-const { extractAndCleanZip, extractAndCleanText, mergeZipFiles, isZipBuffer } = require("./extractor");
+const {
+    extractAndCleanZip,
+    extractAndCleanText,
+    extractAndCleanZipAsync,
+    extractAndCleanTextAsync,
+    mergeZipFiles,
+    isZipBuffer,
+} = require("./extractor");
 const { sanitizeSiteSlug, detectSite } = require("./sites");
 const { cleanLine } = require("./cleaner");
 const { getSharedPool } = require("./worker-pool");
@@ -616,7 +623,7 @@ function createBot(token, meta = {}) {
                             const lower = entry.entryName.toLowerCase();
                             if (lower.endsWith(".txt") || lower.endsWith(".log") || lower.endsWith(".csv") || lower.endsWith(".tsv")) {
                                 const text = entry.getData().toString("utf8");
-                                const res = extractAndCleanText(Buffer.from(text, "utf8"), { keepUrl: true, dedupe: false });
+                                const res = await extractAndCleanTextAsync(text, { keepUrl: true, dedupe: false });
                                 for (const line of res.lines) {
                                     await writeLine(line);
                                 }
@@ -632,12 +639,12 @@ function createBot(token, meta = {}) {
                     input: fs.createReadStream(f.path, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
                     crlfDelay: Infinity,
                 });
+                const { cleanLinesArray } = require("./cleaner");
                 let chunk = [];
                 for await (const line of rl) {
                     chunk.push(line);
-                    if (chunk.length >= 5000) {
-                        const { cleanText } = require("./cleaner");
-                        const res = cleanText(chunk.join("\n"), { keepUrl: true, dedupe: false });
+                    if (chunk.length >= 25000) {
+                        const res = cleanLinesArray(chunk, { keepUrl: true, dedupe: false });
                         chunk = [];
                         for (const cl of res.lines) {
                             await writeLine(cl);
@@ -646,8 +653,7 @@ function createBot(token, meta = {}) {
                     }
                 }
                 if (chunk.length > 0) {
-                    const { cleanText } = require("./cleaner");
-                    const res = cleanText(chunk.join("\n"), { keepUrl: true, dedupe: false });
+                    const res = cleanLinesArray(chunk, { keepUrl: true, dedupe: false });
                     chunk = [];
                     for (const cl of res.lines) {
                         await writeLine(cl);
@@ -2316,7 +2322,7 @@ function createBot(token, meta = {}) {
                             for await (const line of rl) {
                                 batch.push(line);
                                 if (batch.length >= 25000) {
-                                    const res = extractAndCleanText(batch.join("\n"), { keepUrl: true });
+                                    const res = await extractAndCleanTextAsync(batch.join("\n"), { keepUrl: true });
                                     const r = store.addLines(ctx.chat.id, res.lines, site, { countFile: !countedInFile });
                                     countedInFile = true;
                                     fileAdded += r.added;
@@ -2324,7 +2330,7 @@ function createBot(token, meta = {}) {
                                 }
                             }
                             if (batch.length > 0) {
-                                const res = extractAndCleanText(batch.join("\n"), { keepUrl: true });
+                                const res = await extractAndCleanTextAsync(batch.join("\n"), { keepUrl: true });
                                 const r = store.addLines(ctx.chat.id, res.lines, site, { countFile: !countedInFile });
                                 countedInFile = true;
                                 fileAdded += r.added;
@@ -2333,7 +2339,7 @@ function createBot(token, meta = {}) {
                             processedFiles.push({ name: currentName, lines: fileAdded, size: doc.size });
                         } else {
                             const content = fs.readFileSync(fullPath, "utf8");
-                            const res = extractAndCleanText(content, { sourceName: currentName, keepUrl: true });
+                            const res = await extractAndCleanTextAsync(content, { sourceName: currentName, keepUrl: true });
                             const site = sanitizeSiteSlug(res.site || "") || sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
                             const added = store.addLines(ctx.chat.id, res.lines, site);
                             totalLinesAdded += added.added;
@@ -2341,7 +2347,7 @@ function createBot(token, meta = {}) {
                         }
                     } else if (isZip) {
                         const buffer = fs.readFileSync(fullPath);
-                        const res = extractAndCleanZip(buffer, { sourceName: currentName, keepUrl: true });
+                        const res = await extractAndCleanZipAsync(buffer, { sourceName: currentName, keepUrl: true });
                         const site = sanitizeSiteSlug(res.site || "") || sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
                         const added = store.addLines(ctx.chat.id, res.lines, site);
                         totalLinesAdded += added.added;
@@ -2982,11 +2988,13 @@ function createBot(token, meta = {}) {
             try {
                 const buffer = item.buffer;
                 const rawText = buffer.toString("utf8");
-                const rawLines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-                const cleanRes = extractAndCleanText(rawText, { sourceName: item.name, keepUrl: true });
+                const cleanRes = await extractAndCleanTextAsync(rawText, { sourceName: item.name, keepUrl: true });
                 totalLinesSeen += cleanRes.stats.total;
                 const siteFound = cleanRes.site;
-                let extractedLines = cleanRes.lines.length > 0 ? cleanRes.lines : rawLines;
+                let extractedLines = cleanRes.lines;
+                if (extractedLines.length === 0) {
+                    extractedLines = rawText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+                }
 
                 if (siteFound && !detectedSite) {
                     detectedSite = siteFound;
@@ -3492,19 +3500,21 @@ async function ingestDocument(ctx, doc, options = {}) {
 
     // Stage 3: cleaning.
     const keepUrl = options.keepUrl !== undefined ? Boolean(options.keepUrl) : true;
-    const result =
-        isZip || isZipBuffer(buffer)
-            ? extractAndCleanZip(buffer, { sourceName: name, keepUrl })
-            : extractAndCleanText(buffer.toString("utf8"), { sourceName: name, keepUrl });
+    const isZipFile = isZip || isZipBuffer(buffer);
 
     void safeEdit(
         ctx,
         progress.message_id,
         [
             `🧼  ${B("Cleaning")} ${escapeHtml(name)}`,
-            `     ✂️  filtering ${num(result.stats.total)} lines…`,
+            `     ✂️  multi-core filtering engine active…`,
         ].join("\n"),
     );
+
+    const result =
+        isZipFile
+            ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl })
+            : await extractAndCleanTextAsync(buffer.toString("utf8"), { sourceName: name, keepUrl });
 
     // Figure out the site this dump belongs to — used when naming the combined
     // file (e.g. "netflix.com_combined_2026-09-19.txt").
@@ -4561,8 +4571,8 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
                 const name = (msg.file && msg.file.name) || `ulp-result-${msg.id || "file"}.bin`;
                 const isZip = name.toLowerCase().endsWith(".zip") || isZipBuffer(buffer);
                 const result = isZip
-                    ? extractAndCleanZip(buffer, { sourceName: name, keepUrl: false })
-                    : extractAndCleanText(buffer.toString("utf8"), { sourceName: name, keepUrl: false });
+                    ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl: false })
+                    : await extractAndCleanTextAsync(buffer.toString("utf8"), { sourceName: name, keepUrl: false });
                 if (result.site) {
                     site = sanitizeSiteSlug(result.site) || site;
                 }
@@ -4572,7 +4582,7 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
         }
 
         if (text) {
-            const result = extractAndCleanText(text, { keepUrl: false });
+            const result = await extractAndCleanTextAsync(text, { keepUrl: false });
             if (result.site) {
                 site = sanitizeSiteSlug(result.site) || site;
             }
@@ -4989,6 +4999,7 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
         }
         stats.dropped += res.stats.dropped;
 
+        let writeBuffer = "";
         for (let i = 0; i < res.lines.length; i++) {
             const cleaned = res.lines[i];
             if (seen.has(cleaned)) {
@@ -5000,9 +5011,17 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
             }
             stats.kept += 1;
             writtenLines += 1;
-            if (!output.write(cleaned + "\n")) await once(output, "drain");
+            writeBuffer += cleaned + "\n";
+            if (writeBuffer.length >= 262144) {
+                if (!output.write(writeBuffer)) await once(output, "drain");
+                writeBuffer = "";
+            }
             batch.push(cleaned);
             if (batch.length >= PROCESS_BATCH_SIZE) flushBatch();
+        }
+        if (writeBuffer.length > 0) {
+            if (!output.write(writeBuffer)) await once(output, "drain");
+            writeBuffer = "";
         }
 
         if (stats.total >= PROCESS_PROGRESS_EVERY && Date.now() - lastProgressAt > 3000) {
@@ -5083,16 +5102,16 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
     const keepUrl = options.keepUrl !== false;
 
     // Stage 3: cleaning.
-    const result = extractAndCleanZip(buffer, { sourceName: name, keepUrl });
-
-    await safeEdit(
+    void safeEdit(
         ctx,
         progress.message_id,
         [
-            `\uD83E\uDDFC  ${B("Cleaning")} ${escapeHtml(name)}`,
-            `     \u2702\uFE0F  filtering ${num(result.stats.total)} lines\u2026`,
+            `🧼  ${B("Cleaning")} ${escapeHtml(name)}`,
+            `     ✂️  multi-core filtering engine active…`,
         ].join("\n"),
     );
+
+    const result = await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl });
 
     const nameStem = sanitizeSiteSlug(name.replace(/\.[^.]+$/, ""));
     const site = sanitizeSiteSlug(result.site || "") || nameStem || "cleaned";

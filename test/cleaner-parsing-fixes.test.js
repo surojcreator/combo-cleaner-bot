@@ -132,3 +132,23 @@ test("cleaner fixes: strips LogLogonHandler, web handlers, and ensures user:pass
     );
 });
 
+test("cleaner fixes: ultra-fast high-throughput filtering on large combolist batches", () => {
+    const { cleanLinesArray } = require("../src/cleaner");
+    const count = 50000;
+    const lines = [];
+    for (let i = 0; i < count; i++) {
+        if (i % 3 === 0) lines.push(`user${i}@mail.com:pass${i}`);
+        else if (i % 3 === 1) lines.push(`admin${i}:secret${i}`);
+        else lines.push(`https://site.com/LogLogonHandler:victim${i}:pass${i} [Chrome]`);
+    }
+
+    const t0 = Date.now();
+    const res = cleanLinesArray(lines);
+    const duration = Date.now() - t0;
+
+    assert.equal(res.stats.kept, count);
+    assert.equal(res.lines.length, count);
+    // 50,000 lines should be cleaned in under 500ms
+    assert.ok(duration < 1000, `Filtering took too long: ${duration}ms`);
+});
+

@@ -139,8 +139,11 @@ function normalizeYear(y) {
  * @param {string} line already-trimmed line
  * @returns {string|null} normalized `number|mm|yy|cvv`, or null
  */
+// Matches PAN with 12-19 digits (with optional spaces/dashes)
+const CC_DIGITS_RE = /\d[\d\s-]{10,}\d/;
+
 function cleanCcLine(line) {
-    if (!line || !/[|:;]/.test(line)) {
+    if (!line || !CC_DIGITS_RE.test(line) || !/[|:;]/.test(line)) {
         return null;
     }
     // Split on any of the common separators, keeping the fields in order.
@@ -252,6 +255,9 @@ function isPhone(left) {
 function stripTrailingMetadata(password) {
     if (!password) return "";
     let p = String(password).trim();
+    if (!/[\s;|,[()\]]/.test(p)) {
+        return p;
+    }
     p = p.replace(
         /\s+[|;,]\s*(?:ip|hwid|country|soft|software|browser|date|time|token|cookie|cookies|profile|status|note)\s*[:=].*$/i,
         "",
@@ -327,6 +333,9 @@ function isUsername(login, password) {
  * @returns {string|null}
  */
 function extractFromKeyValueLabels(line, options = {}) {
+    if (!line || !/(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=]/i.test(line)) {
+        return null;
+    }
     const keepUrl = Boolean(options && options.keepUrl);
 
     const userMatch = line.match(
@@ -434,15 +443,29 @@ function cleanLine(rawLine, options = {}) {
     const line = normalizeLine(rawLine);
     if (!line) return null;
 
-    // Ultra-fast path: standard email:password or phone:password lines with no URL, pipe, or labels
+    // Ultra-fast path: standard email:password, phone:password, or username:password lines with no URL, pipe, or labels
     const fastSep = line.indexOf(":");
     if (fastSep > 0 && !line.includes("|") && line.charCodeAt(fastSep + 1) !== 47 /* '/' */) {
-        const atIdx = line.indexOf("@");
-        if (atIdx > 0 && atIdx < fastSep && !line.includes(" ")) {
+        const nextSep = line.indexOf(":", fastSep + 1);
+        if (nextSep === -1 && !line.includes(" ")) {
+            // Exactly ONE colon on the entire line and zero spaces
             const user = line.slice(0, fastSep);
-            const pass = line.slice(fastSep + 1);
-            if (pass.length > 0 && EMAIL_RE.test(user)) {
-                return keepUrl ? line : `${user}:${stripTrailingMetadata(pass)}`;
+            if (!user.includes(" ")) {
+                const pass = line.slice(fastSep + 1);
+                if (pass.length > 0) {
+                    const cleanPass = !/[\s;|,[()\]]/.test(pass) ? pass : stripTrailingMetadata(pass);
+                    if (cleanPass.length > 0) {
+                        if (user.includes("@")) {
+                            if (EMAIL_RE.test(user)) {
+                                return keepUrl ? line : `${user}:${cleanPass}`;
+                            }
+                        } else if (isPhone(user)) {
+                            return keepUrl ? line : `${user}:${cleanPass}`;
+                        } else if (isUsername(user, pass)) {
+                            return keepUrl ? line : `${user}:${cleanPass}`;
+                        }
+                    }
+                }
             }
         }
     }
@@ -452,22 +475,24 @@ function cleanLine(rawLine, options = {}) {
     if (kv !== null) return kv;
 
     // Check for "user: login pass" or "user:login pass"
-    const userSpaceMatch = line.match(
-        /^(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr)\s*[:=|]\s*([^\s:|]+)\s+([^\s]+)$/i,
-    );
-    if (userSpaceMatch) {
-        const first = userSpaceMatch[1].trim();
-        const second = stripTrailingMetadata(userSpaceMatch[2].trim());
-        const firstLower = first.toLowerCase();
-        if (
-            firstLower !== "pass" &&
-            firstLower !== "password" &&
-            firstLower !== "pwd" &&
-            firstLower !== "secret" &&
-            !PURE_FIELD_LABELS.has(firstLower) &&
-            !SCHEMES.has(firstLower)
-        ) {
-            return `${first}:${second}`;
+    if (line.includes(" ")) {
+        const userSpaceMatch = line.match(
+            /^(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr)\s*[:=|]\s*([^\s:|]+)\s+([^\s]+)$/i,
+        );
+        if (userSpaceMatch) {
+            const first = userSpaceMatch[1].trim();
+            const second = stripTrailingMetadata(userSpaceMatch[2].trim());
+            const firstLower = first.toLowerCase();
+            if (
+                firstLower !== "pass" &&
+                firstLower !== "password" &&
+                firstLower !== "pwd" &&
+                firstLower !== "secret" &&
+                !PURE_FIELD_LABELS.has(firstLower) &&
+                !SCHEMES.has(firstLower)
+            ) {
+                return `${first}:${second}`;
+            }
         }
     }
 
@@ -517,6 +542,9 @@ function cleanLine(rawLine, options = {}) {
                     return keepUrl ? strippedLine : `${firstToken}:${rest}`;
                 }
                 if (isPhone(firstToken)) {
+                    return keepUrl ? strippedLine : `${firstToken}:${rest}`;
+                }
+                if (isUsername(firstToken, rest)) {
                     return keepUrl ? strippedLine : `${firstToken}:${rest}`;
                 }
             }
@@ -585,6 +613,10 @@ function cleanLine(rawLine, options = {}) {
  * @param {{ dedupe?: boolean, keepUrl?: boolean }} [options]
  * @returns {{ lines: string[], stats: { total: number, kept: number, dropped: number, duplicates: number } }}
  */
+// Pre-compiled regex for stealer block header detection
+const STEALER_LABEL_RE =
+    /^(?:url|uri|host|site|website|link|page|action|form_action|application|app|browser|soft|software|client|username|user|login|account|usr)\s*[:=]/i;
+
 function cleanLinesArray(rawLines, options = {}) {
     const keepUrl = Boolean(options && options.keepUrl);
     const dedupe = options && options.dedupe !== false;
@@ -602,12 +634,28 @@ function cleanLinesArray(rawLines, options = {}) {
         const trimmed = normalizeLine(raw);
 
         // Multi-line stealer record detection (blocks of URL / User / Pass)
-        if (
-            trimmed &&
-            /^(?:url|uri|host|site|website|link|page|action|form_action|application|app|browser|soft|software|client|username|user|login|account|usr)\s*[:=]/i.test(
-                trimmed,
-            )
-        ) {
+        let isStealerCandidate = false;
+        if (trimmed && trimmed.length >= 4) {
+            const sepIdx = trimmed.search(/[:=]/);
+            if (sepIdx >= 1 && sepIdx <= 25) {
+                const firstChar = trimmed.charCodeAt(0) | 32;
+                if (
+                    firstChar === 117 || // u
+                    firstChar === 104 || // h
+                    firstChar === 115 || // s
+                    firstChar === 119 || // w
+                    firstChar === 108 || // l
+                    firstChar === 112 || // p
+                    firstChar === 97  || // a
+                    firstChar === 102 || // f
+                    firstChar === 98  || // b
+                    firstChar === 99     // c
+                ) {
+                    isStealerCandidate = STEALER_LABEL_RE.test(trimmed);
+                }
+            }
+        }
+        if (isStealerCandidate) {
             let recordUser = null;
             let recordPass = null;
             let recordUrl = null;

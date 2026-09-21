@@ -168,36 +168,47 @@ class WorkerPool {
         }
 
         const results = await Promise.all(tasks);
-        const combinedLines = [];
         let total = 0;
         let kept = 0;
         let dropped = 0;
         let duplicates = 0;
 
-        for (const res of results) {
-            combinedLines.push(...res.lines);
-            total += res.stats.total;
-            kept += res.stats.kept;
-            dropped += res.stats.dropped;
-            duplicates += res.stats.duplicates;
-        }
-
         if (options && options.dedupe !== false) {
             const finalLines = [];
             const seen = new Set();
-            for (const line of combinedLines) {
-                if (seen.has(line)) {
-                    duplicates++;
-                    kept--;
-                } else {
-                    seen.add(line);
-                    finalLines.push(line);
+            for (let r = 0; r < results.length; r++) {
+                const res = results[r];
+                total += res.stats.total;
+                dropped += res.stats.dropped;
+                duplicates += res.stats.duplicates;
+                const rLines = res.lines;
+                for (let j = 0; j < rLines.length; j++) {
+                    const line = rLines[j];
+                    if (seen.has(line)) {
+                        duplicates++;
+                    } else {
+                        seen.add(line);
+                        finalLines.push(line);
+                    }
                 }
             }
             return {
                 lines: finalLines,
-                stats: { total, kept, dropped, duplicates },
+                stats: { total, kept: finalLines.length, dropped, duplicates },
             };
+        }
+
+        const combinedLines = [];
+        for (let r = 0; r < results.length; r++) {
+            const res = results[r];
+            total += res.stats.total;
+            kept += res.stats.kept;
+            dropped += res.stats.dropped;
+            duplicates += res.stats.duplicates;
+            const rLines = res.lines;
+            for (let j = 0; j < rLines.length; j++) {
+                combinedLines.push(rLines[j]);
+            }
         }
 
         return {

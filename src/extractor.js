@@ -1,7 +1,7 @@
 "use strict";
 
 const AdmZip = require("adm-zip");
-const { cleanText } = require("./cleaner");
+const { cleanText, cleanLinesArray } = require("./cleaner");
 const { detectSite } = require("./sites");
 
 // Cap on raw text kept for website detection (1 MB sample is plenty).
@@ -197,6 +197,111 @@ function extractAndCleanText(text, options = {}) {
     return {
         lines,
         site: detectSite(rawSample, options.sourceName || ""),
+        rawSample,
+        stats: {
+            files: 1,
+            total: stats.total,
+            kept: stats.kept,
+            dropped: stats.dropped,
+            duplicates: stats.duplicates,
+            truncated: false,
+            skippedLarge: 0,
+        },
+    };
+}
+
+/**
+ * Asynchronously extract and clean credentials from a zip buffer using multi-core worker pool.
+ *
+ * @param {Buffer} zipBuffer
+ * @param {{ dedupe?: boolean, sourceName?: string, keepUrl?: boolean }} [options]
+ * @returns {Promise<{ lines: string[], site: string|null, rawSample: string, stats: object }>}
+ */
+async function extractAndCleanZipAsync(zipBuffer, options = {}) {
+    const state = {
+        count: 0,
+        depth: 0,
+        totalBytes: 0,
+        truncated: false,
+        skippedLarge: 0,
+    };
+
+    const chunks = collectTextFromZip(zipBuffer, state);
+    const combined = chunks.join("\n");
+    const rawSample = combined.slice(0, MAX_SITE_SAMPLE);
+    const site = detectSite(rawSample, options.sourceName || "");
+
+    let lines, stats;
+    if (combined.length >= 150000) {
+        const rawLines = combined.split(/\r?\n/);
+        if (rawLines.length >= 5000) {
+            const { getSharedPool } = require("./worker-pool");
+            const pool = getSharedPool();
+            const res = await pool.cleanLinesParallel(rawLines, options);
+            lines = res.lines;
+            stats = res.stats;
+        } else {
+            const res = cleanLinesArray(rawLines, options);
+            lines = res.lines;
+            stats = res.stats;
+        }
+    } else {
+        const res = cleanText(combined, options);
+        lines = res.lines;
+        stats = res.stats;
+    }
+
+    return {
+        lines,
+        site,
+        rawSample,
+        stats: {
+            files: state.count,
+            total: stats.total,
+            kept: stats.kept,
+            dropped: stats.dropped,
+            duplicates: stats.duplicates,
+            truncated: state.truncated,
+            skippedLarge: state.skippedLarge,
+        },
+    };
+}
+
+/**
+ * Asynchronously extract and clean credentials from raw text using multi-core worker pool.
+ *
+ * @param {string} text
+ * @param {{ dedupe?: boolean, sourceName?: string, keepUrl?: boolean }} [options]
+ * @returns {Promise<{ lines: string[], site: string|null, rawSample: string, stats: object }>}
+ */
+async function extractAndCleanTextAsync(text, options = {}) {
+    const rawSample = String(text || "").slice(0, MAX_SITE_SAMPLE);
+    const site = detectSite(rawSample, options.sourceName || "");
+
+    let lines, stats;
+    const str = String(text || "");
+    if (str.length >= 150000) {
+        const rawLines = str.split(/\r?\n/);
+        if (rawLines.length >= 5000) {
+            const { getSharedPool } = require("./worker-pool");
+            const pool = getSharedPool();
+            const res = await pool.cleanLinesParallel(rawLines, options);
+            lines = res.lines;
+            stats = res.stats;
+        } else {
+            const res = cleanLinesArray(rawLines, options);
+            lines = res.lines;
+            stats = res.stats;
+        }
+    } else {
+        const res = cleanText(str, options);
+        lines = res.lines;
+        stats = res.stats;
+    }
+
+    return {
+        lines,
+        site,
         rawSample,
         stats: {
             files: 1,
@@ -527,6 +632,8 @@ function mergeZipFiles(items, options = {}) {
 module.exports = {
     extractAndCleanZip,
     extractAndCleanText,
+    extractAndCleanZipAsync,
+    extractAndCleanTextAsync,
     mergeZipFiles,
     isZipBuffer,
     looksLikeText,

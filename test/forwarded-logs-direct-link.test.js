@@ -544,6 +544,105 @@ describe("Forwarded Logs Combiner & Direct Download Links Pipeline", () => {
             assert.equal(check.getEntry("srv2/common.conf").getData().toString(), "conf 2");
         });
 
+        test("mergeZipFiles unifies matching folders across archives and keeps folder hierarchies merged", () => {
+            // Log archive 1 with folders
+            const z1 = new AdmZip();
+            z1.addFile("Logs/2026-09-20/alpha.txt", Buffer.from("alpha log"));
+            z1.addFile("Passwords/chrome.txt", Buffer.from("user:pass1"));
+            z1.addFile("Victim_A/system.info", Buffer.from("win11 x64"));
+            const b1 = z1.toBuffer();
+
+            // Log archive 2 with overlapping and new folders
+            const z2 = new AdmZip();
+            z2.addFile("Logs/2026-09-20/beta.txt", Buffer.from("beta log"));
+            z2.addFile("Passwords/firefox.txt", Buffer.from("user:pass2"));
+            z2.addFile("Victim_B/system.info", Buffer.from("win10 x64"));
+            const b2 = z2.toBuffer();
+
+            const res = mergeZipFiles([
+                { name: "logs_part1.zip", buffer: b1 },
+                { name: "logs_part2.zip", buffer: b2 },
+            ]);
+
+            assert.equal(res.entryCount, 6, "All 6 files from both archives must be present");
+            assert.ok(res.folderCount >= 4, "Folder trees must be counted");
+
+            const check = new AdmZip(res.buffer);
+            const names = check.getEntries().map((e) => e.entryName);
+
+            // Both files must merge inside Logs/2026-09-20/
+            assert.ok(names.includes("Logs/2026-09-20/alpha.txt"), "Logs folder contains alpha.txt");
+            assert.ok(names.includes("Logs/2026-09-20/beta.txt"), "Logs folder contains beta.txt");
+
+            // Both files must merge inside Passwords/
+            assert.ok(names.includes("Passwords/chrome.txt"), "Passwords folder contains chrome.txt");
+            assert.ok(names.includes("Passwords/firefox.txt"), "Passwords folder contains firefox.txt");
+
+            // Independent victim folders preserved
+            assert.ok(names.includes("Victim_A/system.info"));
+            assert.ok(names.includes("Victim_B/system.info"));
+        });
+
+        test("mergeZipFiles keeps colliding files inside the SAME folder and deduplicates identical files", () => {
+            const z1 = new AdmZip();
+            z1.addFile("StealerLogs/User1/passwords.txt", Buffer.from("admin:12345"));
+            z1.addFile("StealerLogs/User1/cookies.txt", Buffer.from("IDENTICAL_COOKIE_DATA"));
+            const b1 = z1.toBuffer();
+
+            const z2 = new AdmZip();
+            // Different passwords file in same folder path
+            z2.addFile("StealerLogs/User1/passwords.txt", Buffer.from("admin:DIFFERENT_PASS"));
+            // Identical cookies file in same folder path
+            z2.addFile("StealerLogs/User1/cookies.txt", Buffer.from("IDENTICAL_COOKIE_DATA"));
+            const b2 = z2.toBuffer();
+
+            const res = mergeZipFiles([
+                { name: "dump_a.zip", buffer: b1 },
+                { name: "dump_b.zip", buffer: b2 },
+            ]);
+
+            const check = new AdmZip(res.buffer);
+            const names = check.getEntries().map((e) => e.entryName);
+
+            // Identical cookies file is deduplicated
+            const cookieEntries = names.filter((n) => n.includes("cookies.txt"));
+            assert.equal(cookieEntries.length, 1, "Identical cookies file must be deduplicated");
+
+            // Differing passwords files both remain INSIDE StealerLogs/User1/
+            assert.ok(names.includes("StealerLogs/User1/passwords.txt"));
+            assert.ok(names.includes("StealerLogs/User1/passwords_2.txt"), "Second password file must stay in folder with suffix");
+            assert.equal(check.getEntry("StealerLogs/User1/passwords.txt").getData().toString(), "admin:12345");
+            assert.equal(check.getEntry("StealerLogs/User1/passwords_2.txt").getData().toString(), "admin:DIFFERENT_PASS");
+        });
+
+        test("mergeZipFiles normalizes Windows backslashes and unwraps nested zips into folders", () => {
+            // Nested zip containing victim log
+            const innerZip = new AdmZip();
+            innerZip.addFile("tokens.txt", Buffer.from("secret_token_abc"));
+            const innerBuf = innerZip.toBuffer();
+
+            const outerZip = new AdmZip();
+            // Windows-style backslashes
+            outerZip.addFile("Dumps\\2026\\summary.txt", Buffer.from("dump summary"));
+            // Nested zip inside a folder
+            outerZip.addFile("Dumps/Victim99.zip", innerBuf);
+            const outerBuf = outerZip.toBuffer();
+
+            const res = mergeZipFiles([{ name: "nested_outer.zip", buffer: outerBuf }]);
+
+            const check = new AdmZip(res.buffer);
+            const names = check.getEntries().map((e) => e.entryName);
+
+            // Windows path normalized to forward slashes
+            assert.ok(names.includes("Dumps/2026/summary.txt"));
+
+            // Nested zip extracted into folder hierarchy
+            assert.ok(
+                names.some((n) => n.startsWith("Dumps/Victim99/") && n.endsWith("tokens.txt")),
+                "Nested zip must be expanded into Dumps/Victim99/ folder"
+            );
+        });
+
         test("Forwarding 2 .zip files merges them into ONE master .zip and returns direct download link", async () => {
             const chatId = 700201;
 
@@ -664,6 +763,146 @@ describe("Forwarded Logs Combiner & Direct Download Links Pipeline", () => {
                 assert.ok(downloadedFiles.includes("daemon.log"), "Merged zip must contain daemon.log");
                 assert.equal(downloadedZip.getEntry("auth.log").getData().toString(), "Apr 10 auth success");
                 assert.equal(downloadedZip.getEntry("daemon.log").getData().toString(), "Apr 10 daemon started");
+            } finally {
+                botApiServer.close();
+            }
+        });
+
+        test("Forwarding log archives with folders merges all folders into one final zip and provides direct download link", async () => {
+            const chatId = 700205;
+
+            // Log zip 1 with folder structure
+            const zip1 = new AdmZip();
+            zip1.addFile("StealerLogs/Victim1/passwords.txt", Buffer.from("v1:pass"));
+            zip1.addFile("StealerLogs/Victim1/autofills.json", Buffer.from("{\"email\":\"v1@test.com\"}"));
+            zip1.addFile("TelegramSessions/session1.dat", Buffer.from("session_data_1"));
+            const buf1 = zip1.toBuffer();
+
+            // Log zip 2 with overlapping StealerLogs/Victim1 and new Victim2 folder
+            const zip2 = new AdmZip();
+            zip2.addFile("StealerLogs/Victim1/cookies.txt", Buffer.from("v1_cookie"));
+            zip2.addFile("StealerLogs/Victim2/passwords.txt", Buffer.from("v2:pass"));
+            zip2.addFile("TelegramSessions/session2.dat", Buffer.from("session_data_2"));
+            const buf2 = zip2.toBuffer();
+
+            const fileStorage = new Map([
+                ["fzip_1", buf1],
+                ["fzip_2", buf2],
+            ]);
+
+            const botCalls = [];
+            const botApiServer = http.createServer((req, res) => {
+                if (req.url.includes("/file/bot")) {
+                    const fileId = req.url.split("/").pop();
+                    if (fileStorage.has(fileId)) {
+                        res.writeHead(200, { "Content-Type": "application/zip" });
+                        res.end(fileStorage.get(fileId));
+                        return;
+                    }
+                    res.writeHead(404);
+                    res.end();
+                    return;
+                }
+
+                let body = "";
+                req.on("data", (chunk) => { body += chunk; });
+                req.on("end", () => {
+                    const method = req.url.split("/").pop();
+                    let payload = {};
+                    try { payload = JSON.parse(body); } catch (_) {}
+                    botCalls.push({ method, p: payload });
+
+                    if (method === "getFile") {
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({
+                            ok: true,
+                            result: { file_id: payload.file_id, file_path: payload.file_id },
+                        }));
+                        return;
+                    }
+
+                    res.writeHead(200, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, result: { message_id: 8888 } }));
+                });
+            });
+
+            await new Promise((resolve) => botApiServer.listen(0, resolve));
+            const apiPort = botApiServer.address().port;
+
+            try {
+                const bot = createBot("123:MOCK_TOKEN", {
+                    forwardDebounceMs: 50,
+                    telegram: { telegram: { apiRoot: `http://127.0.0.1:${apiPort}` } },
+                });
+
+                // Forward Log Zip 1
+                await bot.handleUpdate({
+                    update_id: 60,
+                    message: {
+                        message_id: 601,
+                        chat: { id: chatId, type: "private" },
+                        from: { id: chatId, is_bot: false },
+                        document: { file_id: "fzip_1", file_name: "2026-09-20_logs.zip", file_size: buf1.length },
+                        forward_date: 1700000060,
+                    },
+                });
+
+                // Forward Log Zip 2
+                await bot.handleUpdate({
+                    update_id: 61,
+                    message: {
+                        message_id: 602,
+                        chat: { id: chatId, type: "private" },
+                        from: { id: chatId, is_bot: false },
+                        document: { file_id: "fzip_2", file_name: "2026-09-21_logs.zip", file_size: buf2.length },
+                        forward_date: 1700000061,
+                    },
+                });
+
+                // Wait for bot to combine and edit message
+                let finalEdit = null;
+                for (let i = 0; i < 40; i++) {
+                    finalEdit = botCalls.find(
+                        (c) => c.method === "editMessageText" && c.p.text && c.p.text.includes("MERGED ZIP PIPELINE")
+                    );
+                    if (finalEdit) break;
+                    await new Promise((r) => setTimeout(r, 50));
+                }
+
+                assert.ok(finalEdit, "Must reply with MERGED ZIP PIPELINE report");
+                const text = finalEdit.p.text;
+                assert.ok(text.includes("2026-09-20_logs.zip"));
+                assert.ok(text.includes("2026-09-21_logs.zip"));
+                assert.ok(text.includes("Merged Folder Trees") || text.includes("Total Merged Files"));
+
+                // Validate download link
+                const buttons = finalEdit.p.reply_markup.inline_keyboard.flat();
+                const zipDlBtn = buttons.find((b) => b.text.includes("Direct Download") && b.url);
+                assert.ok(zipDlBtn, "Must provide direct download button");
+
+                const token = zipDlBtn.url.split("/").pop();
+                const entry = downloads.getDownload(token);
+                assert.ok(entry, "Download entry must exist");
+
+                // Verify the final zip has all folders merged
+                const finalZip = new AdmZip(entry.buffer);
+                const finalEntries = finalZip.getEntries().map((e) => e.entryName);
+
+                // Both files under StealerLogs/Victim1/ are present
+                assert.ok(finalEntries.includes("StealerLogs/Victim1/passwords.txt"));
+                assert.ok(finalEntries.includes("StealerLogs/Victim1/autofills.json"));
+                assert.ok(finalEntries.includes("StealerLogs/Victim1/cookies.txt"), "Victim1 folder merged across both zips");
+
+                // Victim2 folder is present
+                assert.ok(finalEntries.includes("StealerLogs/Victim2/passwords.txt"));
+
+                // TelegramSessions folder has both sessions merged
+                assert.ok(finalEntries.includes("TelegramSessions/session1.dat"));
+                assert.ok(finalEntries.includes("TelegramSessions/session2.dat"));
+
+                // Verify content integrity
+                assert.equal(finalZip.getEntry("StealerLogs/Victim1/cookies.txt").getData().toString(), "v1_cookie");
+                assert.equal(finalZip.getEntry("TelegramSessions/session2.dat").getData().toString(), "session_data_2");
             } finally {
                 botApiServer.close();
             }

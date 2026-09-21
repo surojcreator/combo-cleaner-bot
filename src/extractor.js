@@ -211,14 +211,177 @@ function extractAndCleanText(text, options = {}) {
 }
 
 /**
+ * Normalizes an entry path: forward slashes, trims leading/trailing slashes, resolves .. safely.
+ * @param {string} rawPath
+ * @returns {string}
+ */
+function normalizeZipPath(rawPath) {
+    if (!rawPath) return "";
+    let p = String(rawPath).replace(/\\/g, "/");
+    p = p.replace(/^\/+/, "");
+    p = p.replace(/\/{2,}/g, "/");
+    const parts = p.split("/").filter((part) => part !== "." && part !== "");
+    const safeParts = [];
+    for (const part of parts) {
+        if (part === "..") {
+            if (safeParts.length > 0) safeParts.pop();
+        } else {
+            safeParts.push(part);
+        }
+    }
+    return safeParts.join("/");
+}
+
+/**
+ * Check if an entry is OS or filesystem metadata junk.
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isJunkZipEntry(name) {
+    const lower = name.toLowerCase();
+    return (
+        lower.startsWith("__macosx/") ||
+        lower.includes("/__macosx/") ||
+        lower.endsWith(".ds_store") ||
+        lower.endsWith("thumbs.db") ||
+        lower.endsWith("desktop.ini")
+    );
+}
+
+/**
+ * Recursively extracts entries from a zip buffer, expanding nested zips into folders.
+ * @param {Buffer} buffer
+ * @param {string} [parentDir]
+ * @param {number} [depth]
+ * @param {number} [maxDepth]
+ * @returns {Array<{ path: string, data: Buffer, comment?: string, isDir?: boolean }>}
+ */
+function collectEntriesFromZipBuffer(buffer, parentDir = "", depth = 0, maxDepth = 3) {
+    const collected = [];
+    const entries = readZipEntries(buffer);
+    if (!entries) return collected;
+
+    for (const entry of entries) {
+        const rawNorm = normalizeZipPath(entry.entryName);
+        if (!rawNorm || isJunkZipEntry(rawNorm)) continue;
+
+        const isDir = entry.isDirectory || entry.entryName.endsWith("/") || entry.entryName.endsWith("\\");
+        const fullPath = parentDir ? `${parentDir}/${rawNorm}` : rawNorm;
+
+        if (isDir) {
+            collected.push({ path: fullPath + "/", data: Buffer.alloc(0), isDir: true });
+            continue;
+        }
+
+        let data;
+        try {
+            data = entry.getData();
+        } catch {
+            continue;
+        }
+
+        // If this entry is a nested zip file, expand it recursively into a folder
+        if (depth < maxDepth && (isZipBuffer(data) || looksLikeZip(rawNorm))) {
+            const lastSlash = rawNorm.lastIndexOf("/");
+            const entryDir = lastSlash !== -1 ? rawNorm.slice(0, lastSlash) : "";
+            const fileName = lastSlash !== -1 ? rawNorm.slice(lastSlash + 1) : rawNorm;
+            const extIdx = fileName.lastIndexOf(".");
+            const baseStem = (extIdx > 0 ? fileName.slice(0, extIdx) : fileName)
+                .replace(/[^a-zA-Z0-9._-]/g, "_") || "archive";
+
+            let nestedDir = "";
+            if (parentDir) {
+                nestedDir = entryDir ? `${parentDir}/${entryDir}/${baseStem}` : `${parentDir}/${baseStem}`;
+            } else {
+                nestedDir = entryDir ? `${entryDir}/${baseStem}` : baseStem;
+            }
+
+            const subEntries = collectEntriesFromZipBuffer(data, nestedDir, depth + 1, maxDepth);
+            if (subEntries && subEntries.length > 0) {
+                for (const sub of subEntries) {
+                    collected.push(sub);
+                }
+                continue;
+            }
+        }
+
+        collected.push({
+            path: fullPath,
+            data,
+            comment: entry.comment || "",
+            isDir: false,
+        });
+    }
+
+    return collected;
+}
+
+/**
+ * Resolves a collision for a file entry within the same directory if possible,
+ * or namespaces root-level files. Returns null if data is identical (dedupe).
+ * @param {string} targetPath
+ * @param {Buffer} data
+ * @param {Map<string, Buffer>} existingFiles
+ * @param {string} baseName
+ * @returns {string|null}
+ */
+function resolveZipEntryCollision(targetPath, data, existingFiles, baseName) {
+    const norm = normalizeZipPath(targetPath);
+    if (!existingFiles.has(norm)) {
+        return norm;
+    }
+
+    const existingData = existingFiles.get(norm);
+    if (existingData && existingData.length === data.length && existingData.equals(data)) {
+        // Exact identical file bytes in the exact same path -> deduplicate
+        return null;
+    }
+
+    const lastSlash = norm.lastIndexOf("/");
+    if (lastSlash === -1) {
+        // Root-level file without a folder (e.g. common.conf)
+        // Check if namespacing under baseName works first
+        const baseCandidate = `${baseName}/${norm}`;
+        if (!existingFiles.has(baseCandidate)) {
+            return baseCandidate;
+        }
+        const extIdx = norm.lastIndexOf(".");
+        const stem = extIdx > 0 ? norm.slice(0, extIdx) : norm;
+        const ext = extIdx > 0 ? norm.slice(extIdx) : "";
+        let counter = 2;
+        while (true) {
+            const cand = `${stem}_${counter}${ext}`;
+            if (!existingFiles.has(cand)) return cand;
+            counter++;
+        }
+    } else {
+        // File is inside a folder! (e.g. "Logs/US/passwords.txt" or "Victim1/pass.txt")
+        // Keep inside the same folder to preserve folder structure
+        const dir = norm.slice(0, lastSlash + 1);
+        const fileName = norm.slice(lastSlash + 1);
+        const extIdx = fileName.lastIndexOf(".");
+        const stem = extIdx > 0 ? fileName.slice(0, extIdx) : fileName;
+        const ext = extIdx > 0 ? fileName.slice(extIdx) : "";
+        let counter = 2;
+        while (true) {
+            const cand = `${dir}${stem}_${counter}${ext}`;
+            if (!existingFiles.has(cand)) return cand;
+            counter++;
+        }
+    }
+}
+
+/**
  * Merges multiple zip and log buffers into one master zip buffer purely in memory
- * without writing any temporary files to disk.
+ * without writing any temporary files to disk. Unifies and merges folder hierarchies,
+ * recursively expands nested zips, deduplicates identical files, and keeps folder trees intact.
  *
  * @param {Array<{ name: string, buffer: Buffer }>} items
  * @param {object} [options]
  * @returns {{
  *   buffer: Buffer,
  *   entryCount: number,
+ *   folderCount: number,
  *   totalSize: number,
  *   compressedSize: number,
  *   entries: Array<{ name: string, size: number }>,
@@ -227,7 +390,8 @@ function extractAndCleanText(text, options = {}) {
  */
 function mergeZipFiles(items, options = {}) {
     const mergedZip = new AdmZip();
-    const seenNames = new Set();
+    const existingFiles = new Map();
+    const uniqueFolders = new Set();
     const entriesList = [];
     const sourceFiles = [];
     let totalUncompressedSize = 0;
@@ -244,46 +408,100 @@ function mergeZipFiles(items, options = {}) {
         let addedEntriesFromThis = 0;
 
         if (isZip) {
+            let collected = [];
             try {
-                const zip = new AdmZip(buffer);
-                const entries = zip.getEntries();
-                for (const entry of entries) {
-                    if (entry.isDirectory) continue;
-                    let entryName = entry.entryName;
-                    // Skip OS junk
-                    if (entryName.startsWith("__MACOSX/") || entryName.endsWith(".DS_Store")) continue;
+                collected = collectEntriesFromZipBuffer(buffer, "", 0, 3);
+            } catch (err) {
+                console.error(`Failed to collect zip entries for ${rawName}:`, err);
+            }
 
-                    // If duplicate entry name across zips, namespace under the source archive name
-                    if (seenNames.has(entryName)) {
-                        entryName = `${baseName}/${entryName}`;
-                    }
-                    seenNames.add(entryName);
-
-                    const data = entry.getData();
-                    mergedZip.addFile(entryName, data, entry.comment || "");
-                    totalUncompressedSize += data.length;
-                    entriesList.push({ name: entryName, size: data.length });
+            // Fallback if parsing failed or zip had no entries
+            if (!collected || collected.length === 0) {
+                const fallbackPath = resolveZipEntryCollision(rawName, buffer, existingFiles, baseName);
+                if (fallbackPath) {
+                    mergedZip.addFile(fallbackPath, buffer);
+                    existingFiles.set(fallbackPath, buffer);
+                    totalUncompressedSize += buffer.length;
+                    entriesList.push({ name: fallbackPath, size: buffer.length });
                     addedEntriesFromThis++;
                 }
-            } catch (err) {
-                console.error(`Failed to parse zip entry for ${rawName}:`, err);
-                let entryName = rawName;
-                if (seenNames.has(entryName)) entryName = `${baseName}/${rawName}`;
-                seenNames.add(entryName);
-                mergedZip.addFile(entryName, buffer);
-                totalUncompressedSize += buffer.length;
-                entriesList.push({ name: entryName, size: buffer.length });
-                addedEntriesFromThis++;
+            } else {
+                // If every non-directory entry in this archive is wrapped in a single root folder named
+                // after the archive itself and contains nested subdirectories, strip the archive-name wrapper
+                // so the actual log folders merge at the root.
+                const fileEntries = collected.filter((e) => !e.isDir);
+                if (fileEntries.length > 0) {
+                    const firstSlash = fileEntries[0].path.indexOf("/");
+                    if (firstSlash !== -1) {
+                        const rootSegment = fileEntries[0].path.slice(0, firstSlash);
+                        const prefix = rootSegment + "/";
+                        const allShare = fileEntries.every((e) => e.path.startsWith(prefix));
+                        const rootMatchesArchive =
+                            rootSegment.toLowerCase() === baseName.toLowerCase() ||
+                            rootSegment.toLowerCase() === baseName.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+                        const hasNestedSubdirs = fileEntries.some((e) => e.path.slice(prefix.length).includes("/"));
+
+                        if (allShare && rootMatchesArchive && hasNestedSubdirs) {
+                            for (const e of collected) {
+                                if (e.path.startsWith(prefix)) {
+                                    e.path = e.path.slice(prefix.length);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (const entry of collected) {
+                    if (entry.isDir) {
+                        const normDir = normalizeZipPath(entry.path) + "/";
+                        if (!uniqueFolders.has(normDir)) {
+                            uniqueFolders.add(normDir);
+                            try {
+                                mergedZip.addFile(normDir, Buffer.alloc(0));
+                            } catch (_) {}
+                        }
+                        continue;
+                    }
+
+                    const targetPath = resolveZipEntryCollision(entry.path, entry.data, existingFiles, baseName);
+                    if (!targetPath) {
+                        // Deduplicated identical file in the same folder path
+                        continue;
+                    }
+
+                    mergedZip.addFile(targetPath, entry.data, entry.comment || "");
+                    existingFiles.set(targetPath, entry.data);
+                    totalUncompressedSize += entry.data.length;
+                    entriesList.push({ name: targetPath, size: entry.data.length });
+                    addedEntriesFromThis++;
+
+                    // Track ancestor folders
+                    const lastSlash = targetPath.lastIndexOf("/");
+                    if (lastSlash !== -1) {
+                        let currentDir = "";
+                        const parts = targetPath.slice(0, lastSlash).split("/");
+                        for (const p of parts) {
+                            currentDir += (currentDir ? "/" : "") + p;
+                            uniqueFolders.add(currentDir + "/");
+                        }
+                    }
+                }
             }
         } else {
             // Raw text, log, or binary file
-            let entryName = rawName;
-            if (seenNames.has(entryName)) entryName = `${baseName}/${rawName}`;
-            seenNames.add(entryName);
-            mergedZip.addFile(entryName, buffer);
-            totalUncompressedSize += buffer.length;
-            entriesList.push({ name: entryName, size: buffer.length });
-            addedEntriesFromThis++;
+            const targetPath = resolveZipEntryCollision(rawName, buffer, existingFiles, baseName);
+            if (targetPath) {
+                mergedZip.addFile(targetPath, buffer);
+                existingFiles.set(targetPath, buffer);
+                totalUncompressedSize += buffer.length;
+                entriesList.push({ name: targetPath, size: buffer.length });
+                addedEntriesFromThis++;
+
+                const lastSlash = targetPath.lastIndexOf("/");
+                if (lastSlash !== -1) {
+                    uniqueFolders.add(targetPath.slice(0, lastSlash + 1));
+                }
+            }
         }
 
         sourceFiles.push({
@@ -298,6 +516,7 @@ function mergeZipFiles(items, options = {}) {
     return {
         buffer: outputBuffer,
         entryCount: entriesList.length,
+        folderCount: uniqueFolders.size,
         totalSize: totalUncompressedSize,
         compressedSize: outputBuffer.length,
         entries: entriesList,

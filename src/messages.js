@@ -1264,7 +1264,7 @@ function renderForwardedLogsCombined({ files = [], stats = {}, downloadUrl = "",
  * Render report for forwarded zip files merged into a single master zip file with direct download link.
  * @param {object} params
  */
-function renderForwardedZipCombined({ files = [], entryCount = 0, totalSize = 0, compressedSize = 0, downloadUrl = "", filename = "" }) {
+function renderForwardedZipCombined({ files = [], entryCount = 0, folderCount = 0, totalSize = 0, compressedSize = 0, downloadUrl = "", filename = "" }) {
     const fileCount = Array.isArray(files) ? files.length : 1;
     const lines = [
         `${tgEmoji("⚡")}  ${B("MERGED ZIP PIPELINE (DIRECT LINK)")}  ${tgEmoji("⚡️")}`,
@@ -1285,6 +1285,13 @@ function renderForwardedZipCombined({ files = [], entryCount = 0, totalSize = 0,
         RULE,
         `${tgEmoji("📊")}  ${B("Combined Master Archive:")}`,
         `  • ${tgEmoji("📑")} ${B("Total Merged Files:")}    ${B(num(entryCount))} files`,
+    );
+
+    if (folderCount > 0) {
+        lines.push(`  • ${tgEmoji("📂")} ${B("Merged Folder Trees:")}   ${B(num(folderCount))} folders`);
+    }
+
+    lines.push(
         `  • ${tgEmoji("💾")} ${B("Unified Zip Name:")}     ${CODE(escapeHtml(filename))}`,
         `  • ${tgEmoji("📦")} ${B("Combined Zip Size:")}    ${B(humanSize(compressedSize || totalSize))}`,
     );

@@ -425,7 +425,7 @@ function createBot(token, meta = {}) {
                 size: mergeRes.compressedSize,
                 mimeType: "application/zip",
                 chatId,
-                stats: { sourceFiles: mergeRes.sourceFiles, entryCount: mergeRes.entryCount, isZip: true },
+                stats: { sourceFiles: mergeRes.sourceFiles, entryCount: mergeRes.entryCount, folderCount: mergeRes.folderCount, isZip: true },
             });
 
             store.setLastCombined(chatId, {
@@ -438,6 +438,7 @@ function createBot(token, meta = {}) {
             const report = renderForwardedZipCombined({
                 files: mergeRes.sourceFiles,
                 entryCount: mergeRes.entryCount,
+                folderCount: mergeRes.folderCount,
                 totalSize: mergeRes.totalSize,
                 compressedSize: mergeRes.compressedSize,
                 downloadUrl: dl.url,
@@ -2283,6 +2284,7 @@ function createBot(token, meta = {}) {
                 stats: {
                     sourceFiles: mergeResult.sourceFiles,
                     entryCount: mergeResult.entryCount,
+                    folderCount: mergeResult.folderCount,
                     totalSize: mergeResult.totalSize,
                     isZip: true,
                 },
@@ -2291,6 +2293,7 @@ function createBot(token, meta = {}) {
             const reportText = renderForwardedZipCombined({
                 files: mergeResult.sourceFiles,
                 entryCount: mergeResult.entryCount,
+                folderCount: mergeResult.folderCount,
                 totalSize: mergeResult.totalSize,
                 compressedSize: mergeResult.compressedSize,
                 downloadUrl: dl.url,

@@ -1739,7 +1739,10 @@ function createBot(token, meta = {}) {
     bot.command("save", async (ctx) => {
         let replied = ctx.message && ctx.message.reply_to_message;
         let sourceMessageId = replied && replied.message_id;
-        let originalName = replied && replied.document && (replied.document.file_name || `telegram-${sourceMessageId}.bin`);
+        let originalName = userbot.resolveSafeFileName(
+            replied && (replied.document || replied.file_name),
+            `telegram-${sourceMessageId || Date.now()}`,
+        );
         let docSize = replied && replied.document && replied.document.file_size;
         let repliedMessageObj = null;
 
@@ -1756,7 +1759,7 @@ function createBot(token, meta = {}) {
                 );
                 if (found) {
                     sourceMessageId = found.messageId;
-                    originalName = found.fileName || `telegram-${sourceMessageId}.bin`;
+                    originalName = userbot.resolveSafeFileName(found.fileName, `telegram-${sourceMessageId}`);
                     docSize = found.size;
                     repliedMessageObj = found.message || null;
                     replied = { message_id: found.messageId, document: { file_name: originalName, file_size: found.size } };
@@ -3629,7 +3632,16 @@ async function ingestDocument(ctx, doc, options = {}) {
  * Safely send a document using context or telegram instance, with fallback.
  */
 async function safeSendDocument(ctx, chatId, payload, extra = {}) {
-    if (payload && typeof payload === "object") {
+    if (typeof payload === "string") {
+        const rawBase = path.basename(payload);
+        const isZip = rawBase.toLowerCase().endsWith(".zip");
+        const resolved = userbot.resolveSafeFileName(
+            rawBase,
+            "combolist_combined",
+            isZip ? ".zip" : ".txt",
+        );
+        payload = { source: payload, filename: resolved };
+    } else if (payload && typeof payload === "object") {
         const isZip = payload.filename && String(payload.filename).toLowerCase().endsWith(".zip");
         payload.filename = userbot.resolveSafeFileName(
             payload.filename,
@@ -3837,7 +3849,7 @@ async function sendCombined(ctx, force = false) {
                 : `${emoji}  ${B(num(sites.length))} sites mixed`;
     }
 
-    if (!base || typeof base !== "string" || !base.trim() || base === "_" || base === "undefined" || base === "null" || base === "file") {
+    if (!base || typeof base !== "string" || !base.trim() || base === "_" || base === "undefined" || base === "null" || base === "file" || base === "unnamed" || base.startsWith("unnamed")) {
         base = "combolist";
     }
     base = sanitizeSiteSlug(base) || "combolist";
@@ -4657,7 +4669,9 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
         if (media && peer && typeof peer.downloadMedia === "function") {
             const buffer = await peer.downloadMedia(msg).catch(() => null);
             if (buffer && buffer.length > 0) {
-                const name = (msg.file && msg.file.name) || `ulp-result-${msg.id || "file"}.bin`;
+                const candidateName = (msg.file && (msg.file.name || msg.file.fileName)) ||
+                    userbot.resolveSafeFileName(msg, `ulp_result_${msg.id || "file"}`);
+                const name = userbot.resolveSafeFileName(candidateName, `ulp_result_${msg.id || "file"}`);
                 const isZip = name.toLowerCase().endsWith(".zip") || isZipBuffer(buffer);
                 const result = isZip
                     ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl: false })
@@ -4752,7 +4766,7 @@ async function ackSharedResult(ctx, params) {
         } else {
             const peer = meta && meta.userbot;
             if (peer && typeof peer.isReady === "function" && peer.isReady()) {
-                const name = doc.file_name || `result-${msg.message_id}.txt`;
+                const name = userbot.resolveSafeFileName(doc, `result_${msg.message_id || Date.now()}`);
                 const p = peer.downloadMessageToDisk(chatId, msg.message_id, {
                     root: localProcessRoot(),
                     fileName: name,

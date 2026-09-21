@@ -132,6 +132,13 @@ describe("Mega Prompt 2: Exhaustive Audit & System Verification Matrix", () => {
 
             // 5. Bare string input
             assert.equal(userbot.resolveSafeFileName("clean_name.txt"), "clean_name.txt");
+
+            // 6. Unnamed strings or objects
+            assert.ok(!userbot.resolveSafeFileName("unnamed").toLowerCase().includes("unnamed"));
+            assert.ok(!userbot.resolveSafeFileName("unnamed.txt").toLowerCase().includes("unnamed"));
+            assert.ok(!userbot.resolveSafeFileName("unnamed.bin").toLowerCase().includes("unnamed"));
+            assert.ok(!userbot.resolveSafeFileName({ file_name: "unnamed" }).toLowerCase().includes("unnamed"));
+            assert.ok(!userbot.resolveSafeFileName({ media: { document: { attributes: [{ fileName: "unnamed.bin" }] } } }).toLowerCase().includes("unnamed"));
         });
     });
 

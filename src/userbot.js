@@ -124,6 +124,31 @@ function safeDownloadName(raw) {
     return safe || "telegram-file.bin";
 }
 
+function isUnnamedName(val) {
+    if (!val || typeof val !== "string") return true;
+    const s = val.trim().toLowerCase();
+    if (!s) return true;
+    const baseWithoutExt = s.replace(/\.[a-z0-9_]+$/i, "");
+    return (
+        s === "file" ||
+        s === "undefined" ||
+        s === "null" ||
+        s === "unknown" ||
+        s === "unnamed" ||
+        s === "telegram-file.bin" ||
+        s === "ulp-result.bin" ||
+        s.startsWith("telegram-undefined") ||
+        s.startsWith("ulp-result-") ||
+        baseWithoutExt === "unnamed" ||
+        baseWithoutExt === "file" ||
+        baseWithoutExt === "undefined" ||
+        baseWithoutExt === "null" ||
+        baseWithoutExt === "unknown" ||
+        baseWithoutExt.startsWith("unnamed_") ||
+        baseWithoutExt.startsWith("unnamed-")
+    );
+}
+
 /**
  * Bulletproof filename resolution helper:
  * Extracts filename from GramJS message attributes, Telegraf document objects,
@@ -162,13 +187,13 @@ function resolveSafeFileName(doc, defaultBase = "combolist", ext = ".txt") {
         }
     }
 
-    if (name === "file" || name === "undefined" || name === "null" || name.startsWith("telegram-undefined") || !name.trim()) {
+    if (isUnnamedName(name)) {
         name = "";
     }
 
     if (!name) {
         const stamp = new Date().toISOString().slice(0, 10);
-        const safeBase = (defaultBase && typeof defaultBase === "string" && defaultBase.trim() && defaultBase !== "file" && defaultBase !== "undefined")
+        const safeBase = (defaultBase && typeof defaultBase === "string" && defaultBase.trim() && !isUnnamedName(defaultBase))
             ? defaultBase.trim()
             : "combolist";
         name = `${safeBase}_${stamp}${ext}`;
@@ -673,13 +698,22 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             if (media) {
                 const buffer = await withTimeout(client.downloadMedia(msg, {}), timeoutMs, "userbot downloadMedia").catch(() => null);
                 if (buffer) {
-                    const name = (msg.file && msg.file.name) || "ulp-result.bin";
+                    const candidateName = (msg.file && (msg.file.name || msg.file.fileName)) ||
+                        resolveSafeFileName(msg, "ulp_result", ".txt");
+                    const safeName = resolveSafeFileName(candidateName, "ulp_result", ".txt");
+                    buffer.name = safeName;
+                    const sendPayload = {
+                        file: buffer,
+                        caption: `${ULP_MARKER} ${safeName}`,
+                        forceDocument: true,
+                    };
+                    if (Api && typeof Api.DocumentAttributeFilename === "function") {
+                        sendPayload.attributes = [
+                            new Api.DocumentAttributeFilename({ fileName: safeName }),
+                        ];
+                    }
                     await withTimeout(
-                        client.sendFile(targetPeer, {
-                            file: buffer,
-                            caption: `${ULP_MARKER} ${name}`,
-                            forceDocument: true,
-                        }),
+                        client.sendFile(targetPeer, sendPayload),
                         timeoutMs,
                         "userbot sendFile",
                     );

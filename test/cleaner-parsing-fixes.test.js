@@ -152,3 +152,16 @@ test("cleaner fixes: ultra-fast high-throughput filtering on large combolist bat
     assert.ok(duration < 2000, `Filtering took too long: ${duration}ms`);
 });
 
+test("cleaner fixes: strips unspaced pipe/semicolon/bracket stealer metadata tags", () => {
+    assert.equal(cleanLine("user@example.com:secret|IP:1.2.3.4"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret|IP: 1.2.3.4"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret;status=active"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret|Country:US"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret|HWID:ABC123XYZ"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret[Google Chrome]"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret(Firefox)"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret|Chrome"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret|2026-09-22"), "user@example.com:secret");
+    assert.equal(cleanLine("user@example.com:secret|url:https://target.com"), "user@example.com:secret");
+});
+

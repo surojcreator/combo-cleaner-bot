@@ -260,11 +260,11 @@ function stripTrailingMetadata(password) {
         return p;
     }
     p = p.replace(
-        /\s+[|;,]\s*(?:ip|hwid|country|soft|software|browser|date|time|token|cookie|cookies|profile|status|note)\s*[:=].*$/i,
+        /(?:\s*[|;,]\s*|\s+)(?:ip|hwid|country|soft|software|browser|date|time|token|cookie|cookies|profile|status|note|os|pc|user|username|location|city|zip|url|uri|host|site|website|link|page|app|application|client|action)\s*[:=].*$/i,
         "",
     );
     p = p.replace(
-        /\s+(?:\[|\()(?:google\s+)?(?:chrome|firefox|edge|opera|brave|safari|chromium|yandex|vivaldi|windows)[\w\s.-]*(?:\]|\)).*$/i,
+        /(?:\s*[|;,]\s*|\s*)(?:(?:\[|\()(?:google\s+)?(?:chrome|firefox|edge|opera|brave|safari|chromium|yandex|vivaldi|windows)[\w\s.-]*(?:\]|\))|(?:[|;,]\s*)(?:google\s+)?(?:chrome|firefox|edge|opera|brave|safari|chromium|yandex|vivaldi|windows)[\w\s.-]*).*$/i,
         "",
     );
     if (p.includes("[")) {
@@ -274,7 +274,7 @@ function stripTrailingMetadata(password) {
         p = p.replace(/\s+\(.*?\)/g, "");
     }
     if (p.includes("-")) {
-        p = p.replace(/\s+\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}:\d{2})?.*$/, "");
+        p = p.replace(/(?:\s*[|;,]\s*|\s+)\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}:\d{2})?.*$/, "");
     }
     if (p.includes("|") || p.includes(";")) {
         p = p.replace(/\s+[|;]+.*$/, "");

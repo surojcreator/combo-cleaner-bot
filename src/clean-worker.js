@@ -158,6 +158,12 @@ if (parentPort) {
                 id,
                 result: { total, matches },
             });
+        } else {
+            parentPort.postMessage({
+                id,
+                error: `UNKNOWN_TASK_TYPE_${type}`,
+                result: null,
+            });
         }
     } catch (workerErr) {
         console.error("Worker unhandled error:", workerErr);

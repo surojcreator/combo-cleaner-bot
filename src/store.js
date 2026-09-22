@@ -227,6 +227,7 @@ function clear(chatId) {
 function clearAll() {
     chats.clear();
     lastCombinedCache.clear();
+    persistedDomainsLoaded = false;
 }
 
 /**
@@ -311,10 +312,20 @@ function persistCustomDomains() {
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
-        const out = {};
+        let out = {};
+        try {
+            if (fs.existsSync(CUSTOM_DOMAINS_FILE)) {
+                const raw = fs.readFileSync(CUSTOM_DOMAINS_FILE, "utf8");
+                out = JSON.parse(raw) || {};
+            }
+        } catch {
+            out = {};
+        }
         for (const [chatId, chat] of chats.entries()) {
             if (chat.customDomains && chat.customDomains.size > 0) {
                 out[chatId] = Array.from(chat.customDomains);
+            } else if (chat.customDomains && chat.customDomains.size === 0) {
+                delete out[chatId];
             }
         }
         fs.writeFileSync(CUSTOM_DOMAINS_FILE, JSON.stringify(out, null, 2), "utf8");

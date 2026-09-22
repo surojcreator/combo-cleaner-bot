@@ -684,6 +684,7 @@ function cleanLinesArray(rawLines, options = {}) {
                 if (!lineJ || /^[-=_*#]{3,}$/.test(lineJ)) {
                     if (recordUser && recordPass) {
                         foundRecord = true;
+                        blockConsumed = Math.max(1, j - i);
                         break;
                     }
                     continue;
@@ -751,8 +752,9 @@ function cleanLinesArray(rawLines, options = {}) {
                     cleaned.push(res);
                     kept++;
                 }
-                dropped += Math.max(0, blockConsumed - 1);
-                i += blockConsumed;
+                const advance = Math.max(1, blockConsumed);
+                dropped += Math.max(0, advance - 1);
+                i += advance;
                 continue;
             }
         }

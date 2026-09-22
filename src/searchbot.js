@@ -335,7 +335,15 @@ function pruneRuns(now = Date.now()) {
  * @returns {UlpRun}
  */
 function startRun(chatId, opts = {}) {
-    opts = opts || {};
+    if (typeof opts === "string") {
+        opts = {
+            query: opts,
+            scope: typeof arguments[2] === "string" ? arguments[2] : "day",
+            windowMs: typeof arguments[3] === "number" ? arguments[3] : DEFAULT_WINDOW_MS,
+        };
+    } else {
+        opts = opts || {};
+    }
     const now = (opts && opts.now) || Date.now();
     pruneRuns(now);
     /** @type {UlpRun} */
@@ -418,7 +426,12 @@ function noteResult(searcherChatId, opts = {}) {
         // is dropped — unless they explicitly stopped that search.
         const recent = mostRecentRun(now);
         if (recent) {
-            if (recent.status !== "stopped") targets.push(recent.chatId);
+            if (recent.status !== "stopped") {
+                if (messageId == null || !recent.seen.has(messageId)) {
+                    if (messageId != null) recent.seen.add(messageId);
+                    targets.push(recent.chatId);
+                }
+            }
         } else {
             const owner = lastOwner(searcherChatId, now);
             if (owner != null) targets.push(owner);

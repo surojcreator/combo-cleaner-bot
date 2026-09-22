@@ -181,10 +181,13 @@ class WorkerPool {
             const seen = new Set();
             for (let r = 0; r < results.length; r++) {
                 const res = results[r];
-                total += res.stats.total;
-                dropped += res.stats.dropped;
-                duplicates += res.stats.duplicates;
-                const rLines = res.lines;
+                if (!res) continue;
+                if (res.stats) {
+                    total += res.stats.total || 0;
+                    dropped += res.stats.dropped || 0;
+                    duplicates += res.stats.duplicates || 0;
+                }
+                const rLines = Array.isArray(res.lines) ? res.lines : [];
                 for (let j = 0; j < rLines.length; j++) {
                     const line = rLines[j];
                     if (seen.has(line)) {
@@ -204,11 +207,14 @@ class WorkerPool {
         const combinedLines = [];
         for (let r = 0; r < results.length; r++) {
             const res = results[r];
-            total += res.stats.total;
-            kept += res.stats.kept;
-            dropped += res.stats.dropped;
-            duplicates += res.stats.duplicates;
-            const rLines = res.lines;
+            if (!res) continue;
+            if (res.stats) {
+                total += res.stats.total || 0;
+                kept += res.stats.kept || 0;
+                dropped += res.stats.dropped || 0;
+                duplicates += res.stats.duplicates || 0;
+            }
+            const rLines = Array.isArray(res.lines) ? res.lines : [];
             for (let j = 0; j < rLines.length; j++) {
                 combinedLines.push(rLines[j]);
             }
@@ -272,9 +278,13 @@ class WorkerPool {
         const matches = [];
 
         for (const res of results) {
-            total += res.total;
-            for (const m of res.matches) {
-                if (matches.length < limit) matches.push(m);
+            if (res) {
+                total += res.total || 0;
+                if (Array.isArray(res.matches)) {
+                    for (const m of res.matches) {
+                        if (matches.length < limit) matches.push(m);
+                    }
+                }
             }
         }
 

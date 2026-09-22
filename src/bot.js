@@ -108,6 +108,7 @@ const AMP = String.fromCharCode(38);
  * @param {string} s
  */
 function escapeHtml(s) {
+    if (s === null || s === undefined || typeof s === "symbol") return "";
     return String(s)
         .replace(/&/g, `${AMP}amp;`)
         .replace(/</g, `${AMP}lt;`)
@@ -4525,7 +4526,10 @@ function pickTransport(meta, searchOptions, ctx) {
             kind: "userbot",
             userbot,
             classify: (err) => userbot.classify(err),
-            send: (text) => userbot.send(text),
+            send: (stepOrText) => {
+                const text = (stepOrText && typeof stepOrText === "object" && stepOrText.text) ? stepOrText.text : String(stepOrText || "");
+                return userbot.send(text);
+            },
         };
     }
     if (want === "userbot" && !userbotReady) {
@@ -4542,7 +4546,10 @@ function pickTransport(meta, searchOptions, ctx) {
         kind: "bot",
         userbot: null,
         classify: (err) => searchbot.classifySendError(err),
-        send: (text) => ctx.telegram.sendMessage(`@${searchOptions.botUsername}`, text),
+        send: (stepOrText) => {
+            const text = (stepOrText && typeof stepOrText === "object" && stepOrText.text) ? stepOrText.text : String(stepOrText || "");
+            return ctx.telegram.sendMessage(`@${searchOptions.botUsername}`, text);
+        },
     };
 }
 

@@ -675,8 +675,9 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
         async send(text) {
             if (!ready || !client) throw new Error("USERBOT_NOT_READY");
+            const message = (text && typeof text === "object" && text.text) ? text.text : String(text || "");
             const sent = await withTimeout(
-                client.sendMessage(searcherEntity || cfg.searcher, { message: text }),
+                client.sendMessage(searcherEntity || cfg.searcher, { message }),
                 timeoutMs,
                 "userbot sendMessage",
             );

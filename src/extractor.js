@@ -118,6 +118,10 @@ function collectTextFromZip(buffer, state) {
             continue;
         }
         state.totalBytes += data.length;
+        if (state.totalBytes > MAX_TOTAL_UNCOMPRESSED) {
+            state.truncated = true;
+            break;
+        }
 
         if (looksLikeZip(name) || isZipBuffer(data)) {
             if (state.depth < MAX_NESTED_DEPTH) {
@@ -434,7 +438,7 @@ function collectEntriesFromZipBuffer(buffer, parentDir = "", depth = 0, maxDepth
  * @returns {string|null}
  */
 function resolveZipEntryCollision(targetPath, data, existingFiles, baseName) {
-    const norm = normalizeZipPath(targetPath);
+    const norm = normalizeZipPath(targetPath) || (baseName ? `${baseName}.txt` : "file.txt");
     if (!existingFiles.has(norm)) {
         return norm;
     }

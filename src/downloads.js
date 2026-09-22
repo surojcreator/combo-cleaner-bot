@@ -303,7 +303,7 @@ function handleDownloadRequest(req, res) {
         "Cache-Control": "public, max-age=3600",
     };
 
-    if (entry.size > 0) {
+    if (typeof entry.size === "number" && entry.size >= 0) {
         headers["Content-Length"] = String(entry.size);
     }
 

@@ -277,6 +277,20 @@ test("cleaner fixes: supports semicolons, multi-separators, SQL dumps, TSV, CSV 
     const pipeRes = cleanText(pipeDump, { keepUrl: true });
     assert.equal(pipeRes.lines.length, 1);
     assert.equal(pipeRes.lines[0], "https://accounts.google.com/:victim@gmail.com:SuperSecretPassword123!");
+
+    // Multi-line stealer blocks with placeholder user
+    const placeholderUserDump = [
+        "URL | https://github.com/login",
+        "USER | (empty)",
+        "PASS | MyPass123!",
+        "=========================================",
+        "URL | https://accounts.google.com/",
+        "USER | victim@gmail.com",
+        "PASS | SuperSecretPassword123!",
+    ].join("\n");
+    const placeholderUserRes = cleanText(placeholderUserDump, { keepUrl: false });
+    assert.equal(placeholderUserRes.lines.length, 1);
+    assert.equal(placeholderUserRes.lines[0], "victim@gmail.com:SuperSecretPassword123!");
 });
 
 

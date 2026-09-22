@@ -1026,7 +1026,12 @@ function cleanLinesArray(rawLines, options = {}) {
 
                 if (uMatch) {
                     const u = unquote(uMatch[1].trim());
-                    if (u && !isPlaceholder(u)) recordUser = u;
+                    if (u && !isPlaceholder(u)) {
+                        recordUser = u;
+                    } else {
+                        blockConsumed = j - i + 1;
+                        break;
+                    }
                 } else if (pMatch) {
                     const p = stripTrailingMetadata(unquote(pMatch[1].trim()));
                     if (
@@ -1082,6 +1087,12 @@ function cleanLinesArray(rawLines, options = {}) {
                 const advance = Math.max(1, blockConsumed);
                 dropped += Math.max(0, advance - 1);
                 i += advance;
+                continue;
+            }
+
+            if (!foundRecord && blockConsumed > 0) {
+                dropped += blockConsumed;
+                i += blockConsumed;
                 continue;
             }
         }

@@ -3724,10 +3724,18 @@ async function safeReply(ctx, text, extra = {}) {
                 const plainText = fallbackText.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
                 const cleanExtra = { ...fallbackExtra };
                 delete cleanExtra.parse_mode;
-                return await ctx.reply(plainText, {
-                    disable_web_page_preview: true,
-                    ...cleanExtra,
-                }).catch(() => null);
+                try {
+                    return await ctx.reply(plainText, {
+                        disable_web_page_preview: true,
+                        ...cleanExtra,
+                    });
+                } catch {
+                    delete cleanExtra.reply_markup;
+                    return await ctx.reply(plainText, {
+                        disable_web_page_preview: true,
+                        ...cleanExtra,
+                    }).catch(() => null);
+                }
             }
         }
         console.error("safeReply failed:", err.message);
@@ -3788,7 +3796,15 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
                         ...cleanExtra,
                     });
                 } catch {
-                    // ignore other edit errors (e.g. message not modified)
+                    delete cleanExtra.reply_markup;
+                    try {
+                        return await ctx.telegram.editMessageText(ctx.chat.id, messageId, undefined, plainText, {
+                            disable_web_page_preview: true,
+                            ...cleanExtra,
+                        });
+                    } catch {
+                        // ignore other edit errors (e.g. message not modified)
+                    }
                 }
             }
         }

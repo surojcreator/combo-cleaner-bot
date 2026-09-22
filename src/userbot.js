@@ -115,13 +115,19 @@ function safeDownloadName(raw) {
     if (!raw || raw === "undefined" || raw === "null" || raw === "file" || raw === "telegram-undefined.bin") {
         return "telegram-file.bin";
     }
-    const base = path.basename(String(raw || "telegram-file.bin"));
-    const safe = base
-        .replace(/\0/g, "")
+    const normalized = String(raw || "telegram-file.bin")
+        .replace(/\\/g, "/")
+        .replace(/\0/g, "");
+    const base = path.posix.basename(normalized);
+    let safe = base
         .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
         .replace(/\s+/g, " ")
         .replace(/^\.+/, "")
+        .replace(/[. ]+$/, "")
         .slice(0, 180);
+    if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safe)) {
+        safe = `_${safe}`;
+    }
     return safe || "telegram-file.bin";
 }
 

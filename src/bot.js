@@ -3720,10 +3720,8 @@ async function safeReply(ctx, text, extra = {}) {
                     ...fallbackExtra,
                 });
             } catch (fallbackErr) {
-                console.error("safeReply fallback failed:", fallbackErr.message);
                 const plainText = fallbackText.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
                 const cleanExtra = { ...fallbackExtra };
-                delete cleanExtra.reply_markup;
                 delete cleanExtra.parse_mode;
                 return await ctx.reply(plainText, {
                     disable_web_page_preview: true,
@@ -3777,8 +3775,20 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
                     disable_web_page_preview: true,
                     ...fallbackExtra,
                 });
-            } catch {
-                // ignore other edit errors (e.g. message not modified)
+            } catch (fallbackErr) {
+                const fbMsg = String((fallbackErr && fallbackErr.message) || fallbackErr || "");
+                if (/not modified/i.test(fbMsg)) return;
+                const plainText = fallbackText.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
+                const cleanExtra = { ...fallbackExtra };
+                delete cleanExtra.parse_mode;
+                try {
+                    return await ctx.telegram.editMessageText(ctx.chat.id, messageId, undefined, plainText, {
+                        disable_web_page_preview: true,
+                        ...cleanExtra,
+                    });
+                } catch {
+                    // ignore other edit errors (e.g. message not modified)
+                }
             }
         }
         // ignore other edit errors (e.g. message not modified)
@@ -3965,12 +3975,11 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
             try {
                 return await doSend(fallbackExtra);
             } catch (fallbackErr) {
-                console.error("safeSendDocument fallback failed:", fallbackErr.message);
                 const plainExtra = { ...fallbackExtra };
+                delete plainExtra.parse_mode;
                 if (plainExtra.caption) {
-                    plainExtra.caption = plainExtra.caption.replace(/<[^>]+>/g, "");
+                    plainExtra.caption = plainExtra.caption.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
                 }
-                delete plainExtra.reply_markup;
                 return await doSend(plainExtra).catch(() => null);
             }
         }

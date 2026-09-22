@@ -255,7 +255,7 @@ function isPhone(left) {
  */
 function stripTrailingMetadata(password) {
     if (!password) return "";
-    let p = String(password).trim();
+    let p = typeof password === "string" ? password.trim() : String(password).trim();
     if (!/[\s;|,[()\]]/.test(p)) {
         return p;
     }
@@ -267,11 +267,19 @@ function stripTrailingMetadata(password) {
         /\s+(?:\[|\()(?:google\s+)?(?:chrome|firefox|edge|opera|brave|safari|chromium|yandex|vivaldi|windows)[\w\s.-]*(?:\]|\)).*$/i,
         "",
     );
-    p = p.replace(/\s+\[.*?\]/g, "");
-    p = p.replace(/\s+\(.*?\)/g, "");
-    p = p.replace(/\s+\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}:\d{2})?.*$/, "");
-    p = p.replace(/\s+[|;]+.*$/, "");
-    p = p.replace(/[|;]+$/, "").trim();
+    if (p.includes("[")) {
+        p = p.replace(/\s+\[.*?\]/g, "");
+    }
+    if (p.includes("(")) {
+        p = p.replace(/\s+\(.*?\)/g, "");
+    }
+    if (p.includes("-")) {
+        p = p.replace(/\s+\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}:\d{2})?.*$/, "");
+    }
+    if (p.includes("|") || p.includes(";")) {
+        p = p.replace(/\s+[|;]+.*$/, "");
+        p = p.replace(/[|;]+$/, "").trim();
+    }
     if (p.includes(" ")) {
         p = p.split(/\s+/)[0];
     }
@@ -319,7 +327,7 @@ function isUsername(login, password) {
     ) {
         return false;
     }
-    if (isUrlOrDomain(login)) return false;
+    if (login.includes(".") && isUrlOrDomain(login)) return false;
     // A scheme like "https" is followed by "//"; reject that shape.
     if (password && password.startsWith("//")) return false;
     return true;
@@ -442,7 +450,7 @@ function extractCandidates(line) {
  */
 function cleanLine(rawLine, options = {}) {
     const keepUrl = Boolean(options && options.keepUrl);
-    const line = normalizeLine(rawLine);
+    const line = typeof rawLine === "string" && !SPECIAL_WS_RE.test(rawLine) ? rawLine.trim() : normalizeLine(rawLine);
     if (!line) return null;
 
     // Ultra-fast path: standard email:password, phone:password, or username:password lines with no URL, pipe, or labels
@@ -537,9 +545,10 @@ function cleanLine(rawLine, options = {}) {
     if (!hasPipe) {
         const firstSep = strippedLine.indexOf(":");
         if (firstSep > 0) {
-            const firstToken = strippedLine.slice(0, firstSep).trim();
-            const rest = stripTrailingMetadata(strippedLine.slice(firstSep + 1).trim());
-            if (rest && !rest.startsWith("//")) {
+            const rawRest = strippedLine.slice(firstSep + 1).trim();
+            if (rawRest && !rawRest.startsWith("//")) {
+                const firstToken = strippedLine.slice(0, firstSep).trim();
+                const rest = stripTrailingMetadata(rawRest);
                 if (firstToken.includes("@") && isEmail(firstToken)) {
                     return keepUrl ? strippedLine : `${firstToken}:${rest}`;
                 }
@@ -641,7 +650,9 @@ function cleanLinesArray(rawLines, options = {}) {
         // Multi-line stealer record detection (blocks of URL / User / Pass)
         let isStealerCandidate = false;
         if (trimmed && trimmed.length >= 4) {
-            const sepIdx = trimmed.search(/[:=]/);
+            let sepIdx = trimmed.indexOf(":");
+            const eqIdx = trimmed.indexOf("=");
+            if (sepIdx === -1 || (eqIdx !== -1 && eqIdx < sepIdx)) sepIdx = eqIdx;
             if (sepIdx >= 1 && sepIdx <= 25) {
                 const firstChar = trimmed.charCodeAt(0) | 32;
                 if (

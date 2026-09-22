@@ -95,7 +95,7 @@ const WEIGHT_NAME_BRAND = 2; // brand word found in the file name
  */
 function isFreemail(domain) {
     if (typeof domain !== "string") return false;
-    return FREEMAIL.has(domain.toLowerCase());
+    return FREEMAIL.has(domain.trim().toLowerCase());
 }
 
 /**

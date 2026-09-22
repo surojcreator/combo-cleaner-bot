@@ -112,6 +112,24 @@ function normalizeLine(line) {
 }
 
 /**
+ * Safely unquote a token if wrapped in matching quotes.
+ * @param {string} s
+ * @returns {string}
+ */
+function unquote(s) {
+    if (!s || typeof s !== "string") return "";
+    let str = s.trim();
+    if (
+        (str.startsWith('"') && str.endsWith('"') && str.length >= 2) ||
+        (str.startsWith("'") && str.endsWith("'") && str.length >= 2) ||
+        (str.startsWith("`") && str.endsWith("`") && str.length >= 2)
+    ) {
+        return str.slice(1, -1).trim();
+    }
+    return str;
+}
+
+/**
  * Normalize a 2- or 4-digit expiry year down to YY.
  * @param {string} y raw year field (digits only)
  * @returns {string|null} two-digit year, or null if invalid
@@ -342,22 +360,24 @@ function isUsername(login, password) {
  * @returns {string|null}
  */
 function extractFromKeyValueLabels(line, options = {}) {
-    if (!line || !/(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=]/i.test(line)) {
+    if (!line || !/(?:pass(?:word|wd|w)?|pwd|secret)["']?\s*[:=]/i.test(line)) {
         return null;
     }
     const keepUrl = Boolean(options && options.keepUrl);
 
     const userMatch = line.match(
-        /(?:^|[\s|;,:])(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr|email|mail)\s*[:=]\s*([^\s|;,:]+)/i,
+        /(?:^|[\s|;,:"'{])["']?(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr|email|mail)["']?\s*[:=]\s*(?:["']([^"'\r\n]+)["']|([^\s|;,:"']+))/i,
     );
     const passMatch = line.match(
-        /(?:^|[\s|;,:])(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=]\s*(.+)$/i,
+        /(?:^|[\s|;,:"'{])["']?(?:pass(?:word|wd|w)?|pwd|secret)["']?\s*[:=]\s*(?:["']([^"'\r\n]+)["']|(.+))$/i,
     );
 
     if (userMatch && passMatch) {
-        const user = userMatch[1].trim();
-        let pass = user === passMatch[1].trim() ? "" : passMatch[1].trim();
-        pass = stripTrailingMetadata(pass);
+        const rawUser = userMatch[1] !== undefined ? userMatch[1] : userMatch[2];
+        const rawPass = passMatch[1] !== undefined ? passMatch[1] : passMatch[2];
+        const user = unquote(rawUser || "");
+        let pass = user === (rawPass || "").trim() ? "" : (rawPass || "").trim();
+        pass = stripTrailingMetadata(unquote(pass));
 
         const nextLabelMatch = pass.match(
             /\s+(?:ip|hwid|date|time|browser|soft|country|token|cookie|profile|url|host)\s*[:=]/i,
@@ -371,10 +391,12 @@ function extractFromKeyValueLabels(line, options = {}) {
             if (!PURE_FIELD_LABELS.has(userLower) && userLower !== "http" && userLower !== "https") {
                 if (keepUrl) {
                     const urlMatch = line.match(
-                        /(?:^|[\s|;,])(?:url|uri|host|site|website|link|action|form_action)\s*[:=]\s*([^\s|;,]+)/i,
+                        /(?:^|[\s|;,:"'{])["']?(?:url|uri|host|site|website|link|action|form_action)["']?\s*[:=]\s*(?:["']([^"'\r\n]+)["']|([^\s|;,]+))/i,
                     );
-                    if (urlMatch && isUrlOrDomain(urlMatch[1])) {
-                        return `${urlMatch[1]}:${user}:${pass}`;
+                    const rawUrl = urlMatch ? (urlMatch[1] !== undefined ? urlMatch[1] : urlMatch[2]) : "";
+                    const url = unquote(rawUrl || "");
+                    if (url && isUrlOrDomain(url)) {
+                        return `${url}:${user}:${pass}`;
                     }
                 }
                 return `${user}:${pass}`;
@@ -450,8 +472,57 @@ function extractCandidates(line) {
  */
 function cleanLine(rawLine, options = {}) {
     const keepUrl = Boolean(options && options.keepUrl);
-    const line = typeof rawLine === "string" && !SPECIAL_WS_RE.test(rawLine) ? rawLine.trim() : normalizeLine(rawLine);
+    let line = typeof rawLine === "string" && !SPECIAL_WS_RE.test(rawLine) ? rawLine.trim() : normalizeLine(rawLine);
     if (!line) return null;
+
+    // Check for JSON object line (e.g. NDJSON database dumps or stealer logs)
+    if (line.charCodeAt(0) === 123 /* '{' */ && line.charCodeAt(line.length - 1) === 125 /* '}' */) {
+        try {
+            const obj = JSON.parse(line);
+            if (obj && typeof obj === "object") {
+                const user = obj.email || obj.user || obj.username || obj.login || obj.account || obj.acc || obj.mail;
+                const pass = obj.password || obj.pass || obj.pwd || obj.secret || obj.passwd;
+                const url = obj.url || obj.uri || obj.host || obj.site || obj.website;
+                if (user && pass) {
+                    const u = unquote(String(user));
+                    const p = stripTrailingMetadata(unquote(String(pass)));
+                    if (u && p) {
+                        if (keepUrl && url && isUrlOrDomain(String(url))) {
+                            return `${String(url).trim()}:${u}:${p}`;
+                        }
+                        return `${u}:${p}`;
+                    }
+                }
+            }
+        } catch (_) {}
+    }
+
+    // Normalize SQL tuple parentheses: ('user', 'pass') -> 'user', 'pass'
+    if (line.charCodeAt(0) === 40 /* '(' */ && line.charCodeAt(line.length - 1) === 41 /* ')' */) {
+        line = line.slice(1, -1).trim();
+    }
+
+    // Normalize wrapping quotes or quoted delimiter lines (e.g. "user:pass", "user":"pass", "user","pass")
+    if (
+        (line.startsWith('"') && line.endsWith('"') && line.length >= 2 && line.indexOf('"', 1) === line.length - 1) ||
+        (line.startsWith("'") && line.endsWith("'") && line.length >= 2 && line.indexOf("'", 1) === line.length - 1)
+    ) {
+        line = line.slice(1, -1).trim();
+    } else if (
+        line.startsWith('"') &&
+        line.endsWith('"') &&
+        line.length >= 5 &&
+        /^"[^"]+"\s*[:|,]\s*"[^"]+"$/.test(line)
+    ) {
+        line = line.slice(1, -1).replace(/"\s*[:|,]\s*"/, ":").trim();
+    } else if (
+        line.startsWith("'") &&
+        line.endsWith("'") &&
+        line.length >= 5 &&
+        /^'[^']+'\s*[:|,]\s*'[^']+'$/.test(line)
+    ) {
+        line = line.slice(1, -1).replace(/'\s*[:|,]\s*'/, ":").trim();
+    }
 
     // Ultra-fast path: standard email:password, phone:password, or username:password lines with no URL, pipe, or labels
     const fastSep = line.indexOf(":");
@@ -535,6 +606,23 @@ function cleanLine(rawLine, options = {}) {
                     (isUserLabel && (isUsername(first, second) || /^[A-Za-z0-9._-]+$/.test(first)))
                 ) {
                     return `${first}:${second}`;
+                }
+            }
+        }
+
+        // Check for comma-separated email:password or phone:password lines (e.g. CSV dumps: alice@example.com,pass)
+        if (strippedLine.includes(",")) {
+            const commaIdx = strippedLine.indexOf(",");
+            if (commaIdx > 0) {
+                const first = unquote(strippedLine.slice(0, commaIdx));
+                const afterComma = strippedLine.slice(commaIdx + 1).trim();
+                if (first && afterComma && (isEmail(first) || isPhone(first))) {
+                    const nextComma = afterComma.indexOf(",");
+                    const rawPass = nextComma !== -1 ? afterComma.slice(0, nextComma) : afterComma;
+                    const rest = stripTrailingMetadata(unquote(rawPass));
+                    if (rest && !rest.includes(" ")) {
+                        return `${first}:${rest}`;
+                    }
                 }
             }
         }
@@ -708,11 +796,11 @@ function cleanLinesArray(rawLines, options = {}) {
                 );
 
                 if (uMatch) {
-                    recordUser = uMatch[1].trim();
+                    recordUser = unquote(uMatch[1].trim());
                 } else if (pMatch) {
-                    recordPass = stripTrailingMetadata(pMatch[1].trim());
+                    recordPass = stripTrailingMetadata(unquote(pMatch[1].trim()));
                 } else if (urlMatch) {
-                    recordUrl = urlMatch[1].trim();
+                    recordUrl = unquote(urlMatch[1].trim());
                 }
 
                 if (recordUser && recordPass) {

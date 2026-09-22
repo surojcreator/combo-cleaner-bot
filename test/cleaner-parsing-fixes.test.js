@@ -165,3 +165,44 @@ test("cleaner fixes: strips unspaced pipe/semicolon/bracket stealer metadata tag
     assert.equal(cleanLine("user@example.com:secret|url:https://target.com"), "user@example.com:secret");
 });
 
+test("cleaner fixes: unquotes wrapped lines, quoted tokens, JSON records, CSV commas, and SQL tuples", () => {
+    // Wrapped lines
+    assert.equal(cleanLine('"user@example.com:password123"'), "user@example.com:password123");
+    assert.equal(cleanLine("'user@example.com:password123'"), "user@example.com:password123");
+
+    // Individually quoted tokens
+    assert.equal(cleanLine('"user@example.com":"password123"'), "user@example.com:password123");
+    assert.equal(cleanLine("'user@example.com':'password123'"), "user@example.com:password123");
+    assert.equal(cleanLine('"user@example.com"|"password123"'), "user@example.com:password123");
+
+    // CSV format
+    assert.equal(cleanLine('"user@example.com","password123"'), "user@example.com:password123");
+    assert.equal(cleanLine("'user@example.com','password123'"), "user@example.com:password123");
+    assert.equal(cleanLine("user@example.com,password123"), "user@example.com:password123");
+    assert.equal(cleanLine("user@example.com,password123,US,2026-09-22"), "user@example.com:password123");
+
+    // JSON objects / NDJSON
+    assert.equal(cleanLine('{"email":"alice@example.com","password":"secret"}'), "alice@example.com:secret");
+    assert.equal(cleanLine('{"username":"bob","password":"123"}'), "bob:123");
+    assert.equal(cleanLine('{"user":"carol@site.com","pass":"p@ss","url":"https://site.com"}', { keepUrl: true }), "https://site.com:carol@site.com:p@ss");
+
+    // SQL tuples
+    assert.equal(cleanLine("('alice@example.com', 'secret')"), "alice@example.com:secret");
+    assert.equal(cleanLine("('admin', 'secret123')"), "admin:secret123");
+
+    // Key-value labels with quotes
+    assert.equal(cleanLine('User: "alice@gmail.com" Pass: "secret"'), "alice@gmail.com:secret");
+    assert.equal(cleanLine('"username": "alice@gmail.com", "password": "secret"'), "alice@gmail.com:secret");
+
+    // Multi-line stealer record with quotes
+    const multiLine = [
+        'URL: "https://secure.example.com"',
+        'Username: "dave@example.com"',
+        'Password: "secretPassword123!"',
+    ];
+    const cleaned = cleanLinesArray(multiLine);
+    assert.equal(cleaned.stats.kept, 1);
+    assert.equal(cleaned.lines[0], "dave@example.com:secretPassword123!");
+});
+
+

@@ -205,4 +205,79 @@ test("cleaner fixes: unquotes wrapped lines, quoted tokens, JSON records, CSV co
     assert.equal(cleaned.lines[0], "dave@example.com:secretPassword123!");
 });
 
+test("cleaner fixes: supports semicolons, multi-separators, SQL dumps, TSV, CSV with URLs, and rejects placeholders", () => {
+    // Semicolons
+    assert.equal(cleanLine("user@example.com;password123"), "user@example.com:password123");
+    assert.equal(cleanLine("https://site.com;user@example.com;password123"), "user@example.com:password123");
+    assert.equal(cleanLine("https://site.com;user@example.com;password123", { keepUrl: true }), "https://site.com:user@example.com:password123");
+    assert.equal(cleanLine("site.com;admin;password123"), "admin:password123");
+    assert.equal(cleanLine("admin;password123"), "admin:password123");
+
+    // Multi-separators (repeated colons / pipes)
+    assert.equal(cleanLine("user@example.com:::password123"), "user@example.com:password123");
+    assert.equal(cleanLine("user@example.com::password123"), "user@example.com:password123");
+    assert.equal(cleanLine("user@example.com||password123"), "user@example.com:password123");
+
+    // SQL tuples and statements
+    assert.equal(cleanLine("('alice@example.com', 'secret'),"), "alice@example.com:secret");
+    assert.equal(cleanLine("('alice@example.com', 'secret');"), "alice@example.com:secret");
+    assert.equal(cleanLine("INSERT INTO users VALUES ('alice@example.com', 'secret');"), "alice@example.com:secret");
+    assert.equal(cleanLine("INSERT INTO `users` (`id`, `email`, `pass`) VALUES (1, 'alice@example.com', 'secret');"), "alice@example.com:secret");
+    assert.equal(cleanLine("(1, 'alice@example.com', 'secret', '2026-09-22')"), "alice@example.com:secret");
+    assert.equal(cleanLine("(42, 'admin_boss', 'secret123', 'active')"), "admin_boss:secret123");
+    assert.equal(cleanLine("('admin', 'secret123')"), "admin:secret123");
+    assert.equal(cleanLine("(1, 'alice@example.com', NULL)"), null);
+
+    // CSV format with URLs and quoted commas
+    assert.equal(cleanLine("Google,https://accounts.google.com/,alice@gmail.com,SuperSecret123"), "alice@gmail.com:SuperSecret123");
+    assert.equal(cleanLine("Google,https://accounts.google.com/,alice@gmail.com,SuperSecret123", { keepUrl: true }), "https://accounts.google.com/:alice@gmail.com:SuperSecret123");
+    assert.equal(cleanLine("https://site.com,alice@gmail.com,pass123"), "alice@gmail.com:pass123");
+    assert.equal(cleanLine('"alice@example.com","my,pass","extra"'), "alice@example.com:my,pass");
+
+    // TSV format
+    assert.equal(cleanLine("user@example.com\tpassword123"), "user@example.com:password123");
+    assert.equal(cleanLine("https://site.com\tuser@example.com\tpassword123"), "user@example.com:password123");
+    assert.equal(cleanLine("https://site.com\tuser@example.com\tpassword123", { keepUrl: true }), "https://site.com:user@example.com:password123");
+    assert.equal(cleanLine("admin\tpassword123"), "admin:password123");
+
+    // JSON trailing commas and null passwords
+    assert.equal(cleanLine('{"email":"alice@example.com","password":"secret"},'), "alice@example.com:secret");
+    assert.equal(cleanLine('{"email":"alice@example.com","password":"secret"};'), "alice@example.com:secret");
+    assert.equal(cleanLine('{"email":"alice@example.com","password":null}'), null);
+    assert.equal(cleanLine('{"email":"alice@example.com","password":""}'), null);
+
+    // Placeholders rejection
+    assert.equal(cleanLine("null:null"), null);
+    assert.equal(cleanLine("undefined:undefined"), null);
+    assert.equal(cleanLine("unknown:unknown"), null);
+    assert.equal(cleanLine("user@example.com:null"), null);
+    assert.equal(cleanLine("user@example.com:undefined"), null);
+    assert.equal(cleanLine("user@example.com:(empty)"), null);
+    assert.equal(cleanLine("user@example.com:<empty>"), null);
+    assert.equal(cleanLine("User: victim@gmail.com"), null);
+    assert.equal(cleanLine("Username | victim@gmail.com"), null);
+
+    // Credit cards with comma and hyphen/dot expiry
+    const { cleanCcLine } = require("../src/cleaner");
+    assert.equal(cleanCcLine("4111111111111111,12,28,123"), "4111111111111111|12|28|123");
+    assert.equal(cleanCcLine("4111111111111111|12-28|123"), "4111111111111111|12|28|123");
+    assert.equal(cleanCcLine("4111111111111111|12.28|123"), "4111111111111111|12|28|123");
+
+    // Multi-line stealer blocks with pipe and UNKNOWN passwords
+    const pipeDump = [
+        "URL | https://accounts.google.com/",
+        "USER | victim@gmail.com",
+        "PASS | SuperSecretPassword123!",
+        "=========================================",
+        "URL | https://facebook.com/login",
+        "USER | victim@gmail.com",
+        "PASS | UNKNOWN",
+    ].join("\n");
+
+    const pipeRes = cleanText(pipeDump, { keepUrl: true });
+    assert.equal(pipeRes.lines.length, 1);
+    assert.equal(pipeRes.lines[0], "https://accounts.google.com/:victim@gmail.com:SuperSecretPassword123!");
+});
+
+
 

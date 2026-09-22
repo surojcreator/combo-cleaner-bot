@@ -3997,7 +3997,12 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
                 if (plainExtra.caption) {
                     plainExtra.caption = plainExtra.caption.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
                 }
-                return await doSend(plainExtra).catch(() => null);
+                try {
+                    return await doSend(plainExtra);
+                } catch {
+                    delete plainExtra.reply_markup;
+                    return await doSend(plainExtra).catch(() => null);
+                }
             }
         }
         throw err;

@@ -25,12 +25,13 @@
  * junk are discarded.
  */
 
-// A candidate token followed by a ':' or '|' separator. The lookbehind ensures
+// A candidate token followed by a ':', '|', or ';' separator. The lookbehind ensures
 // the token starts at a boundary (start of line or whitespace or separator) WITHOUT
 // consuming that boundary. We do NOT allow '/' in the lookbehind because URL paths
 // like /LogLogonHandler:user:pass must not treat path segments as candidate usernames.
 const CANDIDATE_RE =
-    /(?<=^|[\s:|])([A-Za-z0-9._%+@+-]+)[ \t]*[:|][ \t]*/g;
+    /(?<=^|[\s:|;])([A-Za-z0-9._%+@+-]+)[ \t]*[:|;]+[ \t]*/g;
+
 
 // URL schemes we must never treat as a username login.
 const SCHEMES = new Set([
@@ -159,11 +160,11 @@ function normalizeYear(y) {
 const CC_DIGITS_RE = /\d[\d\s-]{10,}\d/;
 
 function cleanCcLine(line) {
-    if (!line || !CC_DIGITS_RE.test(line) || !/[|:;]/.test(line)) {
+    if (!line || !CC_DIGITS_RE.test(line) || !/[|:;,]/.test(line)) {
         return null;
     }
     // Split on any of the common separators, keeping the fields in order.
-    const fields = String(line).split(/[|;:]/).map((f) => f.trim());
+    const fields = String(line).split(/[|;:,]/).map((f) => unquote(f.trim()));
     if (fields.length < 3) return null;
 
     // Check for 3-field format where expiry is combined as MM/YY: pan | mm/yy | cvv
@@ -172,10 +173,10 @@ function cleanCcLine(line) {
         const rawExpiry = fields[i + 1];
         const rawCvv = fields[i + 2];
 
-        if (rawExpiry && rawExpiry.includes("/")) {
+        if (rawExpiry && /[/\-.]/.test(rawExpiry)) {
             const pan = rawPan.replace(/[\s-]/g, "");
             if (/^\d{12,19}$/.test(pan)) {
-                const parts = rawExpiry.split("/");
+                const parts = rawExpiry.split(/[/\-.]/);
                 const mmDigits = (parts[0] || "").replace(/\D/g, "");
                 const mmNum = parseInt(mmDigits, 10) || 0;
                 if (mmNum >= 1 && mmNum <= 12) {
@@ -275,7 +276,7 @@ function stripTrailingMetadata(password) {
     if (!password) return "";
     let p = typeof password === "string" ? password.trim() : String(password).trim();
     if (!/[\s;|,[()\]]/.test(p)) {
-        return p;
+        return unquote(p);
     }
     p = p.replace(
         /(?:\s*[|;,]\s*|\s+)(?:ip|hwid|country|soft|software|browser|date|time|token|cookie|cookies|profile|status|note|os|pc|user|username|location|city|zip|url|uri|host|site|website|link|page|app|application|client|action)\s*[:=].*$/i,
@@ -294,14 +295,67 @@ function stripTrailingMetadata(password) {
     if (p.includes("-")) {
         p = p.replace(/(?:\s*[|;,]\s*|\s+)\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}:\d{2})?.*$/, "");
     }
-    if (p.includes("|") || p.includes(";")) {
-        p = p.replace(/\s+[|;]+.*$/, "");
-        p = p.replace(/[|;]+$/, "").trim();
+    if (p.includes("|") || p.includes(";") || p.includes(",")) {
+        p = p.replace(/\s+[|;,]+.*$/, "");
+        p = p.replace(/[|;,]+$/, "").trim();
     }
     if (p.includes(" ")) {
         p = p.split(/\s+/)[0];
     }
-    return p;
+    return unquote(p);
+}
+
+/**
+ * Checks if a string is a useless placeholder (null, undefined, unknown, empty, etc.)
+ * @param {string} val
+ * @returns {boolean}
+ */
+function isPlaceholder(val) {
+    if (!val || typeof val !== "string") return true;
+    const s = val.trim().toLowerCase();
+    return (
+        s === "(empty)" ||
+        s === "<empty>" ||
+        s === "[empty]" ||
+        s === "none" ||
+        s === "n/a" ||
+        s === "anonymous"
+    );
+}
+
+/**
+ * Checks if a user:pass pair is a useless placeholder/junk pair
+ * (e.g. null:null, undefined:undefined, unknown:unknown, user:(empty)).
+ * Allows legitimate credentials like '031555014:NULL' in dumps where NULL is the password string.
+ * @param {string} user
+ * @param {string} pass
+ * @returns {boolean}
+ */
+function isJunkPair(user, pass) {
+    const u = String(user || "").trim().toLowerCase();
+    const p = String(pass || "").trim().toLowerCase();
+    if (!u || !p) return true;
+    if (isPlaceholder(u) || isPlaceholder(p)) return true;
+    if (
+        (u === "null" || u === "undefined" || u === "unknown") &&
+        (p === "null" || p === "undefined" || p === "unknown")
+    ) {
+        return true;
+    }
+    if ((p === "null" || p === "undefined" || p === "(empty)" || p === "<empty>") && u.includes("@")) {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Normalize ULP lines replacing non-standard separators with standard colons.
+ * @param {string} line
+ * @returns {string}
+ */
+function normalizeUlpOutput(line) {
+    if (!line) return "";
+    return line.replace(/[;\t]+/g, ":");
 }
 
 /**
@@ -317,6 +371,20 @@ function isUsername(login, password) {
     const lower = login.toLowerCase();
     if (SCHEMES.has(lower)) return false;
     if (PURE_FIELD_LABELS.has(lower)) return false;
+    if (isPlaceholder(lower)) return false;
+    if (password && isJunkPair(lower, password)) return false;
+    if (
+        (lower === "user" ||
+            lower === "username" ||
+            lower === "login" ||
+            lower === "account" ||
+            lower === "acc" ||
+            lower === "usr") &&
+        password &&
+        (isEmail(password) || isUrlOrDomain(password))
+    ) {
+        return false;
+    }
     if (
         lower === "login" ||
         lower === "password" ||
@@ -386,7 +454,7 @@ function extractFromKeyValueLabels(line, options = {}) {
             pass = pass.slice(0, nextLabelMatch.index).trim();
         }
 
-        if (user && pass) {
+        if (user && pass && !isPlaceholder(user) && !isPlaceholder(pass)) {
             const userLower = user.toLowerCase();
             if (!PURE_FIELD_LABELS.has(userLower) && userLower !== "http" && userLower !== "https") {
                 if (keepUrl) {
@@ -415,7 +483,7 @@ function extractFromKeyValueLabels(line, options = {}) {
 function stripLabelPrefixes(line) {
     if (typeof line !== "string") return { line: "", strippedLabel: null };
     const LEADING_LABEL_RE =
-        /^(?:action|form_action|form|submit|submit_url|post_url|login_url|url|uri|host|site|website|page|target|domain|user|username|login|account|acc|usr|user_name|user_login|email|mail|soft|software|browser|app|application|client|[a-z0-9_.-]*handler|[a-z0-9_.-]*logon)\s*[:=|]\s*/i;
+        /^(?:action|form_action|form|submit|submit_url|post_url|login_url|url|uri|host|site|website|page|target|domain|user|username|login|account|acc|usr|user_name|user_login|email|mail|soft|software|browser|app|application|client|[a-z0-9_.-]*handler|[a-z0-9_.-]*logon)\s*[:=;|]\s*/i;
 
     let s = line;
     let lastStripped = null;
@@ -424,17 +492,17 @@ function stripLabelPrefixes(line) {
         const m = s.match(LEADING_LABEL_RE);
         if (!m) break;
 
-        const token = m[0].split(/[:=|]/)[0].trim().toLowerCase();
+        const token = m[0].split(/[:=;|]/)[0].trim().toLowerCase();
         if (SCHEMES.has(token)) break;
 
         const remainder = s.slice(m[0].length).trim();
         if (!remainder) break;
 
         // If the token is a credential label (like "user" or "login") and the remainder
-        // has NO separator (no colon or pipe), then "user" or "username" was the username,
+        // has NO separator (no colon or pipe or semicolon), then "user" or "username" was the username,
         // not a prefix label (e.g. "username:pass word", "user:pass123").
         if (CREDENTIAL_LABELS.has(token)) {
-            const hasSep = remainder.includes(":") || remainder.includes("|");
+            const hasSep = remainder.includes(":") || remainder.includes("|") || remainder.includes(";");
             if (!hasSep) {
                 break;
             }
@@ -458,10 +526,110 @@ function extractCandidates(line) {
     CANDIDATE_RE.lastIndex = 0;
     let match;
     while ((match = CANDIDATE_RE.exec(line)) !== null) {
-        const password = line.slice(match.index + match[0].length).trim();
+        let password = line.slice(match.index + match[0].length).trim();
+        if (password.startsWith(":") || password.startsWith("|") || password.startsWith(";")) {
+            password = password.replace(/^[:|;]+/, "").trim();
+        }
         out.push({ login: match[1], password: stripTrailingMetadata(password) });
     }
     return out;
+}
+
+/**
+ * Parse a CSV line into fields respecting single and double quotes.
+ * @param {string} line
+ * @returns {string[]}
+ */
+function splitCsvLine(line) {
+    const fields = [];
+    let current = "";
+    let inQuotes = false;
+    let quoteChar = "";
+
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (inQuotes) {
+            if (char === quoteChar) {
+                if (i + 1 < line.length && line[i + 1] === quoteChar) {
+                    current += char;
+                    i++;
+                } else {
+                    inQuotes = false;
+                }
+            } else {
+                current += char;
+            }
+        } else {
+            if (char === '"' || char === "'") {
+                inQuotes = true;
+                quoteChar = char;
+            } else if (char === ",") {
+                fields.push(current.trim());
+                current = "";
+            } else {
+                current += char;
+            }
+        }
+    }
+    fields.push(current.trim());
+    return fields;
+}
+
+/**
+ * Extract credentials from an array of delimited fields (CSV, TSV, SQL).
+ * @param {string[]} fields
+ * @param {{ keepUrl?: boolean }} [options]
+ * @returns {string|null}
+ */
+function extractFromFields(fields, options = {}) {
+    if (!Array.isArray(fields) || fields.length < 2) return null;
+    const keepUrl = Boolean(options && options.keepUrl);
+
+    // Pass 1: look for email or phone
+    for (let i = 0; i < fields.length - 1; i++) {
+        const candidate = unquote(fields[i]);
+        if (isEmail(candidate) || isPhone(candidate)) {
+            const rawPass = fields[i + 1];
+            if (rawPass && rawPass.trim().toUpperCase() === "NULL" && !rawPass.startsWith("'") && !rawPass.startsWith('"')) {
+                continue;
+            }
+            const pass = stripTrailingMetadata(unquote(rawPass));
+            if (pass && !isJunkPair(candidate, pass)) {
+                if (keepUrl && i > 0 && isUrlOrDomain(unquote(fields[i - 1]))) {
+                    return `${unquote(fields[i - 1])}:${candidate}:${pass}`;
+                }
+                return `${candidate}:${pass}`;
+            }
+        }
+    }
+
+    // Pass 2: look for username
+    for (let i = 0; i < fields.length - 1; i++) {
+        const candidate = unquote(fields[i]);
+        const rawPass = fields[i + 1];
+        if (rawPass && rawPass.trim().toUpperCase() === "NULL" && !rawPass.startsWith("'") && !rawPass.startsWith('"')) {
+            continue;
+        }
+        const pass = stripTrailingMetadata(unquote(rawPass));
+        if (isUsername(candidate, pass)) {
+            if (pass && !isJunkPair(candidate, pass)) {
+                if (i > 0 && isUrlOrDomain(unquote(fields[i - 1]))) {
+                    if (keepUrl) {
+                        return `${unquote(fields[i - 1])}:${candidate}:${pass}`;
+                    }
+                    return `${candidate}:${pass}`;
+                }
+                if (fields.length === 2 || (i === 1 && /^\d+$/.test(unquote(fields[0])))) {
+                    return `${candidate}:${pass}`;
+                }
+                if (i === 0 || (i === 1 && (isUrlOrDomain(unquote(fields[0])) || /^\d+$/.test(unquote(fields[0]))))) {
+                    return `${candidate}:${pass}`;
+                }
+            }
+        }
+    }
+
+    return null;
 }
 
 /**
@@ -475,24 +643,72 @@ function cleanLine(rawLine, options = {}) {
     let line = typeof rawLine === "string" && !SPECIAL_WS_RE.test(rawLine) ? rawLine.trim() : normalizeLine(rawLine);
     if (!line) return null;
 
+    // Strip SQL INSERT / VALUES prefix
+    if (/^(?:INSERT\s+INTO\s+.*?\s+VALUES\s*|VALUES\s*)/i.test(line)) {
+        line = line.replace(/^(?:INSERT\s+INTO\s+.*?\s+VALUES\s*|VALUES\s*)/i, "").trim();
+    }
+
+    // Strip trailing semicolons or commas from SQL / CSV / JSON lines
+    if (line.endsWith(";") || line.endsWith(",")) {
+        const strippedTrailing = line.replace(/[,;]+$/, "").trim();
+        if (
+            (strippedTrailing.startsWith("(") && strippedTrailing.endsWith(")")) ||
+            (strippedTrailing.startsWith("{") && strippedTrailing.endsWith("}")) ||
+            strippedTrailing.includes(":") ||
+            strippedTrailing.includes("|") ||
+            strippedTrailing.includes(",") ||
+            strippedTrailing.includes(";") ||
+            strippedTrailing.includes("\t")
+        ) {
+            line = strippedTrailing;
+        }
+    }
+
     // Check for JSON object line (e.g. NDJSON database dumps or stealer logs)
     if (line.charCodeAt(0) === 123 /* '{' */ && line.charCodeAt(line.length - 1) === 125 /* '}' */) {
         try {
             const obj = JSON.parse(line);
             if (obj && typeof obj === "object") {
-                const user = obj.email || obj.user || obj.username || obj.login || obj.account || obj.acc || obj.mail;
-                const pass = obj.password || obj.pass || obj.pwd || obj.secret || obj.passwd;
-                const url = obj.url || obj.uri || obj.host || obj.site || obj.website;
-                if (user && pass) {
+                const user =
+                    obj.email ||
+                    obj.user ||
+                    obj.username ||
+                    obj.login ||
+                    obj.account ||
+                    obj.acc ||
+                    obj.mail ||
+                    obj.user_name ||
+                    obj.user_login ||
+                    obj.login_id ||
+                    obj.phone ||
+                    obj.mobile;
+                const pass =
+                    obj.password ||
+                    obj.pass ||
+                    obj.pwd ||
+                    obj.secret ||
+                    obj.passwd ||
+                    obj.passw;
+                const url =
+                    obj.url ||
+                    obj.uri ||
+                    obj.host ||
+                    obj.site ||
+                    obj.website ||
+                    obj.link ||
+                    obj.page ||
+                    obj.action;
+                if (user != null && pass != null) {
                     const u = unquote(String(user));
                     const p = stripTrailingMetadata(unquote(String(pass)));
-                    if (u && p) {
+                    if (u && p && !isPlaceholder(u) && !isPlaceholder(p)) {
                         if (keepUrl && url && isUrlOrDomain(String(url))) {
                             return `${String(url).trim()}:${u}:${p}`;
                         }
                         return `${u}:${p}`;
                     }
                 }
+                return null;
             }
         } catch (_) {}
     }
@@ -524,25 +740,33 @@ function cleanLine(rawLine, options = {}) {
         line = line.slice(1, -1).replace(/'\s*[:|,]\s*'/, ":").trim();
     }
 
-    // Ultra-fast path: standard email:password, phone:password, or username:password lines with no URL, pipe, or labels
+    // Ultra-fast path: standard email:password, phone:password, or username:password lines with no URL, pipe, semicolon, comma, or labels
     const fastSep = line.indexOf(":");
-    if (fastSep > 0 && !line.includes("|") && line.charCodeAt(fastSep + 1) !== 47 /* '/' */) {
+    if (
+        fastSep > 0 &&
+        !line.includes("|") &&
+        !line.includes(";") &&
+        !line.includes(",") &&
+        !line.includes("\t") &&
+        line.charCodeAt(fastSep + 1) !== 47 /* '/' */ &&
+        line.charCodeAt(fastSep + 1) !== 58 /* ':' */
+    ) {
         const nextSep = line.indexOf(":", fastSep + 1);
         if (nextSep === -1 && !line.includes(" ")) {
             // Exactly ONE colon on the entire line and zero spaces
             const user = line.slice(0, fastSep);
             if (!user.includes(" ")) {
                 const pass = line.slice(fastSep + 1);
-                if (pass.length > 0) {
+                if (pass.length > 0 && !isJunkPair(user, pass)) {
                     const cleanPass = !/[\s;|,[()\]]/.test(pass) ? pass : stripTrailingMetadata(pass);
-                    if (cleanPass.length > 0) {
+                    if (cleanPass.length > 0 && !isJunkPair(user, cleanPass)) {
                         if (user.includes("@")) {
                             if (EMAIL_RE.test(user)) {
                                 return keepUrl ? line : `${user}:${cleanPass}`;
                             }
                         } else if (isPhone(user)) {
                             return keepUrl ? line : `${user}:${cleanPass}`;
-                        } else if (isUsername(user, pass)) {
+                        } else if (isUsername(user, cleanPass)) {
                             return keepUrl ? line : `${user}:${cleanPass}`;
                         }
                     }
@@ -570,7 +794,9 @@ function cleanLine(rawLine, options = {}) {
                 firstLower !== "pwd" &&
                 firstLower !== "secret" &&
                 !PURE_FIELD_LABELS.has(firstLower) &&
-                !SCHEMES.has(firstLower)
+                !SCHEMES.has(firstLower) &&
+                !isPlaceholder(firstLower) &&
+                !isPlaceholder(second)
             ) {
                 return `${first}:${second}`;
             }
@@ -581,13 +807,28 @@ function cleanLine(rawLine, options = {}) {
     const cc = cleanCcLine(line);
     if (cc !== null) return cc;
 
+    // Check for TSV format (tab-separated)
+    if (line.includes("\t")) {
+        const tsvFields = line.split(/\t+/).map((f) => unquote(f.trim())).filter((f) => f !== "");
+        const tsvRes = extractFromFields(tsvFields, options);
+        if (tsvRes !== null) return tsvRes;
+    }
+
+    // Check for CSV format (comma-separated, respecting quotes)
+    if (line.includes(",")) {
+        const csvFields = splitCsvLine(line).map((f) => unquote(f.trim())).filter((f) => f !== "");
+        const csvRes = extractFromFields(csvFields, options);
+        if (csvRes !== null) return csvRes;
+    }
+
     // Check for leading label prefixes (e.g. "action:user:pass" -> "user:pass", "user:login:pass" -> "login:pass")
     const { line: strippedLine, strippedLabel } = stripLabelPrefixes(line);
     const hasColon = strippedLine.includes(":");
     const hasPipe = strippedLine.includes("|");
+    const hasSemicolon = strippedLine.includes(";");
 
     // Check for space-separated pair (e.g. "user:login pass" -> "login:pass", "user: admin 123456" -> "admin:123456")
-    if (!hasColon && !hasPipe) {
+    if (!hasColon && !hasPipe && !hasSemicolon) {
         const spaceIdx = strippedLine.search(/\s+/);
         if (spaceIdx > 0) {
             const first = strippedLine.slice(0, spaceIdx).trim();
@@ -599,7 +840,7 @@ function cleanLine(rawLine, options = {}) {
                     strippedLabel === "login" ||
                     strippedLabel === "account" ||
                     strippedLabel === "usr");
-            if (first && second && !second.includes(" ")) {
+            if (first && second && !second.includes(" ") && !isPlaceholder(first) && !isPlaceholder(second)) {
                 if (
                     isEmail(first) ||
                     isPhone(first) ||
@@ -609,42 +850,27 @@ function cleanLine(rawLine, options = {}) {
                 }
             }
         }
-
-        // Check for comma-separated email:password or phone:password lines (e.g. CSV dumps: alice@example.com,pass)
-        if (strippedLine.includes(",")) {
-            const commaIdx = strippedLine.indexOf(",");
-            if (commaIdx > 0) {
-                const first = unquote(strippedLine.slice(0, commaIdx));
-                const afterComma = strippedLine.slice(commaIdx + 1).trim();
-                if (first && afterComma && (isEmail(first) || isPhone(first))) {
-                    const nextComma = afterComma.indexOf(",");
-                    const rawPass = nextComma !== -1 ? afterComma.slice(0, nextComma) : afterComma;
-                    const rest = stripTrailingMetadata(unquote(rawPass));
-                    if (rest && !rest.includes(" ")) {
-                        return `${first}:${rest}`;
-                    }
-                }
-            }
-        }
         return null;
     }
 
-    // Fast path: standard email:password or phone:password lines with no URL/pipe
-    if (!hasPipe) {
+    // Fast path: standard email:password or phone:password lines with no URL/pipe/semicolon
+    if (!hasPipe && !hasSemicolon) {
         const firstSep = strippedLine.indexOf(":");
         if (firstSep > 0) {
             const rawRest = strippedLine.slice(firstSep + 1).trim();
-            if (rawRest && !rawRest.startsWith("//")) {
+            if (rawRest && !rawRest.startsWith("//") && !rawRest.startsWith(":")) {
                 const firstToken = strippedLine.slice(0, firstSep).trim();
                 const rest = stripTrailingMetadata(rawRest);
-                if (firstToken.includes("@") && isEmail(firstToken)) {
-                    return keepUrl ? strippedLine : `${firstToken}:${rest}`;
-                }
-                if (isPhone(firstToken)) {
-                    return keepUrl ? strippedLine : `${firstToken}:${rest}`;
-                }
-                if (isUsername(firstToken, rest)) {
-                    return keepUrl ? strippedLine : `${firstToken}:${rest}`;
+                if (rest && !isJunkPair(firstToken, rest)) {
+                    if (firstToken.includes("@") && isEmail(firstToken)) {
+                        return keepUrl ? normalizeUlpOutput(strippedLine) : `${firstToken}:${rest}`;
+                    }
+                    if (isPhone(firstToken)) {
+                        return keepUrl ? normalizeUlpOutput(strippedLine) : `${firstToken}:${rest}`;
+                    }
+                    if (isUsername(firstToken, rest)) {
+                        return keepUrl ? normalizeUlpOutput(strippedLine) : `${firstToken}:${rest}`;
+                    }
                 }
             }
         }
@@ -656,9 +882,9 @@ function cleanLine(rawLine, options = {}) {
     // whole line (not just the first token) is what lets us skip URL/domain
     // prefixes and grab the real credential in "url:login:pass" dumps.
     for (const { login, password } of candidates) {
-        if (!password) continue;
+        if (!password || isJunkPair(login, password)) continue;
         if (isEmail(login) || isPhone(login)) {
-            return keepUrl ? strippedLine : `${login}:${password}`;
+            return keepUrl ? normalizeUlpOutput(strippedLine) : `${login}:${password}`;
         }
     }
 
@@ -669,7 +895,7 @@ function cleanLine(rawLine, options = {}) {
     let bestUsernameCandidate = null;
     for (const cand of candidates) {
         const { login, password } = cand;
-        if (!password) continue;
+        if (!password || isJunkPair(login, password)) continue;
         if (isUsername(login, password)) {
             if (password.includes(":")) {
                 if (!bestUsernameCandidate) bestUsernameCandidate = cand;
@@ -680,7 +906,7 @@ function cleanLine(rawLine, options = {}) {
         }
     }
     if (bestUsernameCandidate) {
-        return keepUrl ? strippedLine : `${bestUsernameCandidate.login}:${bestUsernameCandidate.password}`;
+        return keepUrl ? normalizeUlpOutput(strippedLine) : `${bestUsernameCandidate.login}:${bestUsernameCandidate.password}`;
     }
 
     // Pass 3: when keepUrl is enabled, also support shorter or non-standard
@@ -688,15 +914,16 @@ function cleanLine(rawLine, options = {}) {
     // "https://site.com:sam:pass" or "site.com:bob:pass" are kept intact.
     if (keepUrl) {
         for (const { login, password } of candidates) {
-            if (!password) continue;
+            if (!password || isJunkPair(login, password)) continue;
             if (
                 !SCHEMES.has(login.toLowerCase()) &&
                 !PURE_FIELD_LABELS.has(login.toLowerCase()) &&
+                !CREDENTIAL_LABELS.has(login.toLowerCase()) &&
                 !isUrlOrDomain(login) &&
                 !password.startsWith("//") &&
                 login.length >= 1
             ) {
-                return strippedLine;
+                return normalizeUlpOutput(strippedLine);
             }
         }
     }
@@ -714,7 +941,7 @@ function cleanLine(rawLine, options = {}) {
  */
 // Pre-compiled regex for stealer block header detection
 const STEALER_LABEL_RE =
-    /^(?:url|uri|host|site|website|link|page|action|form_action|application|app|browser|soft|software|client|username|user|login|account|usr)\s*[:=]/i;
+    /^(?:url|uri|host|site|website|link|page|action|form_action|application|app|browser|soft|software|client|username|user|login|account|usr)\s*[:=|]/i;
 
 function cleanLinesArray(rawLines, options = {}) {
     if (!Array.isArray(rawLines)) {
@@ -740,7 +967,9 @@ function cleanLinesArray(rawLines, options = {}) {
         if (trimmed && trimmed.length >= 4) {
             let sepIdx = trimmed.indexOf(":");
             const eqIdx = trimmed.indexOf("=");
+            const pipeIdx = trimmed.indexOf("|");
             if (sepIdx === -1 || (eqIdx !== -1 && eqIdx < sepIdx)) sepIdx = eqIdx;
+            if (sepIdx === -1 || (pipeIdx !== -1 && pipeIdx < sepIdx)) sepIdx = pipeIdx;
             if (sepIdx >= 1 && sepIdx <= 25) {
                 const firstChar = trimmed.charCodeAt(0) | 32;
                 if (
@@ -780,7 +1009,7 @@ function cleanLinesArray(rawLines, options = {}) {
 
                 // If line already contains a full combo without field labels, stop multi-line block
                 const isFieldLabelLine =
-                    /^(?:url|uri|host|site|website|application|app|browser|soft|software|username|user|login|pass|password|pwd|secret|action)\s*[:=]/i.test(
+                    /^(?:url|uri|host|site|website|application|app|browser|soft|software|username|user|login|pass|password|pwd|secret|action)\s*[:=|]/i.test(
                         lineJ,
                     );
                 if (!isFieldLabelLine && (lineJ.includes(":") || lineJ.includes("|"))) {
@@ -788,17 +1017,27 @@ function cleanLinesArray(rawLines, options = {}) {
                 }
 
                 const uMatch = lineJ.match(
-                    /^(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr|email|mail)\s*[:=]\s*(.+)$/i,
+                    /^(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr|email|mail)\s*[:=|]\s*(.+)$/i,
                 );
-                const pMatch = lineJ.match(/^(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=]\s*(.+)$/i);
+                const pMatch = lineJ.match(/^(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=|]\s*(.+)$/i);
                 const urlMatch = lineJ.match(
-                    /^(?:url|uri|host|site|website|link|page|action|form_action)\s*[:=]\s*(.+)$/i,
+                    /^(?:url|uri|host|site|website|link|page|action|form_action)\s*[:=|]\s*(.+)$/i,
                 );
 
                 if (uMatch) {
-                    recordUser = unquote(uMatch[1].trim());
+                    const u = unquote(uMatch[1].trim());
+                    if (u && !isPlaceholder(u)) recordUser = u;
                 } else if (pMatch) {
-                    recordPass = stripTrailingMetadata(unquote(pMatch[1].trim()));
+                    const p = stripTrailingMetadata(unquote(pMatch[1].trim()));
+                    if (
+                        p &&
+                        !/^(?:unknown|null|undefined|\(empty\)|<empty>|\[empty\]|none|n\/a)$/i.test(p)
+                    ) {
+                        recordPass = p;
+                    } else {
+                        blockConsumed = j - i + 1;
+                        break;
+                    }
                 } else if (urlMatch) {
                     recordUrl = unquote(urlMatch[1].trim());
                 }
@@ -807,7 +1046,7 @@ function cleanLinesArray(rawLines, options = {}) {
                     if (keepUrl && !recordUrl && j + 1 < Math.min(i + 8, len)) {
                         const nextLine = normalizeLine(rawLines[j + 1]);
                         const nextUrlMatch = nextLine.match(
-                            /^(?:url|uri|host|site|website|link|page|action|form_action)\s*[:=]\s*(.+)$/i,
+                            /^(?:url|uri|host|site|website|link|page|action|form_action)\s*[:=|]\s*(.+)$/i,
                         );
                         if (nextUrlMatch) {
                             recordUrl = nextUrlMatch[1].trim();
@@ -911,4 +1150,6 @@ module.exports = {
     isEmail,
     isPhone,
     normalizeLine,
+    splitCsvLine,
+    isPlaceholder,
 };

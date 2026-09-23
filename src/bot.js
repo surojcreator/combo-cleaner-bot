@@ -5882,6 +5882,8 @@ async function beginUlpRun(ctx, params) {
                         maxTries: st.totalDays,
                         sends: [`${st.day}: ${st.step}`],
                         stepDelayMs: searchOptions.stepDelayMs,
+                        query,
+                        stats: store.getStats(chatId),
                     });
                     if (now - lastStatusEdit >= 1200) {
                         lastStatusEdit = now;
@@ -5990,6 +5992,8 @@ async function beginUlpRun(ctx, params) {
                             maxTries: searchOptions.maxTries,
                             sends: event.sends,
                             stepDelayMs: searchOptions.stepDelayMs,
+                            query,
+                            stats: store.getStats(chatId),
                         }),
                         ulpKeyboard(scope),
                     ).catch(() => {});

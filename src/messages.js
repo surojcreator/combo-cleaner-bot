@@ -786,19 +786,19 @@ function mainKeyboard() {
             Markup.button.callback("📂 Server Vault (Tabs)", "server_files"),
         ],
         [
-            Markup.button.callback("📊 Batch Analytics", "stats"),
-            Markup.button.callback("🌐 Manage Domains", "sites"),
-        ],
-        [
-            Markup.button.callback("⚙️ Storage & Wipes", "files:tab:tools"),
-            Markup.button.callback("❓ Fast /save Guide", "help:save"),
-        ],
-        [
             Markup.button.callback("🔎 Search Batch", "batch:search:prompt"),
             Markup.button.callback("👁 Line Preview", "preview"),
         ],
         [
+            Markup.button.callback("📊 Batch Analytics", "stats"),
+            Markup.button.callback("🌐 Manage Domains", "sites"),
+        ],
+        [
             Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+            Markup.button.callback("⚙️ Storage & Wipes", "files:tab:tools"),
+        ],
+        [
+            Markup.button.callback("❓ Fast /save Guide", "help:save"),
             Markup.button.callback("🔄 Refresh Menu", "help"),
         ],
     ]);
@@ -2198,6 +2198,10 @@ function ulpKeyboard(status = true) {
                 Markup.button.callback("🔁 Run again", "ulp:again"),
             ],
             [
+                Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+                Markup.button.callback("📊 Batch Metrics", "stats"),
+            ],
+            [
                 Markup.button.callback("📂 Server Vault", "server_files"),
                 Markup.button.callback("🔙 Main Menu", "help"),
             ],
@@ -2207,6 +2211,10 @@ function ulpKeyboard(status = true) {
         [
             Markup.button.callback("📦 Get Combined File", "combine"),
             Markup.button.callback("🛑 Stop Search", "ulp:stop"),
+        ],
+        [
+            Markup.button.callback("📊 Live Batch Stats", "stats"),
+            Markup.button.callback("👁 Line Preview", "preview"),
         ],
     ]);
 }
@@ -2269,11 +2277,13 @@ function renderUlpStart(info = {}) {
     const dateLabel = info.startDate
         ? `Last ${daysCount} days from ${info.startDate}`
         : `Last ${daysCount} days (Auto-detecting latest batch)`;
+    const startGauge = "▱".repeat(12);
     return [
         `${tgEmoji("🚀")}  ${B("ULP SEARCH INITIALIZED")}  ${tgEmoji("⚡️")}`,
         RULE,
         `  • ${tgEmoji("🎯")} ${B("Target Query:")}   ${B(escapeHtml(info.query || "unknown"))}`,
         `  • ${tgEmoji("📅")} ${B("Search Scope:")}   ${B(`Day-by-Day (${dateLabel})`)}`,
+        `  • ${tgEmoji("📊")} ${B("Search Progress:")} ${CODE(`[${startGauge}]`)} ${B("0%")} ${I(`(Day 0 of ${daysCount})`)}`,
         ...whoRow,
         `  • ${tgEmoji("⏳")} ${B("Flood Safety:")}   ${CODE(`${pacingLabel(info.stepDelayMs)} delay`)}`,
         RULE,
@@ -2283,8 +2293,8 @@ function renderUlpStart(info = {}) {
 }
 
 /**
- * Progress card after each paced send.
- * @param {{ searcherBot: string, attempt: number, maxTries: number, sends: number, stepDelayMs: number, query?: string }} info
+ * Progress card after each paced send with sleek visual progress bar and live counters.
+ * @param {{ searcherBot: string, attempt: number, maxTries: number, sends: number|string[], stepDelayMs: number, query?: string, stats?: { size?: number, files?: number, sites?: number } }} info
  */
 function renderUlpProgress(info = {}) {
     info = info || {};
@@ -2293,18 +2303,40 @@ function renderUlpProgress(info = {}) {
         : `${num(info.sends || 0)} step(s) sent`;
     const attempt = Number(info.attempt || 1);
     const maxTries = Number(info.maxTries || 5);
-    const pct = Math.min(100, Math.round((attempt / maxTries) * 100));
-    return [
+    const pct = Math.min(100, Math.max(0, Math.round((attempt / maxTries) * 100)));
+    const width = 12;
+    const filled = Math.min(width, Math.max(0, Math.round((attempt / maxTries) * width)));
+    const gauge = "▰".repeat(filled) + "▱".repeat(width - filled);
+
+    const lines = [
         `${tgEmoji("📡")}  ${B("ULP SEARCH IN PROGRESS")} · ${B(`[Day ${attempt}/${maxTries}]`)}  ${tgEmoji("⏳")}`,
         RULE,
+    ];
+
+    if (info.query) {
+        lines.push(`  • ${tgEmoji("🎯")} ${B("Target Query:")}   ${CODE(escapeHtml(info.query))}`);
+    }
+
+    lines.push(
+        `  • ${tgEmoji("📊")} ${B("Progress:")} ${CODE(`[${gauge}]`)} ${B(`${pct}%`)} ${I(`(Day ${attempt} of ${maxTries})`)}`,
         `  • ${tgEmoji("🤖")} ${B("Searcher:")} ${CODE(mentionOf(info.searcherBot || "DumpNews14Bot"))} · ${sendsLine}`,
-        `  • ${tgEmoji("📊")} ${B("Progress:")} ${bar(attempt, maxTries, 10)} ${B(`${pct}%`)}`,
+    );
+
+    if (info.stats && (info.stats.size > 0 || info.stats.files > 0)) {
+        lines.push(
+            `  • ${tgEmoji("💎")} ${B("Batch Captured:")}  ${B(num(info.stats.size || 0))} lines · ${num(info.stats.files || 0)} archive(s)`,
+        );
+    }
+
+    lines.push(
         `  • ${tgEmoji("⏳")} ${B("Pacing:")}   ${CODE(`${pacingLabel(info.stepDelayMs)} anti-flood safe`)}`,
         RULE,
         `${I("Incoming dump files are continuously ingested, deduped & sanitized 🧼")}`,
         "",
         `👇 ${I("Tap below to grab credentials gathered so far, or let it complete:")}`,
-    ].join("\n");
+    );
+
+    return lines.join("\n");
 }
 
 /**
@@ -2345,11 +2377,13 @@ function renderUlpEmpty(info = {}) {
  */
 function renderUlpDone(info = {}) {
     info = info || {};
+    const doneGauge = "▰".repeat(12);
     return [
         `${tgEmoji("✨")}  ${B("ULP SEARCH COMPLETED")}  ${tgEmoji("🚀")}`,
         RULE,
         `  • ${tgEmoji("🎯")}  Target:      ${B(escapeHtml(info.query || "unknown"))}`,
-        `  • ${tgEmoji("📊")}  Relayed:     ${B(num(info.count || 0))} message${(info.count || 0) === 1 ? "" : "s"}`,
+        `  • ${tgEmoji("📊")}  Progress:    ${CODE(`[${doneGauge}]`)} ${B("100% Complete")} ${tgEmoji("✅")}`,
+        `  • ${tgEmoji("📥")}  Relayed:     ${B(num(info.count || 0))} message${(info.count || 0) === 1 ? "" : "s"}`,
         `  • ${tgEmoji("📦")}  Status:      ${B("Combined file generated & batch reset")} ${tgEmoji("💎")}`,
         RULE,
         `${I(`Start another search anytime with /ulp ${tgEmoji("⚡️")}`)}`,

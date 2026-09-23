@@ -12,6 +12,7 @@ const {
     mergeZipFiles,
     isZipBuffer,
 } = require("./extractor");
+const { cleanUserPassOnly } = require("./cleaner");
 const { sanitizeSiteSlug, detectSite } = require("./sites");
 const { getSharedPool } = require("./worker-pool");
 const searchbot = require("./searchbot");
@@ -566,6 +567,9 @@ function createBot(token, meta = {}) {
             result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
         } else {
             result = store.searchLines(ctx.chat.id, query, 20);
+        }
+        if (result && Array.isArray(result.matches)) {
+            result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
         }
         await safeReply(ctx, renderSearch(query, result), searchResultKeyboard(query, result.total));
     });
@@ -1949,7 +1953,16 @@ function createBot(token, meta = {}) {
             return;
         }
 
-        const buffer = Buffer.from(matches.join("\n"), "utf8");
+        const cleanedLines = [];
+        const seen = new Set();
+        for (const m of matches) {
+            const clean = cleanUserPassOnly(m) || m;
+            if (!seen.has(clean)) {
+                seen.add(clean);
+                cleanedLines.push(clean);
+            }
+        }
+        const buffer = Buffer.from(cleanedLines.join("\n"), "utf8");
         const stamp = new Date().toISOString().slice(0, 10);
         const filename = `vault_search_${label}_${sanitizeSiteSlug(query)}_${stamp}.txt`;
 
@@ -2226,6 +2239,9 @@ function createBot(token, meta = {}) {
         } else {
             result = store.searchLines(ctx.chat.id, query, 20);
         }
+        if (result && Array.isArray(result.matches)) {
+            result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
+        }
         await safeReply(ctx, renderSearch(query, result), searchResultKeyboard(query, result.total));
     });
 
@@ -2245,7 +2261,16 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, `⚠️ No matches found in batch for ${CODE(escapeHtml(query))}.`, mainKeyboard());
             return;
         }
-        const buffer = Buffer.from(matches.join("\n"), "utf8");
+        const cleanedLines = [];
+        const seen = new Set();
+        for (const m of matches) {
+            const clean = cleanUserPassOnly(m) || m;
+            if (!seen.has(clean)) {
+                seen.add(clean);
+                cleanedLines.push(clean);
+            }
+        }
+        const buffer = Buffer.from(cleanedLines.join("\n"), "utf8");
         const stamp = new Date().toISOString().slice(0, 10);
         const filename = `search_${sanitizeSiteSlug(query)}_${stamp}.txt`;
 
@@ -3720,6 +3745,9 @@ function createBot(token, meta = {}) {
         const domain = resolveCallbackPayload(ctx.match[1]);
         await ctx.answerCbQuery(`Searching for ${domain}…`).catch(() => {});
         const res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), domain, 20);
+        if (res && Array.isArray(res.matches)) {
+            res.matches = res.matches.map((m) => cleanUserPassOnly(m) || m);
+        }
         await safeReply(ctx, renderSearch(domain, res), searchResultKeyboard(domain, res.total));
     });
 
@@ -4312,6 +4340,9 @@ function createBot(token, meta = {}) {
                     result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
                 } else {
                     result = store.searchLines(ctx.chat.id, query, 20);
+                }
+                if (result && Array.isArray(result.matches)) {
+                    result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
                 }
                 await safeReply(ctx, renderSearch(query, result), searchResultKeyboard(query, result.total));
                 return;

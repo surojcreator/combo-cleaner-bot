@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { cleanLine, cleanText, isEmail, isPhone, isUrlOrDomain } = require("../src/cleaner");
+const { cleanLine, cleanUserPassOnly, cleanText, isEmail, isPhone, isUrlOrDomain } = require("../src/cleaner");
 
 test("keeps plain email:password", () => {
     assert.equal(cleanLine("user@example.com:Passw0rd!"), "user@example.com:Passw0rd!");
@@ -261,4 +261,48 @@ test("cleanLine and cleanLinesArray preserve and enforce url:username/email/pass
 test("cleanLine normalizes zero-width spaces, directional marks, and non-breaking spaces", () => {
     const dirty = "\u200B\u200Euser@example.com\u200F:\u00A0Pass123\u2028";
     assert.equal(cleanLine(dirty), "user@example.com:Pass123");
-});
+});
+
+test("cleanUserPassOnly strips URLs and domain prefixes returning pure user:password", () => {
+    // 1. URL with protocol, path, and credentials
+    assert.equal(
+        cleanUserPassOnly("https://rewards.example.com/login:user@test.com:SecretPass123"),
+        "user@test.com:SecretPass123",
+    );
+    assert.equal(
+        cleanUserPassOnly("http://myportal.org:8080/auth:john_doe:Pass@word!"),
+        "john_doe:Pass@word!",
+    );
+
+    // 2. Domain prefix without protocol
+    assert.equal(
+        cleanUserPassOnly("service.com:john_doe:SecretPass"),
+        "john_doe:SecretPass",
+    );
+    assert.equal(
+        cleanUserPassOnly("login.live.com/oauth:user123:Pass123"),
+        "user123:Pass123",
+    );
+
+    // 3. Already clean email:password and user:password
+    assert.equal(
+        cleanUserPassOnly("user@example.com:Password!"),
+        "user@example.com:Password!",
+    );
+    assert.equal(
+        cleanUserPassOnly("plain_username:simplepassword"),
+        "plain_username:simplepassword",
+    );
+
+    // 4. Pipe-separated line
+    assert.equal(
+        cleanUserPassOnly("https://site.com/|user@test.com|secret"),
+        "user@test.com:secret",
+    );
+
+    // 5. Whitespace and null/empty handling
+    assert.equal(cleanUserPassOnly("   "), null);
+    assert.equal(cleanUserPassOnly(null), null);
+    assert.equal(cleanUserPassOnly(undefined), null);
+});
+

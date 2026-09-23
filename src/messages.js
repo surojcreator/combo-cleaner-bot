@@ -1,6 +1,7 @@
 "use strict";
 
 const { Markup } = require("telegraf");
+const { cleanUserPassOnly } = require("./cleaner");
 
 // Real HTML tags, built from char codes so no editor auto-formatter can
 // mangle them. These must be actual "<" / ">" for Telegram to render bold,
@@ -1942,7 +1943,10 @@ function renderSearch(query = "", result = {}) {
         `${tgEmoji("🔎")}  ${B("SEARCH RESULTS")} \u00B7 ${B(num(total))} hit${total === 1 ? "" : "s"} for ${CODE(escapeHtml(query))}`,
         RULE,
     ];
-    for (const line of matches) out.push(CODE(escapeHtml(line)));
+    for (const line of matches) {
+        const clean = cleanUserPassOnly(line) || line;
+        out.push(CODE(escapeHtml(clean)));
+    }
     if (total > shown) {
         out.push("", I("Showing first " + shown + " of " + num(total) + ` \u2014 /combine for the full file ${tgEmoji("📦")}`));
     }
@@ -2033,7 +2037,8 @@ function renderLocalSearch(params = {}) {
 
     lines.push(`👁  ${B(`Sample Matches (Showing ${matches.length} of ${num(total)}):`)}`);
     for (const m of matches.slice(0, 15)) {
-        lines.push(CODE(escapeHtml(m)));
+        const clean = cleanUserPassOnly(m) || m;
+        lines.push(CODE(escapeHtml(clean)));
     }
 
     if (total > matches.length) {

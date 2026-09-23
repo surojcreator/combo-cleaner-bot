@@ -239,7 +239,7 @@ test("7. renderLocalSearch formats single file and vault-wide cards properly", (
     const singleCard = renderLocalSearch({
         query: "gmail.com",
         total: 5,
-        matches: ["user1@gmail.com:pass1", "user2@gmail.com:pass2"],
+        matches: ["user1@gmail.com:pass1", "https://login.live.com/auth:user2@gmail.com:pass2"],
         fileName: "combo.txt",
         fileSize: 1024,
         isProc: true,
@@ -249,6 +249,8 @@ test("7. renderLocalSearch formats single file and vault-wide cards properly", (
     assert.match(singleCard, /combo\.txt/);
     assert.match(singleCard, /5.*hit/);
     assert.match(singleCard, /user1@gmail\.com:pass1/);
+    assert.match(singleCard, /<code>user2@gmail\.com:pass2<\/code>/);
+    assert.doesNotMatch(singleCard, /https:\/\/login\.live\.com/);
 
     const vaultCard = renderLocalSearch({
         query: "yahoo.com",

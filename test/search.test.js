@@ -40,3 +40,42 @@ test("renderSearch shows hits, empty state and truncation note", () => {
     const many = renderSearch("gmail", { total: 30, matches: Array(20).fill("a@gmail.com:x") });
     assert.match(many, /first 20 of 30/);
 });
+
+test("renderSearch returns cleaned user:password only, stripping URLs and domain prefixes", () => {
+    const rawMatches = [
+        "https://rewards.example.com/login:user1@test.com:pass123",
+        "service.com:john_doe:SecretPass",
+        "plain_user:simplepass",
+    ];
+    const rendered = renderSearch("test", { total: 3, matches: rawMatches });
+    assert.match(rendered, /<code>user1@test\.com:pass123<\/code>/);
+    assert.match(rendered, /<code>john_doe:SecretPass<\/code>/);
+    assert.match(rendered, /<code>plain_user:simplepass<\/code>/);
+    assert.doesNotMatch(rendered, /https:\/\/rewards\.example\.com/);
+    assert.doesNotMatch(rendered, /service\.com:john_doe/);
+});
+
+test("search export cleans and deduplicates credentials into user:password format", () => {
+    const rawMatches = [
+        "https://rewards.example.com/login:user1@test.com:pass123",
+        "https://rewards.example.com/account:user1@test.com:pass123", // duplicate user:pass from diff url
+        "service.com:john_doe:SecretPass",
+        "plain_user:simplepass",
+    ];
+    const { cleanUserPassOnly } = require("../src/cleaner");
+    const cleanedLines = [];
+    const seen = new Set();
+    for (const m of rawMatches) {
+        const clean = cleanUserPassOnly(m) || m;
+        if (!seen.has(clean)) {
+            seen.add(clean);
+            cleanedLines.push(clean);
+        }
+    }
+    assert.deepEqual(cleanedLines, [
+        "user1@test.com:pass123",
+        "john_doe:SecretPass",
+        "plain_user:simplepass",
+    ]);
+});
+

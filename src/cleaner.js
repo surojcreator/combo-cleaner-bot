@@ -1276,8 +1276,53 @@ function isCcLine(line) {
     return cleanCcLine(line) !== null;
 }
 
+/**
+ * Extract ONLY the cleaned `user:password` or `email:password` from any credential line,
+ * completely stripping any URL, scheme, or domain prefix.
+ *
+ * @param {string} rawLine
+ * @returns {string|null}
+ */
+function cleanUserPassOnly(rawLine) {
+    if (!rawLine || typeof rawLine !== "string") return null;
+    const trimmed = rawLine.trim();
+    if (!trimmed) return null;
+
+    // Standard path: cleanLine with keepUrl: false strips all domain/URL prefixes
+    const cleaned = cleanLine(trimmed, { keepUrl: false });
+    if (cleaned) return cleaned;
+
+    // Fallback if cleanLine returned null:
+    // Check if line starts with URL scheme (e.g. https://site.com/path:user:pass)
+    const schemeIdx = trimmed.indexOf("://");
+    if (schemeIdx > 0) {
+        const nextColon = trimmed.indexOf(":", schemeIdx + 3);
+        if (nextColon > 0) {
+            const remainder = trimmed.slice(nextColon + 1).trim();
+            const subClean = cleanLine(remainder, { keepUrl: false });
+            if (subClean) return subClean;
+            if (remainder.includes(":")) return remainder;
+        }
+    }
+
+    // Check if line starts with domain prefix (e.g. domain.com:user:pass)
+    const colonIdx = trimmed.indexOf(":");
+    if (colonIdx > 0) {
+        const prefix = trimmed.slice(0, colonIdx).trim().toLowerCase();
+        if ((prefix.includes(".") || prefix.includes("/")) && trimmed.indexOf(":", colonIdx + 1) > 0) {
+            const remainder = trimmed.slice(colonIdx + 1).trim();
+            const subClean = cleanLine(remainder, { keepUrl: false });
+            if (subClean) return subClean;
+            if (remainder.includes(":")) return remainder;
+        }
+    }
+
+    return trimmed;
+}
+
 module.exports = {
     cleanLine,
+    cleanUserPassOnly,
     cleanCcLine,
     isCcLine,
     isCreditCardLine: isCcLine,

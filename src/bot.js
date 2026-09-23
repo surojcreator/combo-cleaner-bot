@@ -6511,7 +6511,14 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
             const AdmZip = require("adm-zip");
             const zip = new AdmZip(filePath);
             const matches = [];
+            const seenMatches = new Set();
             let total = 0;
+
+            const TEXT_EXTS = new Set([
+                ".txt", ".log", ".csv", ".tsv", ".lst", ".list", ".dat",
+                ".json", ".xml", ".htm", ".html", ".bak", ".out", ".sql",
+                ".dump", ".text", ".reg", ".ini", ".conf", ".cfg"
+            ]);
 
             const searchZipEntries = (zipInstance, depth = 0) => {
                 if (depth > 3) return;
@@ -6538,34 +6545,17 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
                         continue;
                     }
 
-                    if (
-                        lowerName.endsWith(".txt") ||
-                        lowerName.endsWith(".log") ||
-                        lowerName.endsWith(".csv") ||
-                        lowerName.endsWith(".tsv") ||
-                        lowerName.endsWith(".lst") ||
-                        lowerName.endsWith(".list") ||
-                        lowerName.endsWith(".dat") ||
-                        lowerName.endsWith(".json") ||
-                        lowerName.endsWith(".xml") ||
-                        lowerName.endsWith(".htm") ||
-                        lowerName.endsWith(".html") ||
-                        lowerName.endsWith(".bak") ||
-                        lowerName.endsWith(".out") ||
-                        lowerName.endsWith(".sql") ||
-                        lowerName.endsWith(".dump") ||
-                        lowerName.endsWith(".text") ||
-                        lowerName.endsWith(".reg") ||
-                        lowerName.endsWith(".ini") ||
-                        lowerName.endsWith(".conf") ||
-                        lowerName.endsWith(".cfg") ||
-                        !lowerName.includes(".")
-                    ) {
+                    const dotIdx = lowerName.lastIndexOf(".");
+                    const ext = dotIdx === -1 ? "" : lowerName.slice(dotIdx);
+                    if (TEXT_EXTS.has(ext) || dotIdx === -1) {
                         const entryBuf = entry.getData();
-                        const subRes = searchBufferCI(entryBuf, q, limit - matches.length);
+                        const subRes = searchBufferCI(entryBuf, q, Math.max(0, limit - matches.length));
                         total += subRes.total;
                         for (const m of subRes.matches) {
-                            if (matches.length < limit && !matches.includes(m)) matches.push(m);
+                            if (matches.length < limit && !seenMatches.has(m)) {
+                                seenMatches.add(m);
+                                matches.push(m);
+                            }
                         }
                     }
                 }
@@ -6675,8 +6665,9 @@ async function searchAllVaultFiles(query, options = {}) {
     const fileResults = [];
     const startTime = Date.now();
 
-    // Concurrently process vault files in batches of 4 to maximize I/O and CPU throughput
-    const CONCURRENCY = 4;
+    // Concurrently process vault files in batches scaled to available CPU cores (4 to 8)
+    const os = require("os");
+    const CONCURRENCY = Math.min(8, Math.max(4, (os.cpus() || []).length || 4));
     for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
         if (signal && signal.aborted) {
             const err = new Error("SEARCH_ABORTED");

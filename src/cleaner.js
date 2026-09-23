@@ -1468,14 +1468,38 @@ function createSearchMatcher(query) {
     const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const regex = new RegExp(escaped, "i");
 
+    const qLower = q.toLowerCase();
+    const qUpper = q.toUpperCase();
+    const hasCaseDiff = qLower !== qUpper;
+
     const domain = extractSearchDomain(q);
-    if (domain && domain.toLowerCase() !== q.toLowerCase()) {
+    if (domain && domain.toLowerCase() !== qLower) {
         const domainEscaped = domain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const domainRegex = new RegExp(domainEscaped, "i");
-        return (line) => typeof line === "string" && (regex.test(line) || domainRegex.test(line));
+        const dLower = domain.toLowerCase();
+        const dUpper = domain.toUpperCase();
+        const dHasCaseDiff = dLower !== dUpper;
+
+        return (line) => {
+            if (typeof line !== "string") return false;
+            // Lightning fast native C++ substring checks
+            if (line.includes(qLower)) return true;
+            if (hasCaseDiff && line.includes(qUpper)) return true;
+            if (line.includes(dLower)) return true;
+            if (dHasCaseDiff && line.includes(dUpper)) return true;
+            // Case-insensitive regex fallback for mixed-case variations
+            return regex.test(line) || domainRegex.test(line);
+        };
     }
 
-    return (line) => typeof line === "string" && regex.test(line);
+    return (line) => {
+        if (typeof line !== "string") return false;
+        // Lightning fast native C++ substring checks
+        if (line.includes(qLower)) return true;
+        if (hasCaseDiff && line.includes(qUpper)) return true;
+        // Case-insensitive regex fallback for mixed-case variations
+        return regex.test(line);
+    };
 }
 
 /**

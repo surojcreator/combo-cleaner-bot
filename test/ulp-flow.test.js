@@ -676,6 +676,149 @@ test("ULP flow: interactive days selection buttons update menu and launch quick 
     }
 });
 
+test("ULP flow: quick search with registered callback payload resolves full query", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        let searchedOpts = null;
+        const peer = {
+            isReady: () => true,
+            searcherId: 8844520471,
+            async searchDayByDay(opts) {
+                searchedOpts = opts;
+                return { status: "done", daysProcessed: 5 };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+        const { registerCallbackPayload } = require("../src/messages");
+
+        const longDomain = "very-long-custom-target-domain-for-credential-search-pipeline-test.co.uk";
+        const callbackData = registerCallbackPayload("ulp:quick:", longDomain);
+
+        await bot.handleUpdate({
+            update_id: 301,
+            callback_query: {
+                id: "cb_quick_registered",
+                from: { id: OWNER_CHAT, is_bot: false, first_name: "Owner" },
+                message: { message_id: 50, chat: { id: OWNER_CHAT, type: "private" } },
+                data: callbackData,
+            },
+        });
+
+        assert.ok(searchedOpts, "expected searchDayByDay to be launched");
+        assert.equal(searchedOpts.query, longDomain, "expected resolved full domain query");
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+test("ULP flow: isSearcherMessage matches with leading @ in searchOptions.botUsername", () => {
+    const { isSearcherMessage } = require("../src/bot");
+    const meta = { searcherBotId: 12345 };
+    const ctx = {
+        from: { is_bot: true, username: "DumpNews14Bot", id: 12345 },
+        message: { text: "dump.txt" },
+    };
+    // Expected configured with leading @
+    assert.ok(isSearcherMessage(ctx, meta, { botUsername: "@DumpNews14Bot" }));
+    assert.ok(isSearcherMessage(ctx, meta, { botUsername: "DumpNews14Bot" }));
+});
+
+test("ULP flow: userbot date matching and batch date detection handle diverse formats", () => {
+    const { buttonMatchesDate, detectLatestBatchDate, parseAnyDate } = require("../src/userbot");
+    const target = new Date("2026-09-23T12:00:00Z");
+
+    // Standard DD.MM.YYYY
+    assert.ok(buttonMatchesDate({ text: "📅 23.09.2026", data: "folder:23.09.2026:batch" }, target));
+    // Single digit day/month
+    const singleDigit = new Date("2026-09-09T12:00:00Z");
+    assert.ok(buttonMatchesDate({ text: "9.9.2026", data: "folder:9.9.2026" }, singleDigit));
+    // YYYY-MM-DD
+    assert.ok(buttonMatchesDate({ text: "2026-09-23", data: "folder:2026-09-23" }, target));
+    // DD-MM-YYYY
+    assert.ok(buttonMatchesDate({ text: "23-09-2026", data: "folder:23-09-2026" }, target));
+    // DD/MM/YYYY
+    assert.ok(buttonMatchesDate({ text: "23/09/2026", data: "folder:23/09/2026" }, target));
+
+    // parseAnyDate
+    const parsed1 = parseAnyDate("23.09.2026");
+    assert.equal(parsed1?.getFullYear(), 2026);
+    assert.equal(parsed1?.getMonth(), 8);
+    assert.equal(parsed1?.getDate(), 23);
+
+    const parsed2 = parseAnyDate("2026-09-23");
+    assert.equal(parsed2?.getFullYear(), 2026);
+    assert.equal(parsed2?.getMonth(), 8);
+    assert.equal(parsed2?.getDate(), 23);
+
+    // detectLatestBatchDate
+    const mockMenu = {
+        replyMarkup: {
+            rows: [
+                {
+                    buttons: [
+                        { text: "15.09.2026", data: Buffer.from("folder:15.09.2026") },
+                        { text: "2026-09-22", data: Buffer.from("folder:2026-09-22:batch") },
+                        { text: "18.09.2026", data: Buffer.from("folder:18.09.2026") },
+                    ],
+                },
+            ],
+        },
+    };
+    const latest = detectLatestBatchDate(mockMenu);
+    assert.ok(latest);
+    assert.equal(latest.getFullYear(), 2026);
+    assert.equal(latest.getMonth(), 8);
+    assert.equal(latest.getDate(), 22);
+});
+
+test("ULP flow: ackSharedResult delivers document and card to owner chat when relayed from userbot", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        const USERBOT_ID = 55512345;
+        const bot = makeBot(api.apiRoot);
+
+        // Start a live run for OWNER_CHAT
+        searchbot.startRun(OWNER_CHAT, { query: "target.com", scope: "day" });
+
+        // Update arrives from the userbot account to the bot with forwarded document
+        await bot.handleUpdate({
+            update_id: 401,
+            message: {
+                message_id: 99,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: USERBOT_ID, type: "private" },
+                from: { id: USERBOT_ID, is_bot: false, first_name: "MyUserbot" },
+                document: {
+                    file_id: "doc-1234",
+                    file_name: "target.com_dump.txt",
+                    file_size: 1024,
+                },
+                caption: "#ulp target.com_dump.txt",
+            },
+        });
+
+        // Verify message was forwarded or sent to OWNER_CHAT (the requester), NOT USERBOT_ID
+        const ownerDeliveries = api.calls.filter(
+            (c) => (c.method === "forwardMessage" || c.method === "sendDocument") && c.payload.chat_id === OWNER_CHAT
+        );
+        assert.ok(ownerDeliveries.length > 0, "expected document to be delivered to OWNER_CHAT");
+
+        // Verify result card was sent to OWNER_CHAT
+        const ownerCards = api.calls.filter(
+            (c) => c.method === "sendMessage" && c.payload.chat_id === OWNER_CHAT
+        );
+        assert.ok(ownerCards.length > 0, "expected result card sent to OWNER_CHAT");
+
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
 test.after(() => {
     const { getSharedPool } = require("../src/worker-pool");
     getSharedPool().close();

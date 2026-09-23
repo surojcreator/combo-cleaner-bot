@@ -1991,7 +1991,9 @@ function createBot(token, meta = {}) {
     });
 
     bot.action(/^ulp:quick:(.+)$/, async (ctx) => {
-        const query = ctx.match[1];
+        const rawToken = ctx.match[1];
+        const resolved = resolveCallbackPayload(rawToken);
+        const query = searchbot.normalizeQuery(resolved) || resolved;
         if (store && store.addCustomDomain) {
             store.addCustomDomain(ctx.chat.id, query);
         }
@@ -3741,9 +3743,11 @@ function createBot(token, meta = {}) {
         }
         await ctx.answerCbQuery(`Scope \u00B7 ${scope}`).catch(() => { });
         const message = ctx.callbackQuery && ctx.callbackQuery.message;
+        const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         await beginUlpRun(ctx, {
             query: run.query,
             scope,
+            daysCount: activeDays,
             searchOptions,
             meta,
             ulpStartedAt,
@@ -5335,8 +5339,8 @@ function isSearcherMessage(ctx, meta, searchOptions) {
     if (!ctx || typeof ctx !== "object") return false;
     const from = ctx.from;
     if (!from || !from.is_bot || !ctx.message) return false;
-    const expected = String((searchOptions && searchOptions.botUsername) || "").toLowerCase();
-    const username = String(from.username || "").toLowerCase();
+    const expected = String((searchOptions && searchOptions.botUsername) || "").replace(/^@+/, "").toLowerCase();
+    const username = String(from.username || "").replace(/^@+/, "").toLowerCase();
     if (expected && username === expected) return true;
     if (meta && meta.searcherBotId && from.id === meta.searcherBotId) return true;
     return false;
@@ -5896,6 +5900,14 @@ async function ackSharedResult(ctx, params) {
     const query = run ? run.query : "";
     const scope = run ? run.scope : "day";
     const count = run ? run.results.length : 1;
+    const isRelayedFromUserbot = ctx.chat && ctx.chat.id !== chatId;
+    const targetCtx = isRelayedFromUserbot
+        ? {
+            telegram: ctx.telegram,
+            chat: { id: chatId },
+            reply: (text, extra) => ctx.telegram.sendMessage(chatId, text, extra),
+        }
+        : ctx;
 
     if (run && !run.headerSent) {
         run.headerSent = true;
@@ -5911,27 +5923,54 @@ async function ackSharedResult(ctx, params) {
         );
     }
 
-    await safeReply(
-        ctx,
-        renderUlpSharedResult({
-            searcherBot: searchOptions.botUsername,
-            query,
-            scope,
-            count,
-            hasDocument,
-        }),
-        {
-            reply_parameters: { message_id: msg.message_id },
-            ...ulpResultKeyboard(hasDocument),
-        },
-    );
+    if (isRelayedFromUserbot) {
+        if (hasDocument && msg.document) {
+            try {
+                await ctx.telegram.forwardMessage(chatId, ctx.chat.id, msg.message_id, {
+                    ...ulpResultKeyboard(true),
+                });
+            } catch {
+                await ctx.telegram.sendDocument(chatId, msg.document.file_id, {
+                    caption: `${tgEmoji("📦")} ${escapeHtml(msg.document.file_name || "dump.txt")}`,
+                    ...ulpResultKeyboard(true),
+                }).catch(() => { });
+            }
+        } else {
+            await safeReply(
+                targetCtx,
+                renderUlpSharedResult({
+                    searcherBot: searchOptions.botUsername,
+                    query,
+                    scope,
+                    count,
+                    hasDocument,
+                }),
+                ulpResultKeyboard(hasDocument),
+            );
+        }
+    } else {
+        await safeReply(
+            ctx,
+            renderUlpSharedResult({
+                searcherBot: searchOptions.botUsername,
+                query,
+                scope,
+                count,
+                hasDocument,
+            }),
+            {
+                reply_parameters: { message_id: msg.message_id },
+                ...ulpResultKeyboard(hasDocument),
+            },
+        );
+    }
 
     // Auto-clean the document immediately into the batch!
     if (hasDocument) {
         const doc = msg.document;
         const size = doc.file_size || 0;
         if (size <= MAX_DOWNLOAD_BYTES) {
-            const p = ingestDocument(ctx, doc, { keepUrl: false }).catch((err) => {
+            const p = ingestDocument(targetCtx, doc, { keepUrl: false }).catch((err) => {
                 console.error("auto ingestDocument failed:", err && err.message ? err.message : err);
             });
             trackIngestion(chatId, p);
@@ -5943,7 +5982,7 @@ async function ackSharedResult(ctx, params) {
                     root: localProcessRoot(),
                     fileName: name,
                 })
-                    .then((saved) => processFile(ctx, saved.path, null, { keepUrl: false }))
+                    .then((saved) => processFile(targetCtx, saved.path, null, { keepUrl: false }))
                     .catch((err) => {
                         console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
                     });

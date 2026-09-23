@@ -268,8 +268,142 @@ function parseDmyDate(str) {
 }
 
 /**
+ * Parse any date string format (DD.MM.YYYY, DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD, YYYY.MM.DD).
+ * @param {string} str
+ * @returns {Date|null}
+ */
+function parseAnyDate(str) {
+    if (!str) return null;
+    const s = String(str).trim();
+    const dmy = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+    if (dmy) {
+        return parseDmyDate(`${dmy[1]}.${dmy[2]}.${dmy[3]}`);
+    }
+    const ymd = s.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/);
+    if (ymd) {
+        return parseDmyDate(`${ymd[3]}.${ymd[2]}.${ymd[1]}`);
+    }
+    return null;
+}
+
+/**
+ * Check if a button matches target date in any representation.
+ * @param {any} btn
+ * @param {Date} targetDate
+ * @returns {boolean}
+ */
+function buttonMatchesDate(btn, targetDate) {
+    if (!btn || !targetDate || Number.isNaN(targetDate.getTime())) return false;
+    let dataStr = "";
+    try {
+        dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (Buffer.isBuffer(btn.data) ? btn.data.toString("utf8") : String(btn.data || ""));
+    } catch {
+        dataStr = "";
+    }
+    const textStr = String(btn.text || "");
+
+    const d = targetDate.getDate();
+    const dPad = String(d).padStart(2, "0");
+    const m = targetDate.getMonth() + 1;
+    const mPad = String(m).padStart(2, "0");
+    const y = targetDate.getFullYear();
+
+    const variants = [
+        `${dPad}.${mPad}.${y}`,
+        `${d}.${m}.${y}`,
+        `${dPad}-${mPad}-${y}`,
+        `${d}-${m}-${y}`,
+        `${y}-${mPad}-${dPad}`,
+        `${y}.${mPad}.${dPad}`,
+        `${dPad}/${mPad}/${y}`,
+        `${d}/${m}/${y}`,
+        `${dPad}.${mPad}`,
+        `${dPad}/${mPad}`,
+        `${dPad}-${mPad}`,
+        `${dPad}_${mPad}_${y}`,
+        `${y}_${mPad}_${dPad}`,
+    ];
+
+    for (const v of variants) {
+        if (
+            dataStr.startsWith(`folder:${v}:`) ||
+            dataStr === `folder:${v}` ||
+            dataStr.includes(v) ||
+            textStr.includes(v)
+        ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Check if message contains date folder or menu pagination buttons.
+ * @param {any} m
+ * @returns {boolean}
+ */
+function isMenuMessage(m) {
+    if (!m || !m.replyMarkup || !Array.isArray(m.replyMarkup.rows)) return false;
+    for (const row of m.replyMarkup.rows) {
+        if (!row || !Array.isArray(row.buttons)) continue;
+        for (const btn of row.buttons) {
+            if (!btn) continue;
+            const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (Buffer.isBuffer(btn.data) ? btn.data.toString("utf8") : String(btn.data || ""));
+            const textStr = String(btn.text || "");
+            if (
+                dataStr.includes("folder:") ||
+                dataStr.includes("menu:page:") ||
+                /\d{1,2}[./-]\d{1,2}/.test(textStr) ||
+                /\d{1,2}[./-]\d{1,2}/.test(dataStr) ||
+                textStr.includes("Next") ||
+                textStr.includes("➡️") ||
+                textStr.includes("▶️") ||
+                textStr.includes("»")
+            ) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * Check if button is a download/history dump button.
+ * @param {any} btn
+ * @returns {boolean}
+ */
+function isHistButton(btn) {
+    if (!btn) return false;
+    const dataStr = (btn.type && btn.type.data ? btn.type.data.toString() : (Buffer.isBuffer(btn.data) ? btn.data.toString("utf8") : String(btn.data || ""))).toLowerCase();
+    const textStr = String(btn.text || "").toLowerCase();
+    if (
+        dataStr.startsWith("hist:") ||
+        dataStr.includes("hist") ||
+        dataStr.includes("dump") ||
+        dataStr.includes("download") ||
+        dataStr.includes("file:") ||
+        dataStr.includes("dl:")
+    ) {
+        return true;
+    }
+    if (
+        textStr.includes("hist") ||
+        textStr.includes("history") ||
+        textStr.includes("full") ||
+        textStr.includes("dump") ||
+        textStr.includes("скачать") ||
+        textStr.includes("download") ||
+        textStr.includes("база") ||
+        textStr.includes("архив")
+    ) {
+        return true;
+    }
+    return false;
+}
+
+/**
  * Extract the newest batch date from the DumpNews14Bot menu message.
- * Inspects all buttons and returns the first date matching "DD.MM.YYYY".
+ * Inspects all buttons and returns the newest date.
  * @param {any} menuMsg
  * @returns {Date|null}
  */
@@ -277,6 +411,7 @@ function detectLatestBatchDate(menuMsg) {
     if (!menuMsg || !menuMsg.replyMarkup || !Array.isArray(menuMsg.replyMarkup.rows)) {
         return null;
     }
+    const foundDates = [];
     try {
         for (const row of menuMsg.replyMarkup.rows) {
             if (!row || !Array.isArray(row.buttons)) continue;
@@ -289,17 +424,26 @@ function detectLatestBatchDate(menuMsg) {
                     dataStr = "";
                 }
                 const textStr = String(btn.text || "");
-                const m = dataStr.match(/folder:(\d{1,2}\.\d{1,2}\.\d{4}):/) || textStr.match(/(\d{1,2}\.\d{1,2}\.\d{4})/);
-                if (m) {
-                    const parsed = parseDmyDate(m[1]);
-                    if (parsed) return parsed;
+                // Match DD.MM.YYYY, DD-MM-YYYY, DD/MM/YYYY
+                const dmy = dataStr.match(/(\d{1,2})[./-](\d{1,2})[./-](\d{4})/) || textStr.match(/(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
+                if (dmy) {
+                    const parsed = parseDmyDate(`${dmy[1]}.${dmy[2]}.${dmy[3]}`);
+                    if (parsed) foundDates.push(parsed);
+                }
+                // Match YYYY-MM-DD, YYYY.MM.DD
+                const ymd = dataStr.match(/(\d{4})[./-](\d{1,2})[./-](\d{1,2})/) || textStr.match(/(\d{4})[./-](\d{1,2})[./-](\d{1,2})/);
+                if (ymd) {
+                    const parsed = parseDmyDate(`${ymd[3]}.${ymd[2]}.${ymd[1]}`);
+                    if (parsed) foundDates.push(parsed);
                 }
             }
         }
     } catch {
         return null;
     }
-    return null;
+    if (foundDates.length === 0) return null;
+    foundDates.sort((a, b) => b.getTime() - a.getTime());
+    return foundDates[0];
 }
 
 async function syncCustomEmojis(peer) {
@@ -408,6 +552,10 @@ module.exports = {
     formatDateDmy,
     previousDate,
     parseDmyDate,
+    parseAnyDate,
+    buttonMatchesDate,
+    isMenuMessage,
+    isHistButton,
     detectLatestBatchDate,
     createUserbot,
     syncCustomEmojis,
@@ -1080,6 +1228,8 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             );
                             if (Array.isArray(recents)) {
                                 menuMsg =
+                                    recents.find((m) => !m.out && sentStart && m.id > sentStart.id && isMenuMessage(m)) ||
+                                    recents.find((m) => !m.out && isMenuMessage(m)) ||
                                     recents.find((m) => !m.out && sentStart && m.id > sentStart.id && m.replyMarkup && m.replyMarkup.rows && m.replyMarkup.rows.length > 0) ||
                                     recents.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows && m.replyMarkup.rows.length > 0);
                                 if (menuMsg) break;
@@ -1122,6 +1272,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                     const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (Buffer.isBuffer(btn.data) ? btn.data.toString("utf8") : String(btn.data || ""));
                                     const textStr = String(btn.text || "");
                                     if (
+                                        buttonMatchesDate(btn, currentDate) ||
                                         dataStr.startsWith(`folder:${dateStr}:`) ||
                                         dataStr === `folder:${dateStr}` ||
                                         textStr.includes(dateStr) ||
@@ -1285,14 +1436,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                                     } catch (resErr) {
                                                         log.error("userbot onResult error:", resErr && resErr.message ? resErr.message : resErr);
                                                     }
-                                                } else if (resultSink) {
+                                                }
+                                                if (resultSink) {
                                                     try {
                                                         await resultSink(m);
                                                     } catch (sinkErr) {
                                                         log.error("userbot resultSink error:", sinkErr && sinkErr.message ? sinkErr.message : sinkErr);
                                                     }
                                                 }
-                                                if (!resultSink && chatId && typeof forwardResult === "function") {
+                                                if (chatId && typeof forwardResult === "function") {
                                                     await forwardResult(chatId, m, { botUsername: options.botUsername || botUsername || cfg.botUsername }).catch(() => {});
                                                 }
                                             }
@@ -1312,15 +1464,16 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     let folderView = null;
                     let histBtn = null;
 
-                    for (let histScan = 0; histScan < 5; histScan++) {
+                    for (let histScan = 0; histScan < 6; histScan++) {
                         if (shouldStop()) return { status: "stopped", daysProcessed };
+                        let candidateMsg = null;
                         try {
                             const byId = await client.getMessages(searchTarget, { ids: [menuMsg.id] });
                             if (byId && byId[0] && byId[0].replyMarkup && byId[0].replyMarkup.rows) {
-                                folderView = byId[0];
+                                candidateMsg = byId[0];
                             }
                         } catch {}
-                        if (!folderView) {
+                        if (!candidateMsg || !isHistButton(candidateMsg.replyMarkup?.rows?.[0]?.buttons?.[0])) {
                             try {
                                 const folderMsgs = await withTimeout(
                                     client.getMessages(searchTarget, { limit: 6 }),
@@ -1328,22 +1481,25 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                     "userbot getMessages folder",
                                 );
                                 if (Array.isArray(folderMsgs)) {
-                                    folderView = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuMsg;
+                                    const matchWithHist = folderMsgs.find((m) => !m.out && m.replyMarkup && Array.isArray(m.replyMarkup.rows) && m.replyMarkup.rows.some((r) => r.buttons && r.buttons.some((b) => isHistButton(b))));
+                                    if (matchWithHist) candidateMsg = matchWithHist;
+                                    else if (!candidateMsg) candidateMsg = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuMsg;
                                 }
                             } catch (fErr) {
                                 log.error("userbot getMessages folder error:", fErr && fErr.message ? fErr.message : fErr);
                             }
-                            if (!folderView) folderView = menuMsg;
                         }
+                        if (!candidateMsg) candidateMsg = menuMsg;
 
-                        if (folderView && folderView.replyMarkup && Array.isArray(folderView.replyMarkup.rows)) {
-                            for (const row of folderView.replyMarkup.rows) {
+                        if (candidateMsg && candidateMsg.replyMarkup && Array.isArray(candidateMsg.replyMarkup.rows)) {
+                            for (const row of candidateMsg.replyMarkup.rows) {
                                 if (!row || !Array.isArray(row.buttons)) continue;
                                 for (const btn of row.buttons) {
                                     if (!btn) continue;
                                     const dataStr = btn.type && btn.type.data ? btn.type.data.toString() : (Buffer.isBuffer(btn.data) ? btn.data.toString("utf8") : String(btn.data || ""));
                                     const textStr = String(btn.text || "");
                                     if (
+                                        isHistButton(btn) ||
                                         dataStr.startsWith(`hist:${dateStr}`) ||
                                         dataStr.includes("hist:") ||
                                         textStr.includes("hist") ||
@@ -1353,6 +1509,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                         textStr.includes("Dump")
                                     ) {
                                         histBtn = { text: textStr, data: dataStr };
+                                        folderView = candidateMsg;
                                         break;
                                     }
                                 }
@@ -1421,14 +1578,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                                     } catch (resErr) {
                                                         log.error("userbot onResult error:", resErr && resErr.message ? resErr.message : resErr);
                                                     }
-                                                } else if (resultSink) {
+                                                }
+                                                if (resultSink) {
                                                     try {
                                                         await resultSink(m);
                                                     } catch (sinkErr) {
                                                         log.error("userbot resultSink error:", sinkErr && sinkErr.message ? sinkErr.message : sinkErr);
                                                     }
                                                 }
-                                                if (!resultSink && chatId && typeof forwardResult === "function") {
+                                                if (chatId && typeof forwardResult === "function") {
                                                     await forwardResult(chatId, m, {
                                                         botUsername: options.botUsername || botUsername || cfg.botUsername,
                                                     }).catch((err) => {

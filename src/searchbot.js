@@ -74,6 +74,7 @@ function normalizeQuery(raw) {
     // One step = one Telegram message, so no line breaks / tabs allowed.
     if (/[\r\n\t]/.test(input)) return null;
     input = input.replace(/^@+/, "").trim();
+    input = input.replace(/^["'`]+|["'`]+$/g, "").trim();
 
     // Strip URL scheme, path, query, hash if user passed a URL
     if (/^https?:\/\//i.test(input)) {

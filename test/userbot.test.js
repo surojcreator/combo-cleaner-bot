@@ -539,6 +539,7 @@ test("searchDayByDay paces day-to-day search with 14 seconds (14000ms) by defaul
     let folderOpened = false;
     const mockClient = {
         async sendMessage(peer, { message }) {
+            if (message === "/start") folderOpened = false;
             return { id: 101, message };
         },
         async getMessages(peer, { limit, ids }) {

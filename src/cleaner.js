@@ -791,12 +791,12 @@ function cleanLine(rawLine, options = {}) {
                     if (cleanPass.length > 0 && !isJunkPair(user, cleanPass)) {
                         if (user.includes("@")) {
                             if (EMAIL_RE.test(user)) {
-                                return keepUrl ? line : `${user}:${cleanPass}`;
+                                return `${user}:${cleanPass}`;
                             }
                         } else if (isPhone(user)) {
-                            return keepUrl ? line : `${user}:${cleanPass}`;
+                            return `${user}:${cleanPass}`;
                         } else if (isUsername(user, cleanPass)) {
-                            return keepUrl ? line : `${user}:${cleanPass}`;
+                            return `${user}:${cleanPass}`;
                         }
                     }
                 }
@@ -933,13 +933,13 @@ function cleanLine(rawLine, options = {}) {
                 const rest = stripTrailingMetadata(rawRest);
                 if (rest && !isJunkPair(firstToken, rest)) {
                     if (firstToken.includes("@") && isEmail(firstToken)) {
-                        return keepUrl ? normalizeUlpOutput(strippedLine) : `${firstToken}:${rest}`;
+                        return `${firstToken}:${rest}`;
                     }
                     if (isPhone(firstToken)) {
-                        return keepUrl ? normalizeUlpOutput(strippedLine) : `${firstToken}:${rest}`;
+                        return `${firstToken}:${rest}`;
                     }
                     if (isUsername(firstToken, rest)) {
-                        return keepUrl ? normalizeUlpOutput(strippedLine) : `${firstToken}:${rest}`;
+                        return `${firstToken}:${rest}`;
                     }
                 }
             }

@@ -553,6 +553,12 @@ function resolveCallbackPayload(token) {
         const id = str.slice(4);
         return callbackPayloadMap.get(id) || id;
     }
+    const refIdx = str.lastIndexOf(":ref:");
+    if (refIdx !== -1) {
+        const id = str.slice(refIdx + 5);
+        const resolved = callbackPayloadMap.get(id);
+        if (resolved !== undefined) return resolved;
+    }
     return str;
 }
 
@@ -564,13 +570,13 @@ function prepareButton(btn) {
     if (!btn || typeof btn !== "object") return btn;
     attachButtonEmoji(btn);
     if (typeof btn.callback_data === "string" && Buffer.byteLength(btn.callback_data, "utf8") > 64) {
-        const firstColon = btn.callback_data.indexOf(":");
-        const prefix = firstColon > 0 && firstColon <= 30
-            ? btn.callback_data.slice(0, firstColon + 1)
-            : "cb:";
-        const payload = firstColon > 0 && firstColon <= 30
-            ? btn.callback_data.slice(firstColon + 1)
-            : btn.callback_data;
+        const lastColon = btn.callback_data.lastIndexOf(":");
+        const prefix = (lastColon > 0 && lastColon <= 35)
+            ? btn.callback_data.slice(0, lastColon + 1)
+            : (btn.callback_data.indexOf(":") > 0 && btn.callback_data.indexOf(":") <= 35
+                ? btn.callback_data.slice(0, btn.callback_data.indexOf(":") + 1)
+                : "cb:");
+        const payload = btn.callback_data.slice(prefix.length);
         btn.callback_data = registerCallbackPayload(prefix, payload);
         if (Buffer.byteLength(btn.callback_data, "utf8") > 64) {
             btn.callback_data = registerCallbackPayload("cb:", btn.callback_data);
@@ -1933,9 +1939,6 @@ function searchResultKeyboard(query, total = 0) {
 /**
  * Render local search result message.
  */
-/**
- * Render local search result message.
- */
 function renderLocalSearch(params = {}) {
     const p = (params && typeof params === "object") ? params : {};
     const query = String(p.query || "");
@@ -1944,7 +1947,7 @@ function renderLocalSearch(params = {}) {
     const fileName = p.fileName || null;
     const fileSize = p.fileSize || 0;
     const fileResults = Array.isArray(p.fileResults) ? p.fileResults : null;
-    const isAll = Boolean(p.isAll || fileResults);
+    const isAll = Boolean(p.isAll || (Array.isArray(fileResults) && fileResults.length > 0));
 
     const lines = [];
     lines.push(
@@ -2019,7 +2022,8 @@ function localSearchResultKeyboard(params = {}) {
     const isAll = Boolean(p.isAll);
 
     if (total > 0 && query) {
-        const dlPayload = isAll ? `all:${query}` : `${isProc ? "proc" : "raw"}:${fileIdx}:${query}`;
+        const safeIdx = (typeof fileIdx === "number" || (typeof fileIdx === "string" && !isNaN(parseInt(fileIdx, 10)))) ? parseInt(fileIdx, 10) : 0;
+        const dlPayload = isAll ? `all:${query}` : `${isProc ? "proc" : "raw"}:${safeIdx}:${query}`;
         rows.push([
             Markup.button.callback(`📥 Download Matches (${num(total)})`, registerCallbackPayload("lsearch:dl:", dlPayload)),
         ]);
@@ -2028,7 +2032,7 @@ function localSearchResultKeyboard(params = {}) {
     const actionRow = [];
     if (!isAll && fileIdx !== null) {
         actionRow.push(Markup.button.callback("🔍 Search File Again", `file:search:${isProc ? "proc:" : ""}${fileIdx}`));
-        actionRow.push(Markup.button.callback("🌐 Search All Vault", registerCallbackPayload("lsearch:all:run:", query)));
+        actionRow.push(Markup.button.callback("🌐 Search All Vault", query ? registerCallbackPayload("lsearch:all:run:", query) : "lsearch:prompt"));
     } else {
         actionRow.push(Markup.button.callback("🔍 New Vault Search", "lsearch:prompt"));
     }

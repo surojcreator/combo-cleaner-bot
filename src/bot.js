@@ -1570,7 +1570,7 @@ function createBot(token, meta = {}) {
 
     bot.action(/^file:dosearch:(\d+):(.+)$/, async (ctx) => {
         const idx = parseInt(ctx.match[1], 10);
-        const query = ctx.match[2];
+        const query = resolveCallbackPayload(ctx.match[2]);
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
         const rawFiles = scanDirFiles(localProcessRoot());
         const file = rawFiles[idx];
@@ -1709,7 +1709,7 @@ function createBot(token, meta = {}) {
 
     bot.action(/^file:dosearch:proc:(\d+):(.+)$/, async (ctx) => {
         const idx = parseInt(ctx.match[1], 10);
-        const query = ctx.match[2];
+        const query = resolveCallbackPayload(ctx.match[2]);
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
         const processedFiles = scanDirFiles(localProcessedRoot());
         const file = processedFiles[idx];
@@ -1894,22 +1894,71 @@ function createBot(token, meta = {}) {
         const stamp = new Date().toISOString().slice(0, 10);
         const filename = `vault_search_${label}_${sanitizeSiteSlug(query)}_${stamp}.txt`;
 
-        await safeSendDocument(
-            ctx,
-            ctx.chat && ctx.chat.id,
-            { source: buffer, filename },
-            {
-                caption: [
-                    `📥  ${B("VAULT SEARCH EXPORT")}  ${tgEmoji("⚡️")}`,
+        if (buffer.length > 48 * 1024 * 1024) {
+            const dl = downloads.registerDownload({
+                filename,
+                buffer,
+                size: buffer.length,
+                chatId: ctx.chat && ctx.chat.id,
+            });
+            await safeReply(
+                ctx,
+                [
+                    `📦  ${B("SEARCH EXPORT EXCEEDS TELEGRAM UPLOAD CAP")}`,
                     RULE,
-                    `🎯  Query: ${CODE(escapeHtml(query))}`,
-                    `💎  Matches: ${B(num(matches.length))} lines`,
-                    `📁  Source: ${label === "all_vault" ? "All Vault Files" : label}`,
+                    `📄  ${B(escapeHtml(filename))} (${humanSize(buffer.length)}) exceeds Telegram's 50 MB Bot API limit.`,
+                    "",
+                    `🔗  ${B("Direct Download Link:")}`,
+                    `${dl.url}`,
+                    "",
+                    `👇 ${I("Tap the button below to download directly in your browser:")}`,
                 ].join("\n"),
-                parse_mode: "HTML",
-                ...mainKeyboard(),
-            }
-        );
+                createInlineKeyboard([
+                    [Markup.button.url("📥 Direct Download Link", dl.url)],
+                    [Markup.button.callback("🔙 Server Vault", "server_files")],
+                ]),
+            );
+            return;
+        }
+
+        try {
+            await ctx.replyWithChatAction("upload_document").catch(() => { });
+            await safeSendDocument(
+                ctx,
+                ctx.chat && ctx.chat.id,
+                { source: buffer, filename },
+                {
+                    caption: [
+                        `📥  ${B("VAULT SEARCH EXPORT")}  ${tgEmoji("⚡️")}`,
+                        RULE,
+                        `🎯  Query: ${CODE(escapeHtml(query))}`,
+                        `💎  Matches: ${B(num(matches.length))} lines`,
+                        `📁  Source: ${label === "all_vault" ? "All Vault Files" : label}`,
+                    ].join("\n"),
+                    parse_mode: "HTML",
+                    ...mainKeyboard(),
+                },
+            );
+        } catch (err) {
+            const dl = downloads.registerDownload({
+                filename,
+                buffer,
+                size: buffer.length,
+                chatId: ctx.chat && ctx.chat.id,
+            });
+            await safeReply(
+                ctx,
+                [
+                    `⚠️ Telegram upload failed: ${escapeHtml(err.message)}`,
+                    "",
+                    `🔗  ${B("Direct Download Link:")} ${dl.url}`,
+                ].join("\n"),
+                createInlineKeyboard([
+                    [Markup.button.url("📥 Download Directly", dl.url)],
+                    [Markup.button.callback("🔙 Server Vault", "server_files")],
+                ]),
+            );
+        }
     });
 
     bot.action("ulp:menu", async (ctx) => {
@@ -2137,20 +2186,70 @@ function createBot(token, meta = {}) {
         const buffer = Buffer.from(matches.join("\n"), "utf8");
         const stamp = new Date().toISOString().slice(0, 10);
         const filename = `search_${sanitizeSiteSlug(query)}_${stamp}.txt`;
-        await safeSendDocument(
-            ctx,
-            ctx.chat && ctx.chat.id,
-            { source: buffer, filename },
-            {
-                caption: [
-                    `📥  ${B("SEARCH EXPORT READY")}  ⚡️`,
-                    `🎯  Query: ${CODE(escapeHtml(query))}`,
-                    `💎  Matches: ${B(num(matches.length))} lines`,
+
+        if (buffer.length > 48 * 1024 * 1024) {
+            const dl = downloads.registerDownload({
+                filename,
+                buffer,
+                size: buffer.length,
+                chatId: ctx.chat && ctx.chat.id,
+            });
+            await safeReply(
+                ctx,
+                [
+                    `📦  ${B("SEARCH EXPORT EXCEEDS TELEGRAM UPLOAD CAP")}`,
+                    RULE,
+                    `📄  ${B(escapeHtml(filename))} (${humanSize(buffer.length)}) exceeds Telegram's 50 MB Bot API limit.`,
+                    "",
+                    `🔗  ${B("Direct Download Link:")}`,
+                    `${dl.url}`,
+                    "",
+                    `👇 ${I("Tap the button below to download directly in your browser:")}`,
                 ].join("\n"),
-                parse_mode: "HTML",
-                ...afterCombineKeyboard(),
-            },
-        );
+                createInlineKeyboard([
+                    [Markup.button.url("📥 Direct Download Link", dl.url)],
+                    [Markup.button.callback("🔙 Main Menu", "help")],
+                ]),
+            );
+            return;
+        }
+
+        try {
+            await ctx.replyWithChatAction("upload_document").catch(() => { });
+            await safeSendDocument(
+                ctx,
+                ctx.chat && ctx.chat.id,
+                { source: buffer, filename },
+                {
+                    caption: [
+                        `📥  ${B("SEARCH EXPORT READY")}  ⚡️`,
+                        `🎯  Query: ${CODE(escapeHtml(query))}`,
+                        `💎  Matches: ${B(num(matches.length))} lines`,
+                    ].join("\n"),
+                    parse_mode: "HTML",
+                    ...afterCombineKeyboard(),
+                },
+            );
+        } catch (err) {
+            const dl = downloads.registerDownload({
+                filename,
+                buffer,
+                size: buffer.length,
+                chatId: ctx.chat && ctx.chat.id,
+            });
+            await safeReply(
+                ctx,
+                [
+                    `⚠️ Telegram upload failed: ${escapeHtml(err.message)}`,
+                    "",
+                    `🔗  ${B("Direct Download Link:")} ${dl.url}`,
+                ].join("\n"),
+                createInlineKeyboard([
+                    [Markup.button.url("📥 Download Directly", dl.url)],
+                    [Markup.button.callback("🔙 Main Menu", "help")],
+                ]),
+            );
+        }
     });
 
     bot.action("help:save", async (ctx) => {

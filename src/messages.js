@@ -815,10 +815,10 @@ function afterCombineKeyboard(downloadUrl = null) {
     }
     rows.push([
         Markup.button.callback("📦 Send Again", "combine"),
-        Markup.button.callback("📊 Stats", "stats"),
+        Markup.button.callback("📊 Batch Analytics", "stats"),
     ]);
     rows.push([
-        Markup.button.callback("🚀 ULP Search", "ulp:menu"),
+        Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
         Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
     ]);
     rows.push([
@@ -845,10 +845,10 @@ function forwardedLogsKeyboard(downloadUrl = "", token = null) {
     if (token) {
         row2.push(Markup.button.callback("📦 Send in Telegram", `send_telegram:${token}`));
     }
-    row2.push(Markup.button.callback("📊 Stats", "stats"));
+    row2.push(Markup.button.callback("📊 Batch Analytics", "stats"));
     rows.push(row2);
     rows.push([
-        Markup.button.callback("🚀 ULP Search", "ulp:menu"),
+        Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
         Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
     ]);
     rows.push([
@@ -875,10 +875,10 @@ function forwardedZipKeyboard(downloadUrl = "", token = null) {
     if (token) {
         row2.push(Markup.button.callback("📦 Send in Telegram", `send_telegram:${token}`));
     }
-    row2.push(Markup.button.callback("📊 Stats", "stats"));
+    row2.push(Markup.button.callback("📊 Batch Analytics", "stats"));
     rows.push(row2);
     rows.push([
-        Markup.button.callback("🚀 ULP Search", "ulp:menu"),
+        Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
         Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
     ]);
     rows.push([
@@ -1338,6 +1338,7 @@ function saveGuideKeyboard() {
             Markup.button.callback("📂 Open Server Vault", "server_files"),
         ],
         [
+            Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
             Markup.button.callback("🔙 Main Menu", "help"),
         ],
     ]);
@@ -1358,6 +1359,9 @@ function searchPromptKeyboard() {
         ],
         [
             Markup.button.callback("📧 @proton.me", "batch:quicksearch:proton"),
+            Markup.button.callback("🌐 .com", "batch:quicksearch:.com"),
+        ],
+        [
             Markup.button.callback("🚫 Cancel Search", "help"),
         ],
     ]);
@@ -1374,14 +1378,19 @@ function renderSaveGuide() {
         `  1️⃣  ${B("Reply to any file")} with ${CODE("/save")}.`,
         `  2️⃣  Streams directly to server disk & cleans into batch!`,
         "",
-        `📦  ${B("Option 2: Multi-File Batch Save")}`,
+        `📦  ${B("Option 2: Multi-File Batch Forward")}`,
         `  1️⃣  ${B("Forward multiple files")} at once into this chat or group.`,
         `  2️⃣  Type ${CODE("/batchsave")} (or ${CODE("/batchsave 20")}).`,
-        `  3️⃣  The userbot downloads & cleans all forwarded files sequentially in one run!`,
+        `  3️⃣  Userbot downloads & cleans all forwarded files sequentially!`,
+        "",
+        `📥  ${B("Option 3: Interactive Listening Mode")}`,
+        `  1️⃣  Tap ${B("Start Save Mode Now")} below.`,
+        `  2️⃣  Drop or forward files at your own pace (buffered safely in memory).`,
+        `  3️⃣  Tap ${B("Done")} or send ${CODE("/done")} to process all queued files.`,
         "",
         `✨ ${I("No file size limits on the server! Bypass the 20MB bot limit with your MTProto userbot.")}`,
         RULE,
-        `👇 ${I("Tap below to open your server vault:")}`,
+        `👇 ${I("Tap below to start saving or explore your server vault:")}`,
     ].join("\n");
 }
 
@@ -1394,13 +1403,13 @@ function renderSaveListeningPrompt(botUsername = null) {
         `📥  ${B("SAVE MODE ACTIVE")}  (OR ${B("REPLY TO A FILE")})  ${tgEmoji("⚡️")}`,
         RULE,
         `Forward or upload your log files now!`,
-        `Files will queue up. When you're finished, send ${CODE("/done")} or tap Done to save & clean them ${B("one by one")}.`,
+        `Files will queue up safely. When finished, tap ${B("Done")} or send ${CODE("/done")} to save & clean them ${B("one by one")}.`,
         "",
         `📁  Supported: ${B(".zip")}, ${B(".txt")}, ${B(".log")}, ${B(".csv")}, ${B(".tsv")}`,
         `⚡️  Forward from any group or channel — files will be buffered until you finalize.`,
         `📌  ${I("Tip: You can also reply directly to an existing document with /save.")}`,
-        "",
-        `${I("When finished forwarding, tap Done below or send /done to start saving.")}`,
+        RULE,
+        `👇 ${I("When finished forwarding, tap Done below or send /done to start saving:")}`,
     ].join("\n");
 }
 
@@ -1578,9 +1587,18 @@ function mergeCompleteKeyboard(outName = "") {
  */
 function emptyBatchKeyboard() {
     return createInlineKeyboard([
-        [Markup.button.callback("🚀 Run ULP Search", "ulp:menu"), Markup.button.callback("📥 Save Large Files", "save:start")],
-        [Markup.button.callback("📂 Server Vault", "server_files"), Markup.button.callback("📊 Stats", "stats")],
-        [Markup.button.callback("❓ Help Manual", "help")],
+        [
+            Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
+            Markup.button.callback("📥 Save Large Files", "save:start"),
+        ],
+        [
+            Markup.button.callback("📂 Server Vault (Tabs)", "server_files"),
+            Markup.button.callback("📊 Batch Analytics", "stats"),
+        ],
+        [
+            Markup.button.callback("❓ Fast /save Guide", "help:save"),
+            Markup.button.callback("🔄 Refresh Menu", "help"),
+        ],
     ]);
 }
 
@@ -1590,8 +1608,8 @@ function emptyBatchKeyboard() {
 function confirmClearKeyboard() {
     return createInlineKeyboard([
         [
-            Markup.button.callback("⚠️ Yes, wipe it", "clear:yes"),
-            Markup.button.callback("❌ Keep it", "clear:no"),
+            Markup.button.callback("⚠️ Yes, Wipe Batch", "clear:yes"),
+            Markup.button.callback("❌ Keep Batch (Cancel)", "clear:no"),
         ],
     ]);
 }
@@ -1621,6 +1639,12 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
         `  • ${tgEmoji("📦")} ${B("Active Batch Vault:")}  ${B(num(batchSize))} unique lines (${num(batchFiles)} files)`,
         `  • ${tgEmoji("🤖")} ${B("Connected ULP Bot:")}   ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
         `  • ${tgEmoji("🚀")} ${B("Engine Mode:")}         ${B("TURBO 100% CPU SATURATION")}`,
+        RULE,
+        `${tgEmoji("💡")}  ${B("QUICK ACTION WORKFLOWS")}`,
+        `  • ${tgEmoji("🚀")} ${B("ULP Search:")} Automate day-by-day searches & URL-stripped cleaning`,
+        `  • ${tgEmoji("📥")} ${B("Save Large Files:")} Bypass 20MB limit via MTProto userbot`,
+        `  • ${tgEmoji("📂")} ${B("Server Vault:")} Tabbed disk storage, multi-file select & background merge`,
+        `  • ${tgEmoji("📦")} ${B("Get Combined File:")} Instant deduplicated, sanitized master export`,
         RULE,
         "",
         `${tgEmoji("✨")}  ${B("INTERACTIVE ACTION DASHBOARD")}`,
@@ -1908,18 +1932,78 @@ function renderPreview(sample = [], total = 0) {
         return [
             `${tgEmoji("👁")}  ${B("PREVIEW")}  ${tgEmoji("⚡️")}`,
             RULE,
-            `${tgEmoji("📭")} Batch is empty \u2014 nothing to preview.`,
+            `${tgEmoji("📭")} ${B("Status:")} Batch is empty \u2014 nothing to preview.`,
             "",
-            `${I(`Send a .zip or .txt first ${tgEmoji("📤")}`)}`,
+            `${I(`Send or forward a .zip or .txt first ${tgEmoji("📤")}`)}`,
         ].join("\n");
     }
     return [
         `${tgEmoji("👁")}  ${B("PREVIEW")} \u00B7 first ${num(sample.length)} of ${B(compact(total))}  ${tgEmoji("💎")}`,
         RULE,
-        ...sample.map((line) => `${CODE(escapeHtml(line))}`),
-        "",
+        ...sample.map((line, idx) => `${B(`[${idx + 1}]`)} ${CODE(escapeHtml(line))}`),
+        RULE,
         `${I(`Credentials are sensitive \u2014 delete this message when done ${tgEmoji("🗑️")}`)}`,
     ].join("\n");
+}
+
+/**
+ * Keyboard shown under line preview.
+ * @param {number} [total]
+ */
+function previewKeyboard(total = 0) {
+    return createInlineKeyboard([
+        [
+            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+        ],
+        [
+            Markup.button.callback("📊 Batch Analytics", "stats"),
+            Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+        ],
+        [
+            Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
+}
+
+/**
+ * Keyboard shown under batch statistics dashboard.
+ * @param {boolean} [hasData]
+ */
+function statsKeyboard(hasData = true) {
+    if (!hasData) {
+        return createInlineKeyboard([
+            [
+                Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
+                Markup.button.callback("📥 Save Large Files", "save:start"),
+            ],
+            [
+                Markup.button.callback("📂 Server Vault (Tabs)", "server_files"),
+                Markup.button.callback("❓ Fast /save Guide", "help:save"),
+            ],
+            [
+                Markup.button.callback("🔙 Main Menu", "help"),
+            ],
+        ]);
+    }
+    return createInlineKeyboard([
+        [
+            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+        ],
+        [
+            Markup.button.callback("👁 Line Preview", "preview"),
+            Markup.button.callback("🌐 Manage Domains", "sites"),
+        ],
+        [
+            Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
+            Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+        ],
+        [
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
 }
 
 /**
@@ -1967,15 +2051,24 @@ function searchResultKeyboard(query, total = 0) {
         rows.push([
             Markup.button.callback(`📥 Download "${shortQ}" (${num(total)})`, registerCallbackPayload("search:dl:", cleanQ)),
         ]);
+        rows.push([
+            Markup.button.callback("🔍 Search Again", "batch:search:prompt"),
+            Markup.button.callback("📦 Get Combined File", "combine"),
+        ]);
+        rows.push([
+            Markup.button.callback("📊 Batch Analytics", "stats"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ]);
+    } else {
+        rows.push([
+            Markup.button.callback("🔍 Search Again", "batch:search:prompt"),
+            Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
+        ]);
+        rows.push([
+            Markup.button.callback("📂 Server Vault", "server_files"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ]);
     }
-    rows.push([
-        Markup.button.callback("🔍 Search Again", "batch:search:prompt"),
-        Markup.button.callback("📦 Get Combined File", "combine"),
-    ]);
-    rows.push([
-        Markup.button.callback("📊 System Stats", "stats"),
-        Markup.button.callback("🔙 Main Menu", "help"),
-    ]);
     return createInlineKeyboard(rows);
 }
 
@@ -3038,6 +3131,8 @@ module.exports = {
     renderLocalSearchHub,
     localSearchHubKeyboard,
     localFileSearchKeyboard,
+    previewKeyboard,
+    statsKeyboard,
 };
 
 

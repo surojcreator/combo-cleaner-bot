@@ -88,6 +88,8 @@ const {
     renderLocalSearchHub,
     localSearchHubKeyboard,
     localFileSearchKeyboard,
+    previewKeyboard,
+    statsKeyboard,
 } = require("./messages");
 
 // Telegram Bot API caps bot downloads at 20 MB.
@@ -277,7 +279,8 @@ function createBot(token, meta = {}) {
 
     bot.command("stats", async (ctx) => {
         userPromptState.delete(ctx.chat.id);
-        await safeReply(ctx, renderStats(store.getStats(ctx.chat.id)), mainKeyboard());
+        const stats = store.getStats(ctx.chat.id);
+        await safeReply(ctx, renderStats(stats), statsKeyboard(stats && stats.size > 0));
     });
 
     bot.command("sites", async (ctx) => {
@@ -344,7 +347,7 @@ function createBot(token, meta = {}) {
         const lines = store.getLines(chatId);
         const sample = lines.slice(0, 10);
         const text = renderPreview(sample, lines.length);
-        await safeReply(ctx, text, lines.length === 0 ? emptyBatchKeyboard() : mainKeyboard());
+        await safeReply(ctx, text, lines.length === 0 ? emptyBatchKeyboard() : previewKeyboard(lines.length));
     }
 
     bot.command("preview", async (ctx) => {
@@ -3660,11 +3663,13 @@ function createBot(token, meta = {}) {
     bot.action("stats", async (ctx) => {
         await ctx.answerCbQuery("\uD83D\uDCCA Loading stats\u2026").catch(() => { });
         const msgId = ctx.callbackQuery?.message?.message_id;
-        const text = renderStats(store.getStats(ctx.chat.id));
+        const stats = store.getStats(ctx.chat.id);
+        const text = renderStats(stats);
+        const kb = statsKeyboard(stats && stats.size > 0);
         if (msgId) {
-            await safeEdit(ctx, msgId, text, mainKeyboard());
+            await safeEdit(ctx, msgId, text, kb);
         } else {
-            await safeReply(ctx, text, mainKeyboard());
+            await safeReply(ctx, text, kb);
         }
     });
 

@@ -2,7 +2,7 @@
 
 const { parentPort } = require("node:worker_threads");
 const fs = require("node:fs");
-const { cleanLinesArray, createSearchMatcher } = require("./cleaner");
+const { cleanLinesArray, createSearchMatcher, resolveStealerRecordFromLines } = require("./cleaner");
 
 if (parentPort) {
     parentPort.on("message", (msg) => {
@@ -25,7 +25,12 @@ if (parentPort) {
                         const line = lines[i];
                         if (matcher(line)) {
                             total++;
-                            if (matches.length < maxMatches) matches.push(line);
+                            if (matches.length < maxMatches) {
+                                let matchResult = line;
+                                const stealerRec = resolveStealerRecordFromLines(lines, i);
+                                if (stealerRec) matchResult = stealerRec;
+                                matches.push(matchResult);
+                            }
                         }
                     }
                 }
@@ -85,6 +90,7 @@ if (parentPort) {
                 let curFilePos = lineStartPos;
                 let remainder = Buffer.alloc(0);
                 let active = lineStartPos < end;
+                const recentLines = [];
 
                 while (active) {
                     const bytesRead = fs.readSync(fd, buf, 0, CHUNK, curFilePos);
@@ -92,9 +98,16 @@ if (parentPort) {
                         if (remainder.length > 0 && lineStartPos < end) {
                             let line = remainder.toString("utf8");
                             if (line.endsWith("\r")) line = line.slice(0, -1);
+                            recentLines.push(line);
+                            if (recentLines.length > 20) recentLines.shift();
                             if (matcher(line)) {
                                 total++;
-                                if (matches.length < maxMatches) matches.push(line);
+                                if (matches.length < maxMatches) {
+                                    let matchResult = line;
+                                    const stealerRec = resolveStealerRecordFromLines(recentLines, recentLines.length - 1);
+                                    if (stealerRec) matchResult = stealerRec;
+                                    matches.push(matchResult);
+                                }
                             }
                         }
                         break;
@@ -122,9 +135,30 @@ if (parentPort) {
                         if (lineStartPos < end) {
                             let line = fullLineBuf.toString("utf8");
                             if (line.endsWith("\r")) line = line.slice(0, -1);
+                            recentLines.push(line);
+                            if (recentLines.length > 20) recentLines.shift();
+
                             if (matcher(line)) {
                                 total++;
-                                if (matches.length < maxMatches) matches.push(line);
+                                if (matches.length < maxMatches) {
+                                    let matchResult = line;
+                                    if (/^(?:url|uri|host|site|website|hostname|application|app|browser|soft|software|username|user|login|pass|password|pwd|secret)\s*[:=|]/i.test(line.trim())) {
+                                        try {
+                                            const peekBuf = Buffer.allocUnsafe(2048);
+                                            const peekPos = curFilePos + nlIdx + 1;
+                                            const peekBytes = fs.readSync(fd, peekBuf, 0, 2048, peekPos);
+                                            if (peekBytes > 0) {
+                                                const peekText = peekBuf.subarray(0, peekBytes).toString("utf8");
+                                                const peekLines = peekText.split(/\r?\n/).slice(0, 8);
+                                                const combinedBlock = [...recentLines, ...peekLines];
+                                                const currentIdx = recentLines.length - 1;
+                                                const stealerRec = resolveStealerRecordFromLines(combinedBlock, currentIdx);
+                                                if (stealerRec) matchResult = stealerRec;
+                                            }
+                                        } catch {}
+                                    }
+                                    matches.push(matchResult);
+                                }
                             }
                         }
 
@@ -136,6 +170,7 @@ if (parentPort) {
                             break;
                         }
                     }
+
 
                     if (active && chunkOffset >= bytesRead) {
                         curFilePos += bytesRead;

@@ -1067,7 +1067,7 @@ function cleanLine(rawLine, options = {}) {
  */
 // Pre-compiled regex for stealer block header detection
 const STEALER_LABEL_RE =
-    /^(?:url|uri|host|site|website|link|page|action|form_action|application|app|browser|soft|software|client|username|user|login|account|usr)\s*[:=|]/i;
+    /^(?:url|uri|host|hostname|site|website|web[\s_-]*site|link|page|action|form[\s_-]*action|application|app|browser|soft|software|client|username|user|user[\s_-]*name|user[\s_-]*login|login|login[\s_-]*id|account|acc|usr|email|mail)\s*[:=|]/i;
 
 function cleanLinesArray(rawLines, options = {}) {
     if (!Array.isArray(rawLines)) {
@@ -1321,8 +1321,143 @@ function cleanUserPassOnly(rawLine) {
 }
 
 /**
+ * Extract clean hostname/domain from a query if it contains a URL or domain with protocol/path/port.
+ * E.g. "https://netflix.com/login" -> "netflix.com", "www.netflix.com" -> "netflix.com"
+ *
+ * @param {string} rawQuery
+ * @returns {string|null}
+ */
+function extractSearchDomain(rawQuery) {
+    if (!rawQuery || typeof rawQuery !== "string") return null;
+    let s = rawQuery.trim();
+    if (/^https?:\/\//i.test(s)) {
+        try {
+            const parsed = new URL(s);
+            s = parsed.hostname;
+        } catch {
+            s = s.replace(/^https?:\/\//i, "").split(/[/?#:]/)[0];
+        }
+    } else if (s.includes("/") && !s.includes(" ")) {
+        s = s.split(/[/?#:]/)[0];
+    }
+    s = s.replace(/^www\./i, "").replace(/:\d+$/, "").trim();
+    if (s.includes(".") && !s.includes("@") && s.length >= 3) {
+        return s.toLowerCase();
+    }
+    return null;
+}
+
+/**
+ * Safely decodes a buffer to text with automatic encoding detection (UTF-8, UTF-16LE, UTF-16BE, UTF-8 BOM).
+ * Handles stealer dumps and Windows password files that use wide UTF-16 characters.
+ *
+ * @param {Buffer} buf
+ * @returns {string}
+ */
+function decodeBufferToText(buf) {
+    if (!buf || !Buffer.isBuffer(buf) || buf.length === 0) return "";
+
+    // UTF-16LE BOM: FF FE
+    if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+        return buf.subarray(2).toString("utf16le");
+    }
+    // UTF-16BE BOM: FE FF
+    if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+        const swapped = Buffer.allocUnsafe(buf.length - 2);
+        for (let i = 2; i < buf.length - 1; i += 2) {
+            swapped[i - 2] = buf[i + 1];
+            swapped[i - 1] = buf[i];
+        }
+        return swapped.toString("utf16le");
+    }
+    // UTF-8 BOM: EF BB BF
+    if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+        return buf.subarray(3).toString("utf8");
+    }
+
+    // Detect UTF-16LE without BOM: ASCII characters alternate with 0x00 null bytes
+    const checkLen = Math.min(buf.length, 256);
+    if (checkLen >= 4) {
+        let nullOdds = 0;
+        let nullEvens = 0;
+        for (let i = 0; i < checkLen; i++) {
+            if (buf[i] === 0) {
+                if (i % 2 === 1) nullOdds++;
+                else nullEvens++;
+            }
+        }
+        if (nullOdds > checkLen / 4 && nullEvens === 0) {
+            return buf.toString("utf16le");
+        }
+        if (nullEvens > checkLen / 4 && nullOdds === 0) {
+            const swapped = Buffer.allocUnsafe(buf.length);
+            for (let i = 0; i < buf.length - 1; i += 2) {
+                swapped[i] = buf[i + 1];
+                swapped[i + 1] = buf[i];
+            }
+            return swapped.toString("utf16le");
+        }
+    }
+
+    return buf.toString("utf8");
+}
+
+/**
+ * Reconstruct a complete credential combo [url:]user:pass from lines surrounding a stealer label match.
+ *
+ * @param {string[]} lines
+ * @param {number} matchIdx
+ * @returns {string|null}
+ */
+function resolveStealerRecordFromLines(lines, matchIdx) {
+    if (!Array.isArray(lines) || matchIdx < 0 || matchIdx >= lines.length) return null;
+    const matchLine = lines[matchIdx].trim();
+    const isLabel = /^(?:url|uri|host|site|website|hostname|application|app|browser|soft|software|username|user|login|pass|password|pwd|secret|action)\s*[:=|]/i.test(matchLine);
+    if (!isLabel) return null;
+
+    // Constrain search within the current block boundaries
+    let start = matchIdx;
+    while (start > 0 && matchIdx - start < 10) {
+        const prev = lines[start - 1].trim();
+        if (!prev || /^[-=_*#~]{3,}$/.test(prev)) break;
+        // Stop if preceding line is another URL and we are on or past a URL
+        if (/^(?:url|uri|host|site|website|hostname)\s*[:=|]/i.test(prev) && /^(?:url|uri|host|site|website|hostname)\s*[:=|]/i.test(matchLine)) break;
+        start--;
+    }
+
+    let end = matchIdx;
+    while (end < lines.length - 1 && end - matchIdx < 10) {
+        const next = lines[end + 1].trim();
+        if (!next || /^[-=_*#~]{3,}$/.test(next)) break;
+        // Stop if following line starts a new record (new URL)
+        if (/^(?:url|uri|host|site|website|hostname)\s*[:=|]/i.test(next)) break;
+        end++;
+    }
+
+    let u = null;
+    let p = null;
+    let url = null;
+
+    for (let i = start; i <= end; i++) {
+        const l = lines[i].trim();
+        const uM = l.match(/^(?:user(?:[\s_-]*name|[\s_-]*login)?|login(?:[\s_-]*id)?|account|acc|usr|email|mail)\s*[:=|]\s*(.+)$/i);
+        const pM = l.match(/^(?:pass(?:[\s_-]*word|wd|w)?|pwd|secret)\s*[:=|]\s*(.+)$/i);
+        const urlM = l.match(/^(?:url|uri|host|site|website|link|page|hostname|action|form[\s_-]*action)\s*[:=|]\s*(.+)$/i);
+        if (uM && !u) u = uM[1].trim();
+        else if (pM && !p) p = pM[1].trim();
+        else if (urlM && !url) url = urlM[1].trim();
+    }
+
+    if (u && p) {
+        return url ? `${url}:${u}:${p}` : `${u}:${p}`;
+    }
+    return null;
+}
+
+/**
  * Fast case-insensitive string matcher without per-line string allocations.
  * Precompiles a case-insensitive RegExp from an escaped query string.
+ * Supports matching both literal query and normalized domain/host (e.g. "https://site.com" -> "site.com").
  *
  * @param {string} query
  * @returns {((line: string) => boolean)|null}
@@ -1332,12 +1467,22 @@ function createSearchMatcher(query) {
     if (!q) return null;
     const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const regex = new RegExp(escaped, "i");
+
+    const domain = extractSearchDomain(q);
+    if (domain && domain.toLowerCase() !== q.toLowerCase()) {
+        const domainEscaped = domain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const domainRegex = new RegExp(domainEscaped, "i");
+        return (line) => typeof line === "string" && (regex.test(line) || domainRegex.test(line));
+    }
+
     return (line) => typeof line === "string" && regex.test(line);
 }
 
 /**
  * Fast case-insensitive search across a Buffer without splitting lines or allocating strings for non-matches.
+ * Automatically decodes UTF-16LE / BOM buffers.
  * Uses Boyer-Moore-Horspool for ASCII queries and RegExp for non-ASCII queries.
+ * Reconstructs multi-line stealer records and normalizes URL queries into matching domains.
  *
  * @param {Buffer} buf
  * @param {string} query
@@ -1345,8 +1490,42 @@ function createSearchMatcher(query) {
  * @returns {{ total: number, matches: string[] }}
  */
 function searchBufferCI(buf, query, limit = 20) {
-    const q = String(query || "").trim();
-    if (!q || !buf || buf.length === 0) return { total: 0, matches: [] };
+    const rawQ = String(query || "").trim();
+    if (!rawQ || !buf || buf.length === 0) return { total: 0, matches: [] };
+
+    // Check if buffer is UTF-16LE or has BOM
+    const isUtf16 = (buf.length >= 2 && ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff))) ||
+        (buf.length >= 4 && buf[1] === 0x00 && buf[3] === 0x00);
+    if (isUtf16) {
+        const text = decodeBufferToText(buf);
+        const matcher = createSearchMatcher(rawQ);
+        const lines = text.split(/\r?\n/);
+        const matches = [];
+        let total = 0;
+        const maxMatches = typeof limit === "number" && limit > 0 ? limit : 20;
+        for (let j = 0; j < lines.length; j++) {
+            let line = lines[j];
+            if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+            if (matcher && matcher(line)) {
+                total++;
+                if (matches.length < maxMatches) {
+                    let matchResult = line;
+                    const trimmedLine = line.trim();
+                    if (STEALER_LABEL_RE && STEALER_LABEL_RE.test(trimmedLine)) {
+                        const stealerRec = resolveStealerRecordFromLines(lines, j);
+                        if (stealerRec) matchResult = stealerRec;
+                    }
+                    if (matches.length === 0 || matches[matches.length - 1] !== matchResult) {
+                        matches.push(matchResult);
+                    }
+                }
+            }
+        }
+        return { total, matches };
+    }
+
+    const domain = extractSearchDomain(rawQ);
+    const q = (domain && domain.length >= 3 && domain.length < rawQ.length) ? domain : rawQ;
 
     const matches = [];
     let total = 0;
@@ -1387,7 +1566,39 @@ function searchBufferCI(buf, query, limit = 20) {
                 if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
 
                 total++;
-                if (matches.length < maxMatches) matches.push(line);
+                if (matches.length < maxMatches) {
+                    let matchResult = line;
+                    const trimmedLine = line.trim();
+                    if (STEALER_LABEL_RE && STEALER_LABEL_RE.test(trimmedLine)) {
+                        // Snap window to line boundaries
+                        let winStart = Math.max(0, lineStart - 1000);
+                        if (winStart > 0) {
+                            const nl = buf.indexOf(0x0a, winStart);
+                            if (nl !== -1 && nl < lineStart) winStart = nl + 1;
+                        }
+                        let winEnd = Math.min(len, lineEnd + 1000);
+                        if (winEnd < len) {
+                            const nl = buf.indexOf(0x0a, winEnd);
+                            if (nl !== -1) winEnd = nl;
+                        }
+
+                        // Exact target index by counting newlines before lineStart
+                        let targetIdx = 0;
+                        for (let p = winStart; p < lineStart; p++) {
+                            if (buf[p] === 0x0a) targetIdx++;
+                        }
+
+                        const winText = buf.subarray(winStart, winEnd).toString("utf8");
+                        const winLines = winText.split(/\r?\n/);
+                        if (targetIdx >= 0 && targetIdx < winLines.length) {
+                            const stealerRec = resolveStealerRecordFromLines(winLines, targetIdx);
+                            if (stealerRec) matchResult = stealerRec;
+                        }
+                    }
+                    if (matches.length === 0 || matches[matches.length - 1] !== matchResult) {
+                        matches.push(matchResult);
+                    }
+                }
 
                 i = lineEnd + m;
             } else {
@@ -1398,15 +1609,24 @@ function searchBufferCI(buf, query, limit = 20) {
     }
 
     const text = buf.toString("utf8");
-    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(escaped, "i");
+    const matcher = createSearchMatcher(rawQ);
     const lines = text.split(/\r?\n/);
     for (let j = 0; j < lines.length; j++) {
         let line = lines[j];
         if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
-        if (regex.test(line)) {
+        if (matcher && matcher(line)) {
             total++;
-            if (matches.length < maxMatches) matches.push(line);
+            if (matches.length < maxMatches) {
+                let matchResult = line;
+                const trimmedLine = line.trim();
+                if (STEALER_LABEL_RE && STEALER_LABEL_RE.test(trimmedLine)) {
+                    const stealerRec = resolveStealerRecordFromLines(lines, j);
+                    if (stealerRec) matchResult = stealerRec;
+                }
+                if (matches.length === 0 || matches[matches.length - 1] !== matchResult) {
+                    matches.push(matchResult);
+                }
+            }
         }
     }
     return { total, matches };
@@ -1417,6 +1637,9 @@ module.exports = {
     cleanUserPassOnly,
     createSearchMatcher,
     searchBufferCI,
+    extractSearchDomain,
+    resolveStealerRecordFromLines,
+    decodeBufferToText,
     cleanCcLine,
     isCcLine,
     isCreditCardLine: isCcLine,
@@ -1433,4 +1656,5 @@ module.exports = {
     normalizeLine,
     splitCsvLine,
     isPlaceholder,
-};
+};
+

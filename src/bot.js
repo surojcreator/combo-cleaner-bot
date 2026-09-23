@@ -12,7 +12,7 @@ const {
     mergeZipFiles,
     isZipBuffer,
 } = require("./extractor");
-const { cleanUserPassOnly, createSearchMatcher, searchBufferCI } = require("./cleaner");
+const { cleanUserPassOnly, createSearchMatcher, searchBufferCI, resolveStealerRecordFromLines, decodeBufferToText } = require("./cleaner");
 const { sanitizeSiteSlug, detectSite } = require("./sites");
 const { getSharedPool } = require("./worker-pool");
 const searchbot = require("./searchbot");
@@ -4958,6 +4958,7 @@ async function ingestDocument(ctx, doc, options = {}) {
     // Stage 3: cleaning.
     const keepUrl = options.keepUrl !== undefined ? Boolean(options.keepUrl) : true;
     const isZipFile = isZip || isZipBuffer(buffer);
+    const fallbackUrl = options.fallbackUrl || null;
 
     void safeEdit(
         ctx,
@@ -4970,8 +4971,8 @@ async function ingestDocument(ctx, doc, options = {}) {
 
     const result =
         isZipFile
-            ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl })
-            : await extractAndCleanTextAsync(buffer.toString("utf8"), { sourceName: name, keepUrl });
+            ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl, fallbackUrl })
+            : await extractAndCleanTextAsync(buffer.toString("utf8"), { sourceName: name, keepUrl, fallbackUrl });
 
     // Figure out the site this dump belongs to — used when naming the combined
     // file (e.g. "netflix.com_combined_2026-09-19.txt").
@@ -6141,11 +6142,17 @@ async function relaySearcherMessage(ctx, params) {
 async function ingestUserbotMessage(chatId, msg, peer, query = "") {
     if (!chatId || !msg) return null;
     try {
-        const text = msg.message || "";
+        const text = msg.message || msg.text || "";
         const media = msg.media;
         let site = sanitizeSiteSlug(query) || "cleaned";
 
-        if (media && peer && typeof peer.downloadMedia === "function") {
+        const isRealDoc = Boolean(
+            msg.document ||
+            msg.file ||
+            (media && (media.document || media.className === "MessageMediaDocument" || media._ === "messageMediaDocument"))
+        );
+
+        if (isRealDoc && peer && typeof peer.downloadMedia === "function") {
             const buffer = await peer.downloadMedia(msg).catch(() => null);
             if (buffer && buffer.length > 0) {
                 const candidateName = (msg.file && (msg.file.name || msg.file.fileName)) ||
@@ -6155,12 +6162,14 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
                 const fallbackUrl = query ? String(query).trim() : null;
                 const result = isZip
                     ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl: true, fallbackUrl })
-                    : await extractAndCleanTextAsync(buffer.toString("utf8"), { sourceName: name, keepUrl: true, fallbackUrl });
+                    : await extractAndCleanTextAsync(decodeBufferToText(buffer), { sourceName: name, keepUrl: true, fallbackUrl });
                 if (result.site) {
                     site = sanitizeSiteSlug(result.site) || site;
                 }
-                const added = store.addLines(chatId, result.lines, site);
-                return { lines: result.lines.length, added: added.added, duplicates: added.duplicates, site };
+                if (result.lines.length > 0) {
+                    const added = store.addLines(chatId, result.lines, site);
+                    return { lines: result.lines.length, added: added.added, duplicates: added.duplicates, site };
+                }
             }
         }
 
@@ -6479,7 +6488,18 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
     }
 
     // Support zip archives
-    if (filePath.toLowerCase().endsWith(".zip")) {
+    let isZip = filePath.toLowerCase().endsWith(".zip");
+    if (!isZip) {
+        try {
+            const fd = fs.openSync(filePath, "r");
+            const head = Buffer.alloc(4);
+            const n = fs.readSync(fd, head, 0, 4, 0);
+            fs.closeSync(fd);
+            if (n === 4 && isZipBuffer(head)) isZip = true;
+        } catch {}
+    }
+
+    if (isZip) {
         try {
             const stat = fs.statSync(filePath);
             const maxZipBytes = processMaxZipBytes();
@@ -6490,36 +6510,68 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
 
             const AdmZip = require("adm-zip");
             const zip = new AdmZip(filePath);
-            const entries = zip.getEntries();
             const matches = [];
             let total = 0;
-            const qLower = q.toLowerCase();
 
-            for (const entry of entries) {
-                if (signal && signal.aborted) {
-                    const err = new Error("SEARCH_ABORTED");
-                    err.name = "AbortError";
-                    throw err;
-                }
-                if (entry.isDirectory) continue;
-                const lowerName = entry.entryName.toLowerCase();
-                if (
-                    lowerName.endsWith(".txt") ||
-                    lowerName.endsWith(".log") ||
-                    lowerName.endsWith(".csv") ||
-                    lowerName.endsWith(".tsv") ||
-                    lowerName.endsWith(".json") ||
-                    !lowerName.includes(".")
-                ) {
-                    const entryBuf = entry.getData();
-                    const subRes = searchBufferCI(entryBuf, q, limit - matches.length);
-                    total += subRes.total;
-                    for (const m of subRes.matches) {
-                        if (matches.length < limit) matches.push(m);
+            const searchZipEntries = (zipInstance, depth = 0) => {
+                if (depth > 3) return;
+                const entries = zipInstance.getEntries();
+                for (const entry of entries) {
+                    if (signal && signal.aborted) {
+                        const err = new Error("SEARCH_ABORTED");
+                        err.name = "AbortError";
+                        throw err;
+                    }
+                    if (entry.isDirectory) continue;
+                    const lowerName = entry.entryName.toLowerCase();
+                    if (lowerName.startsWith("__macosx/") || lowerName.endsWith(".ds_store")) continue;
+
+                    // Support nested zips
+                    if (lowerName.endsWith(".zip")) {
+                        try {
+                            const nestedBuf = entry.getData();
+                            if (nestedBuf && isZipBuffer(nestedBuf)) {
+                                const nestedZip = new AdmZip(nestedBuf);
+                                searchZipEntries(nestedZip, depth + 1);
+                            }
+                        } catch {}
+                        continue;
+                    }
+
+                    if (
+                        lowerName.endsWith(".txt") ||
+                        lowerName.endsWith(".log") ||
+                        lowerName.endsWith(".csv") ||
+                        lowerName.endsWith(".tsv") ||
+                        lowerName.endsWith(".lst") ||
+                        lowerName.endsWith(".list") ||
+                        lowerName.endsWith(".dat") ||
+                        lowerName.endsWith(".json") ||
+                        lowerName.endsWith(".xml") ||
+                        lowerName.endsWith(".htm") ||
+                        lowerName.endsWith(".html") ||
+                        lowerName.endsWith(".bak") ||
+                        lowerName.endsWith(".out") ||
+                        lowerName.endsWith(".sql") ||
+                        lowerName.endsWith(".dump") ||
+                        lowerName.endsWith(".text") ||
+                        lowerName.endsWith(".reg") ||
+                        lowerName.endsWith(".ini") ||
+                        lowerName.endsWith(".conf") ||
+                        lowerName.endsWith(".cfg") ||
+                        !lowerName.includes(".")
+                    ) {
+                        const entryBuf = entry.getData();
+                        const subRes = searchBufferCI(entryBuf, q, limit - matches.length);
+                        total += subRes.total;
+                        for (const m of subRes.matches) {
+                            if (matches.length < limit && !matches.includes(m)) matches.push(m);
+                        }
                     }
                 }
-                await new Promise((r) => setImmediate(r));
-            }
+            };
+
+            searchZipEntries(zip, 0);
             return { total, matches, isZip: true };
         } catch (err) {
             if (err.name === "AbortError" || (signal && signal.aborted)) throw err;
@@ -6532,8 +6584,8 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
     try {
         const stat = fs.statSync(filePath);
 
-        // Fast in-memory buffer path for files under 16 MB
-        if (stat.size < 16 * 1024 * 1024) {
+        // Fast in-memory buffer path for files under 64 MB
+        if (stat.size < 64 * 1024 * 1024) {
             const buf = fs.readFileSync(filePath);
             const res = searchBufferCI(buf, q, limit);
             return { total: res.total, matches: res.matches, isZip: false };
@@ -6560,6 +6612,7 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
         const matcher = createSearchMatcher(q);
         const matches = [];
         let total = 0;
+        const recentLines = [];
         for await (let line of rl) {
             if (signal && signal.aborted) {
                 rl.close();
@@ -6568,9 +6621,17 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
                 throw err;
             }
             if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+            recentLines.push(line);
+            if (recentLines.length > 20) recentLines.shift();
+
             if (matcher && matcher(line)) {
                 total++;
-                if (matches.length < limit) matches.push(line);
+                if (matches.length < limit) {
+                    let matchResult = line;
+                    const stealerRec = resolveStealerRecordFromLines(recentLines, recentLines.length - 1);
+                    if (stealerRec) matchResult = stealerRec;
+                    matches.push(matchResult);
+                }
             }
         }
         return { total, matches, isZip: false };

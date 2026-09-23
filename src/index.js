@@ -179,9 +179,11 @@ async function connectUserbot() {
  * @param {any} msg
  */
 async function relayUserbotResult(peer, msg) {
-    const isDoc = Boolean(msg && (msg.media || msg.document || msg.file));
+    const isDoc = Boolean(
+        msg && (msg.document || (msg.media && (msg.media.document || msg.media.className === "MessageMediaDocument")))
+    );
     const rawText = String((msg && (msg.message || msg.text)) || "");
-    const hasCombos = !isDoc && rawText && userbot.containsComboCredentials(rawText);
+    const hasCombos = rawText && userbot.containsComboCredentials(rawText);
     if (!isDoc && !hasCombos) {
         return; // Ignore query echoes, menus, and status messages
     }

@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { cleanLine, isEmail, isPhone, isCcLine, PURE_FIELD_LABELS } = require("./cleaner");
+const { cleanLine, isEmail, isPhone, isCcLine, PURE_FIELD_LABELS, CREDENTIAL_LABELS } = require("./cleaner");
 
 /**
  * MTProto "userbot" transport — the bypass for sealed search bots.
@@ -573,16 +573,39 @@ const BOT_MESSAGE_LABELS = new Set([
 function containsComboCredentials(text) {
     if (!text || typeof text !== "string") return false;
     const lines = text.split(/[\r\n]+/);
-    for (const l of lines) {
-        const trimmed = l.trim();
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
         if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("/")) continue;
         if (typeof isCcLine === "function" && isCcLine(trimmed)) return true;
+
+        // Detect multi-line stealer blocks (URL: ... Username: ... Password: ...)
+        if (
+            /^(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr|email|mail)\s*[:=|]/i.test(trimmed) ||
+            /^(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=|]/i.test(trimmed) ||
+            /^(?:url|uri|host|site|website)\s*[:=|]/i.test(trimmed)
+        ) {
+            const start = Math.max(0, i - 4);
+            const end = Math.min(lines.length, i + 5);
+            let hasU = false;
+            let hasP = false;
+            for (let j = start; j < end; j++) {
+                const lj = lines[j].trim();
+                if (/^(?:user(?:name|_name|_login)?|login(?:_id)?|account|acc|usr|email|mail)\s*[:=|]/i.test(lj)) hasU = true;
+                if (/^(?:pass(?:word|wd|w)?|pwd|secret)\s*[:=|]/i.test(lj)) hasP = true;
+            }
+            if (hasU && hasP) return true;
+        }
+
         const cleaned = cleanLine(trimmed);
         if (!cleaned) continue;
         const [u, p] = cleaned.split(":");
         if (!u || !p) continue;
         const uLower = u.toLowerCase();
-        if (BOT_MESSAGE_LABELS.has(uLower) || (PURE_FIELD_LABELS && PURE_FIELD_LABELS.has(uLower))) {
+        if (
+            BOT_MESSAGE_LABELS.has(uLower) ||
+            (PURE_FIELD_LABELS && PURE_FIELD_LABELS.has(uLower)) ||
+            (CREDENTIAL_LABELS && CREDENTIAL_LABELS.has(uLower))
+        ) {
             continue;
         }
         if (typeof isEmail === "function" && isEmail(u)) return true;
@@ -1528,6 +1551,22 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                     "userbot getMessages folder",
                                 );
                                 if (Array.isArray(folderMsgs)) {
+                                    for (const m of folderMsgs) {
+                                        const isDoc = Boolean(m.document || (m.media && (m.media.document || m.media.className === "MessageMediaDocument")));
+                                        const rawText = String(m.message || m.text || "");
+                                        const hasCombos = rawText && containsComboCredentials(rawText);
+                                        if (!m.out && !seenResultIds.has(m.id) && (isDoc || hasCombos)) {
+                                            seenResultIds.add(m.id);
+                                            foundAny = true;
+                                            if (options.onResult) await options.onResult(m).catch(() => {});
+                                            if (resultSink) await resultSink(m).catch(() => {});
+                                            if (chatId && typeof forwardResult === "function") {
+                                                await forwardResult(chatId, m, {
+                                                    botUsername: options.botUsername || botUsername || cfg.botUsername,
+                                                }).catch(() => {});
+                                            }
+                                        }
+                                    }
                                     const matchWithHist = folderMsgs.find((m) => !m.out && m.replyMarkup && Array.isArray(m.replyMarkup.rows) && m.replyMarkup.rows.some((r) => r.buttons && r.buttons.some((b) => isHistButton(b))));
                                     if (matchWithHist) candidateMsg = matchWithHist;
                                     else if (!candidateMsg) candidateMsg = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuMsg;
@@ -1607,9 +1646,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                     const latest = await client.getMessages(searchTarget, { limit: 12 });
                                     if (Array.isArray(latest)) {
                                         for (const m of latest) {
-                                            const isDoc = Boolean(m.media || m.document || m.file);
+                                            const isDoc = Boolean(
+                                                m.document ||
+                                                (m.media && (m.media.document || m.media.className === "MessageMediaDocument"))
+                                            );
                                             const rawText = String(m.message || m.text || "");
-                                            const hasCombos = !isDoc && rawText && containsComboCredentials(rawText);
+                                            const hasCombos = rawText && containsComboCredentials(rawText);
                                             const isTargetMsg =
                                                 !m.out &&
                                                 !seenResultIds.has(m.id) &&
@@ -1669,6 +1711,33 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         }
                     } else {
                         log.log(`userbot could not find hist button in folder for ${dateStr}`);
+                        if (!foundAny) {
+                            for (let quickPoll = 0; quickPoll < 3; quickPoll++) {
+                                await sleep(1000);
+                                try {
+                                    const check = await client.getMessages(searchTarget, { limit: 6 });
+                                    if (Array.isArray(check)) {
+                                        for (const m of check) {
+                                            const isDoc = Boolean(m.document || (m.media && (m.media.document || m.media.className === "MessageMediaDocument")));
+                                            const rawText = String(m.message || m.text || "");
+                                            const hasCombos = rawText && containsComboCredentials(rawText);
+                                            if (!m.out && !seenResultIds.has(m.id) && (isDoc || hasCombos)) {
+                                                seenResultIds.add(m.id);
+                                                foundAny = true;
+                                                if (options.onResult) await options.onResult(m).catch(() => {});
+                                                if (resultSink) await resultSink(m).catch(() => {});
+                                                if (chatId && typeof forwardResult === "function") {
+                                                    await forwardResult(chatId, m, {
+                                                        botUsername: options.botUsername || botUsername || cfg.botUsername,
+                                                    }).catch(() => {});
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch {}
+                                if (foundAny) break;
+                            }
+                        }
                     }
 
                     // =========================================================================

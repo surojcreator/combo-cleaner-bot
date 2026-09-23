@@ -1,7 +1,7 @@
 "use strict";
 
 const AdmZip = require("adm-zip");
-const { cleanText, cleanLinesArray } = require("./cleaner");
+const { cleanText, cleanLinesArray, decodeBufferToText } = require("./cleaner");
 const { detectSite } = require("./sites");
 
 // Cap on raw text kept for website detection (1 MB sample is plenty).
@@ -25,6 +25,12 @@ const TEXT_EXTENSIONS = [
     ".html",
     ".htm",
     ".md",
+    ".dump",
+    ".text",
+    ".reg",
+    ".ini",
+    ".conf",
+    ".cfg",
 ];
 
 /**
@@ -134,7 +140,7 @@ function collectTextFromZip(buffer, state) {
         }
 
         if (looksLikeText(name)) {
-            chunks.push(data.toString("utf8"));
+            chunks.push(decodeBufferToText(data));
         }
     }
 

@@ -79,7 +79,13 @@ const {
     RULE,
     compact,
     resolveCallbackPayload,
+    registerCallbackPayload,
     ensureAnimatedEmojis,
+    renderLocalSearch,
+    localSearchResultKeyboard,
+    renderLocalSearchHub,
+    localSearchHubKeyboard,
+    localFileSearchKeyboard,
 } = require("./messages");
 
 // Telegram Bot API caps bot downloads at 20 MB.
@@ -1553,24 +1559,12 @@ function createBot(token, meta = {}) {
         await safeReply(
             ctx,
             [
-                `🔎  ${B("SEARCH FILE")} \u00B7 ${B(escapeHtml(file.name))}`,
-                `📁  Size: ${humanSize(file.size)}`,
+                `${tgEmoji("🔎")}  ${B("SEARCH RAW DUMP")} \u00B7 ${B(escapeHtml(file.name))}`,
+                `📁  Size: ${CODE(humanSize(file.size))}`,
                 "",
-                `${I("Tap a quick filter below or type /lsearch <query>:")}`,
+                `${I("Tap a quick filter, enter a custom query, or search the entire vault:")}`,
             ].join("\n"),
-            createInlineKeyboard([
-                [
-                    Markup.button.callback("📧 Gmail", `file:dosearch:${idx}:gmail.com`),
-                    Markup.button.callback("📧 Hotmail", `file:dosearch:${idx}:hotmail.com`),
-                ],
-                [
-                    Markup.button.callback("📧 Yahoo", `file:dosearch:${idx}:yahoo.com`),
-                    Markup.button.callback("🌐 .com", `file:dosearch:${idx}:.com`),
-                ],
-                [
-                    Markup.button.callback("🔙 Server Vault", "server_files"),
-                ],
-            ]),
+            localFileSearchKeyboard(idx, false),
         );
     });
 
@@ -1586,20 +1580,37 @@ function createBot(token, meta = {}) {
         }
         const status = await safeReply(
             ctx,
-            `🔎  ${B("MULTI-CORE SEARCH")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`
+            `${tgEmoji("🔎")}  ${B("MULTI-CORE SEARCH")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`
         );
         try {
             const result = await searchTextFile(file.path, query, 20);
+            const card = renderLocalSearch({
+                query,
+                total: result.total,
+                matches: result.matches,
+                fileName: file.name,
+                fileSize: file.size,
+                isProc: false,
+                fileIdx: idx,
+            });
+            const kb = localSearchResultKeyboard({
+                query,
+                total: result.total,
+                fileIdx: idx,
+                isProc: false,
+                isAll: false,
+            });
             if (status && status.message_id) {
-                await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+                await safeEdit(ctx, status.message_id, card, kb);
             } else {
-                await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+                await safeReply(ctx, card, kb);
             }
         } catch (err) {
+            const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
             if (status && status.message_id) {
-                await safeEdit(ctx, status.message_id, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+                await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
             } else {
-                await safeReply(ctx, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+                await safeReply(ctx, errMsg, mainKeyboard());
             }
         }
     });
@@ -1687,24 +1698,12 @@ function createBot(token, meta = {}) {
         await safeReply(
             ctx,
             [
-                `🔎  ${B("SEARCH CLEANED OUTPUT")} · ${B(escapeHtml(file.name))}`,
-                `📁  Size: ${humanSize(file.size)}`,
+                `${tgEmoji("🔎")}  ${B("SEARCH CLEANED OUTPUT")} \u00B7 ${B(escapeHtml(file.name))}`,
+                `📁  Size: ${CODE(humanSize(file.size))}`,
                 "",
-                `${I("Tap a quick filter below or type /lsearch <query>:")}`,
+                `${I("Tap a quick filter, enter a custom query, or search the entire vault:")}`,
             ].join("\n"),
-            createInlineKeyboard([
-                [
-                    Markup.button.callback("📧 Gmail", `file:dosearch:proc:${idx}:gmail.com`),
-                    Markup.button.callback("📧 Hotmail", `file:dosearch:proc:${idx}:hotmail.com`),
-                ],
-                [
-                    Markup.button.callback("📧 Yahoo", `file:dosearch:proc:${idx}:yahoo.com`),
-                    Markup.button.callback("🌐 .com", `file:dosearch:proc:${idx}:.com`),
-                ],
-                [
-                    Markup.button.callback("🔙 Server Vault", "server_files"),
-                ],
-            ]),
+            localFileSearchKeyboard(idx, true),
         );
     });
 
@@ -1720,22 +1719,197 @@ function createBot(token, meta = {}) {
         }
         const status = await safeReply(
             ctx,
-            `🔎  ${B("SEARCHING OUTPUT")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`
+            `${tgEmoji("🔎")}  ${B("SEARCHING OUTPUT")} ${escapeHtml(file.name)} for ${CODE(escapeHtml(query))}…`
         );
         try {
             const result = await searchTextFile(file.path, query, 20);
+            const card = renderLocalSearch({
+                query,
+                total: result.total,
+                matches: result.matches,
+                fileName: file.name,
+                fileSize: file.size,
+                isProc: true,
+                fileIdx: idx,
+            });
+            const kb = localSearchResultKeyboard({
+                query,
+                total: result.total,
+                fileIdx: idx,
+                isProc: true,
+                isAll: false,
+            });
             if (status && status.message_id) {
-                await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+                await safeEdit(ctx, status.message_id, card, kb);
             } else {
-                await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+                await safeReply(ctx, card, kb);
             }
         } catch (err) {
+            const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
             if (status && status.message_id) {
-                await safeEdit(ctx, status.message_id, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+                await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
             } else {
-                await safeReply(ctx, `💥 Search failed: ${escapeHtml(err.message)}`, mainKeyboard());
+                await safeReply(ctx, errMsg, mainKeyboard());
             }
         }
+    });
+
+    bot.action(/^file:search:custom:(proc:)?(\d+)$/, async (ctx) => {
+        const isProc = Boolean(ctx.match[1]);
+        const idx = parseInt(ctx.match[2], 10);
+        await ctx.answerCbQuery().catch(() => { });
+        const files = isProc ? scanDirFiles(localProcessedRoot()) : scanDirFiles(localProcessRoot());
+        const file = files[idx];
+        if (!file) {
+            await safeReply(ctx, `⚠️ Target file not found in vault.`, mainKeyboard());
+            return;
+        }
+        userPromptState.set(ctx.chat.id, {
+            action: "file:search:custom",
+            fileIdx: idx,
+            isProc,
+            fileName: file.name,
+            filePath: file.path,
+            createdAt: Date.now(),
+        });
+        await safeReply(
+            ctx,
+            [
+                `${tgEmoji("🔎")}  ${B("ENTER SEARCH QUERY FOR FILE")}`,
+                RULE,
+                `📄  ${B(escapeHtml(file.name))} (${humanSize(file.size)})`,
+                `📂  Type: ${isProc ? "Cleaned Vault" : "Raw Dump"}`,
+                "",
+                `💬  ${I("Send the domain, email, username, or text to search:")}`,
+            ].join("\n"),
+            createInlineKeyboard([
+                [Markup.button.callback("🔙 Back to File", `file:search:${isProc ? "proc:" : ""}${idx}`)],
+                [Markup.button.callback("❌ Cancel", "search:cancel")],
+            ]),
+        );
+    });
+
+    bot.action("lsearch:prompt", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => { });
+        userPromptState.set(ctx.chat.id, {
+            action: "lsearch:query",
+            createdAt: Date.now(),
+        });
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const procFiles = scanDirFiles(localProcessedRoot());
+        await safeReply(
+            ctx,
+            [
+                `${tgEmoji("🔎")}  ${B("ENTER VAULT SEARCH QUERY")}`,
+                RULE,
+                `🌐  Search will run across ${B(num(rawFiles.length + procFiles.length))} files in your server vault.`,
+                "",
+                `💬  ${I("Send the word, email, domain, or keyword to search across all vault files:")}`,
+            ].join("\n"),
+            createInlineKeyboard([
+                [Markup.button.callback("❌ Cancel", "search:cancel")],
+            ]),
+        );
+    });
+
+    bot.action("search:cancel", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        await ctx.answerCbQuery("Search cancelled").catch(() => { });
+        await safeReply(ctx, `🚫 Search prompt cancelled.`, mainKeyboard());
+    });
+
+    bot.action(/^lsearch:all:run:(.+)$/, async (ctx) => {
+        const query = resolveCallbackPayload(ctx.match[1]);
+        await safeAnswerCbQuery(ctx, `Searching vault for "${query}"…`);
+        const status = await safeReply(
+            ctx,
+            `${tgEmoji("🔎")}  ${B("SEARCHING ALL VAULT FILES")}  ${tgEmoji("⚡️")}\nQuery: ${CODE(escapeHtml(query))}\n${I("Scanning server disk…")}`
+        );
+        try {
+            const result = await searchAllVaultFiles(query, { limit: 20 });
+            const card = renderLocalSearch({
+                query,
+                total: result.total,
+                matches: result.matches,
+                fileResults: result.fileResults,
+                totalFiles: result.totalFiles,
+                searchedFiles: result.searchedFiles,
+                isAll: true,
+            });
+            const kb = localSearchResultKeyboard({
+                query,
+                total: result.total,
+                isAll: true,
+            });
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, card, kb);
+            } else {
+                await safeReply(ctx, card, kb);
+            }
+        } catch (err) {
+            const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+            } else {
+                await safeReply(ctx, errMsg, mainKeyboard());
+            }
+        }
+    });
+
+    bot.action(/^lsearch:dl:(.+)$/, async (ctx) => {
+        const rawPayload = resolveCallbackPayload(ctx.match[1]);
+        await safeAnswerCbQuery(ctx, "📥 Extracting all matching lines…");
+        const parts = rawPayload.split(":");
+        let query = "";
+        let matches = [];
+        let label = "";
+
+        if (parts[0] === "all") {
+            query = parts.slice(1).join(":");
+            label = "all_vault";
+            const res = await searchAllVaultFiles(query, { limit: 250000 });
+            matches = res.matches;
+        } else {
+            const type = parts[0];
+            const idx = parseInt(parts[1], 10);
+            query = parts.slice(2).join(":");
+            const isProc = type === "proc";
+            const files = isProc ? scanDirFiles(localProcessedRoot()) : scanDirFiles(localProcessRoot());
+            const file = files[idx];
+            if (!file) {
+                await safeReply(ctx, "⚠️ Target file not found.", mainKeyboard());
+                return;
+            }
+            label = sanitizeSiteSlug(path.basename(file.name, path.extname(file.name)));
+            const res = await searchTextFile(file.path, query, 250000);
+            matches = res.matches;
+        }
+
+        if (!matches || matches.length === 0) {
+            await safeReply(ctx, `⚠️ No matching lines found to export for ${CODE(escapeHtml(query))}.`, mainKeyboard());
+            return;
+        }
+
+        const buffer = Buffer.from(matches.join("\n"), "utf8");
+        const stamp = new Date().toISOString().slice(0, 10);
+        const filename = `vault_search_${label}_${sanitizeSiteSlug(query)}_${stamp}.txt`;
+
+        await safeSendDocument(
+            ctx,
+            ctx.chat && ctx.chat.id,
+            { source: buffer, filename },
+            {
+                caption: [
+                    `📥  ${B("VAULT SEARCH EXPORT")}  ${tgEmoji("⚡️")}`,
+                    RULE,
+                    `🎯  Query: ${CODE(escapeHtml(query))}`,
+                    `💎  Matches: ${B(num(matches.length))} lines`,
+                    `📁  Source: ${label === "all_vault" ? "All Vault Files" : label}`,
+                ].join("\n"),
+                parse_mode: "HTML",
+                ...mainKeyboard(),
+            }
+        );
     });
 
     bot.action("ulp:menu", async (ctx) => {
@@ -1991,54 +2165,240 @@ function createBot(token, meta = {}) {
 
     bot.command("lsearch", async (ctx) => {
         const raw = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
-        const parts = raw.split(/\s+/);
-        const query = parts[0] || "";
-        const specifiedName = parts[1] || "";
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const procFiles = scanDirFiles(localProcessedRoot());
 
-        if (query.length < 2) {
+        if (!raw) {
             await safeReply(
                 ctx,
-                `${I("Usage:")} ${CODE("/lsearch example.com [filename]")}\nSearches cleaned files under ${CODE(localProcessedRoot())} or raw dumps in ${CODE(localProcessRoot())}.`,
+                renderLocalSearchHub(rawFiles, procFiles),
+                localSearchHubKeyboard(rawFiles, procFiles)
             );
             return;
         }
 
-        let file = null;
-        if (specifiedName) {
-            const safeName = path.basename(specifiedName);
-            const p1 = path.join(localProcessedRoot(), safeName);
-            const p2 = path.join(localProcessRoot(), safeName);
-            if (fs.existsSync(p1)) file = p1;
-            else if (fs.existsSync(p2)) file = p2;
-            else {
-                const allProcessed = scanDirFiles(localProcessedRoot());
-                const match = allProcessed.find((f) => f.name.toLowerCase().includes(safeName.toLowerCase()));
-                if (match) file = match.path;
-            }
-        }
-        if (!file) {
-            file = latestFileIn(localProcessedRoot()) || latestFileIn(localProcessRoot());
-        }
-        if (!file) {
-            await safeReply(ctx, `\u26A0\uFE0F  No processed output found under ${CODE(localProcessedRoot())}. Run ${CODE("/process /var/data/file.txt")} first.`);
+        const parts = raw.split(/\s+/);
+        const query = parts[0];
+        const target = parts.slice(1).join(" ").trim();
+
+        if (!query) {
+            await safeReply(
+                ctx,
+                renderLocalSearchHub(rawFiles, procFiles),
+                localSearchHubKeyboard(rawFiles, procFiles)
+            );
             return;
         }
+
+        // Cleaned vault only search
+        if (target.toLowerCase() === "clean" || target.toLowerCase() === "cleaned" || target.toLowerCase() === "proc") {
+            const status = await safeReply(
+                ctx,
+                `${tgEmoji("🔎")}  ${B("SEARCHING CLEANED VAULT FILES")}  ${tgEmoji("⚡️")}\nQuery: ${CODE(escapeHtml(query))}…`
+            );
+            try {
+                const result = await searchAllVaultFiles(query, {
+                    limit: 20,
+                    rawRoot: null,
+                    procRoot: localProcessedRoot(),
+                });
+                result.fileResults = result.fileResults.filter((f) => f.type === "proc");
+                result.total = result.fileResults.reduce((acc, f) => acc + f.total, 0);
+                result.totalFiles = procFiles.length;
+                result.searchedFiles = result.fileResults.length;
+                const card = renderLocalSearch({
+                    query,
+                    total: result.total,
+                    matches: result.matches,
+                    fileResults: result.fileResults,
+                    totalFiles: result.totalFiles,
+                    searchedFiles: result.searchedFiles,
+                    isAll: true,
+                });
+                const kb = localSearchResultKeyboard({
+                    query,
+                    total: result.total,
+                    isAll: true,
+                });
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, card, kb);
+                } else {
+                    await safeReply(ctx, card, kb);
+                }
+            } catch (err) {
+                const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+                } else {
+                    await safeReply(ctx, errMsg, mainKeyboard());
+                }
+            }
+            return;
+        }
+
+        // Raw dumps only search
+        if (target.toLowerCase() === "raw" || target.toLowerCase() === "dumps") {
+            const status = await safeReply(
+                ctx,
+                `${tgEmoji("🔎")}  ${B("SEARCHING RAW VAULT DUMPS")}  ${tgEmoji("⚡️")}\nQuery: ${CODE(escapeHtml(query))}…`
+            );
+            try {
+                const result = await searchAllVaultFiles(query, {
+                    limit: 20,
+                    rawRoot: localProcessRoot(),
+                    procRoot: null,
+                });
+                result.fileResults = result.fileResults.filter((f) => f.type === "raw");
+                result.total = result.fileResults.reduce((acc, f) => acc + f.total, 0);
+                result.totalFiles = rawFiles.length;
+                result.searchedFiles = result.fileResults.length;
+                const card = renderLocalSearch({
+                    query,
+                    total: result.total,
+                    matches: result.matches,
+                    fileResults: result.fileResults,
+                    totalFiles: result.totalFiles,
+                    searchedFiles: result.searchedFiles,
+                    isAll: true,
+                });
+                const kb = localSearchResultKeyboard({
+                    query,
+                    total: result.total,
+                    isAll: true,
+                });
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, card, kb);
+                } else {
+                    await safeReply(ctx, card, kb);
+                }
+            } catch (err) {
+                const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+                } else {
+                    await safeReply(ctx, errMsg, mainKeyboard());
+                }
+            }
+            return;
+        }
+
+        // Specific file target
+        if (target) {
+            let matchedFile = null;
+            let fileIdx = null;
+            let isProc = false;
+
+            const numTarget = parseInt(target.replace("#", ""), 10);
+            if (!isNaN(numTarget) && numTarget >= 1) {
+                if (numTarget <= procFiles.length) {
+                    matchedFile = procFiles[numTarget - 1];
+                    fileIdx = numTarget - 1;
+                    isProc = true;
+                } else if (numTarget - procFiles.length <= rawFiles.length) {
+                    matchedFile = rawFiles[numTarget - procFiles.length - 1];
+                    fileIdx = numTarget - procFiles.length - 1;
+                    isProc = false;
+                }
+            }
+
+            if (!matchedFile) {
+                const procMatch = procFiles.findIndex((f) => f.name.toLowerCase().includes(target.toLowerCase()));
+                if (procMatch !== -1) {
+                    matchedFile = procFiles[procMatch];
+                    fileIdx = procMatch;
+                    isProc = true;
+                } else {
+                    const rawMatch = rawFiles.findIndex((f) => f.name.toLowerCase().includes(target.toLowerCase()));
+                    if (rawMatch !== -1) {
+                        matchedFile = rawFiles[rawMatch];
+                        fileIdx = rawMatch;
+                        isProc = false;
+                    }
+                }
+            }
+
+            if (matchedFile) {
+                const status = await safeReply(
+                    ctx,
+                    `${tgEmoji("🔎")}  ${B("SEARCHING")} ${escapeHtml(matchedFile.name)} for ${CODE(escapeHtml(query))}…`
+                );
+                try {
+                    const res = await searchTextFile(matchedFile.path, query, 20);
+                    const card = renderLocalSearch({
+                        query,
+                        total: res.total,
+                        matches: res.matches,
+                        fileName: matchedFile.name,
+                        fileSize: matchedFile.size,
+                        isProc,
+                        fileIdx,
+                    });
+                    const kb = localSearchResultKeyboard({
+                        query,
+                        total: res.total,
+                        fileIdx,
+                        isProc,
+                        isAll: false,
+                    });
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, card, kb);
+                    } else {
+                        await safeReply(ctx, card, kb);
+                    }
+                } catch (err) {
+                    const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+                    } else {
+                        await safeReply(ctx, errMsg, mainKeyboard());
+                    }
+                }
+                return;
+            }
+        }
+
+        // Vault-wide search across ALL raw and cleaned files
+        const totalVaultFiles = rawFiles.length + procFiles.length;
+        if (totalVaultFiles === 0) {
+            await safeReply(
+                ctx,
+                `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                mainKeyboard()
+            );
+            return;
+        }
+
         const status = await safeReply(
             ctx,
-            `🔎  ${B("LOCAL SEARCH")}  ⚡️\n${CODE(escapeHtml(query))}\n📂 ${I(escapeHtml(path.basename(file)))}`
+            `${tgEmoji("🔎")}  ${B("SEARCHING ALL VAULT FILES")}  ${tgEmoji("⚡️")}\nQuery: ${CODE(escapeHtml(query))}\n${I("Scanning server disk…")}`
         );
         try {
-            const result = await searchTextFile(file, query, 20);
+            const result = await searchAllVaultFiles(query, { limit: 20 });
+            const card = renderLocalSearch({
+                query,
+                total: result.total,
+                matches: result.matches,
+                fileResults: result.fileResults,
+                totalFiles: result.totalFiles,
+                searchedFiles: result.searchedFiles,
+                isAll: true,
+            });
+            const kb = localSearchResultKeyboard({
+                query,
+                total: result.total,
+                isAll: true,
+            });
             if (status && status.message_id) {
-                await safeEdit(ctx, status.message_id, renderSearch(query, result), mainKeyboard());
+                await safeEdit(ctx, status.message_id, card, kb);
             } else {
-                await safeReply(ctx, renderSearch(query, result), mainKeyboard());
+                await safeReply(ctx, card, kb);
             }
         } catch (err) {
+            const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
             if (status && status.message_id) {
-                await safeEdit(ctx, status.message_id, `💥  ${B("Local search failed")}\n${I(escapeHtml(err.message))}`);
+                await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
             } else {
-                await safeReply(ctx, `💥  ${B("Local search failed")}\n${I(escapeHtml(err.message))}`);
+                await safeReply(ctx, errMsg, mainKeyboard());
             }
         }
     });
@@ -3820,6 +4180,93 @@ function createBot(token, meta = {}) {
                 );
                 return;
             }
+
+            if (prompt.action === "lsearch:query") {
+                userPromptState.delete(ctx.chat.id);
+                const query = input.trim();
+                if (!query) {
+                    await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
+                    return;
+                }
+                const status = await safeReply(
+                    ctx,
+                    `${tgEmoji("🔎")}  ${B("SEARCHING ALL VAULT FILES")}  ${tgEmoji("⚡️")}\nQuery: ${CODE(escapeHtml(query))}\n${I("Scanning server disk…")}`
+                );
+                try {
+                    const result = await searchAllVaultFiles(query, { limit: 20 });
+                    const card = renderLocalSearch({
+                        query,
+                        total: result.total,
+                        matches: result.matches,
+                        fileResults: result.fileResults,
+                        totalFiles: result.totalFiles,
+                        searchedFiles: result.searchedFiles,
+                        isAll: true,
+                    });
+                    const kb = localSearchResultKeyboard({
+                        query,
+                        total: result.total,
+                        isAll: true,
+                    });
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, card, kb);
+                    } else {
+                        await safeReply(ctx, card, kb);
+                    }
+                } catch (err) {
+                    const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+                    } else {
+                        await safeReply(ctx, errMsg, mainKeyboard());
+                    }
+                }
+                return;
+            }
+
+            if (prompt.action === "file:search:custom") {
+                userPromptState.delete(ctx.chat.id);
+                const query = input.trim();
+                if (!query) {
+                    await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
+                    return;
+                }
+                const status = await safeReply(
+                    ctx,
+                    `${tgEmoji("🔎")}  ${B("SEARCHING")} ${escapeHtml(prompt.fileName)} for ${CODE(escapeHtml(query))}…`
+                );
+                try {
+                    const res = await searchTextFile(prompt.filePath, query, 20);
+                    const card = renderLocalSearch({
+                        query,
+                        total: res.total,
+                        matches: res.matches,
+                        fileName: prompt.fileName,
+                        isProc: prompt.isProc,
+                        fileIdx: prompt.fileIdx,
+                    });
+                    const kb = localSearchResultKeyboard({
+                        query,
+                        total: res.total,
+                        fileIdx: prompt.fileIdx,
+                        isProc: prompt.isProc,
+                        isAll: false,
+                    });
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, card, kb);
+                    } else {
+                        await safeReply(ctx, card, kb);
+                    }
+                } catch (err) {
+                    const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+                    } else {
+                        await safeReply(ctx, errMsg, mainKeyboard());
+                    }
+                }
+                return;
+            }
         }
     }
         if (msg.photo || msg.video || msg.audio || msg.voice || msg.sticker) {
@@ -5568,16 +6015,177 @@ function getDiskStats(dirPath = null) {
 }
 
 /**
- * Search a huge text file without loading it into memory.
+ * Search a text file or zip archive without excessive memory consumption.
+ * Supports .zip archives, small-file fast path, multi-core worker slicing, and streaming fallback.
  * @param {string} filePath
  * @param {string} query
- * @param {number} limit
+ * @param {number} [limit=20]
+ * @returns {Promise<{ total: number, matches: string[], isZip?: boolean }>}
  */
 async function searchTextFile(filePath, query, limit = 20) {
     const q = String(query || "").trim();
-    if (!q) return { total: 0, matches: [] };
-    const pool = getSharedPool();
-    return pool.searchFileParallel(filePath, q, limit);
+    if (!q || !filePath) return { total: 0, matches: [] };
+    if (!fs.existsSync(filePath)) return { total: 0, matches: [] };
+
+    // Support zip archives
+    if (filePath.toLowerCase().endsWith(".zip")) {
+        try {
+            const AdmZip = require("adm-zip");
+            const zip = new AdmZip(filePath);
+            const entries = zip.getEntries();
+            const matches = [];
+            let total = 0;
+            const qLower = q.toLowerCase();
+
+            for (const entry of entries) {
+                if (entry.isDirectory) continue;
+                const lowerName = entry.entryName.toLowerCase();
+                if (
+                    lowerName.endsWith(".txt") ||
+                    lowerName.endsWith(".log") ||
+                    lowerName.endsWith(".csv") ||
+                    lowerName.endsWith(".tsv") ||
+                    lowerName.endsWith(".json") ||
+                    !lowerName.includes(".")
+                ) {
+                    const text = entry.getData().toString("utf8");
+                    const lines = text.split(/\r?\n/);
+                    for (let i = 0; i < lines.length; i++) {
+                        let line = lines[i];
+                        if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+                        if (line.toLowerCase().includes(qLower)) {
+                            total++;
+                            if (matches.length < limit) {
+                                matches.push(line);
+                            }
+                        }
+                    }
+                }
+            }
+            return { total, matches, isZip: true };
+        } catch (err) {
+            console.error("Error reading zip during search:", filePath, err);
+            return { total: 0, matches: [], isZip: true };
+        }
+    }
+
+    // Text file search
+    try {
+        const stat = fs.statSync(filePath);
+        const qLower = q.toLowerCase();
+
+        // Fast in-memory path for files under 512 KB
+        if (stat.size < 512 * 1024) {
+            const content = fs.readFileSync(filePath, "utf8");
+            const lines = content.split(/\r?\n/);
+            const matches = [];
+            let total = 0;
+            for (let i = 0; i < lines.length; i++) {
+                let line = lines[i];
+                if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+                if (line.toLowerCase().includes(qLower)) {
+                    total++;
+                    if (matches.length < limit) matches.push(line);
+                }
+            }
+            return { total, matches, isZip: false };
+        }
+
+        // Multi-core parallel search for larger files
+        const pool = getSharedPool();
+        const res = await pool.searchFileParallel(filePath, q, limit);
+        if (res && typeof res.total === "number") {
+            return { total: res.total, matches: res.matches || [], isZip: false };
+        }
+    } catch (err) {
+        console.error("Worker pool search error, falling back to streaming search:", err);
+    }
+
+    // Fallback streaming search via readline
+    try {
+        const readline = require("readline");
+        const rl = readline.createInterface({
+            input: fs.createReadStream(filePath, { encoding: "utf8", highWaterMark: 1024 * 1024 }),
+            crlfDelay: Infinity,
+        });
+        const qLower = q.toLowerCase();
+        const matches = [];
+        let total = 0;
+        for await (let line of rl) {
+            if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+            if (line.toLowerCase().includes(qLower)) {
+                total++;
+                if (matches.length < limit) matches.push(line);
+            }
+        }
+        return { total, matches, isZip: false };
+    } catch (fallbackErr) {
+        console.error("Streaming search failed:", fallbackErr);
+        return { total: 0, matches: [], isZip: false };
+    }
+}
+
+/**
+ * Search across all files in the vault (raw and processed) in parallel.
+ * @param {string} query
+ * @param {object} [options]
+ * @param {number} [options.limit=20]
+ * @param {string} [options.rawRoot]
+ * @param {string} [options.procRoot]
+ * @returns {Promise<{ total: number, matches: string[], fileResults: Array, totalFiles: number, searchedFiles: number }>}
+ */
+async function searchAllVaultFiles(query, options = {}) {
+    const limit = typeof options.limit === "number" ? options.limit : 20;
+    const q = String(query || "").trim();
+    if (!q) return { total: 0, matches: [], fileResults: [], totalFiles: 0, searchedFiles: 0 };
+
+    const rawRoot = options.rawRoot === null ? null : (options.rawRoot ? path.resolve(options.rawRoot) : localProcessRoot());
+    const procRoot = options.procRoot === null ? null : (options.procRoot ? path.resolve(options.procRoot) : localProcessedRoot());
+    const rawFiles = rawRoot ? scanDirFiles(rawRoot).map((f) => ({ ...f, type: "raw" })) : [];
+    const procFiles = procRoot ? scanDirFiles(procRoot).map((f) => ({ ...f, type: "proc" })) : [];
+    const allFiles = [...rawFiles, ...procFiles];
+
+    if (allFiles.length === 0) {
+        return { total: 0, matches: [], fileResults: [], totalFiles: 0, searchedFiles: 0 };
+    }
+
+    let grandTotal = 0;
+    const combinedMatches = [];
+    const fileResults = [];
+
+    for (const f of allFiles) {
+        try {
+            const res = await searchTextFile(f.path, q, limit);
+            if (res.total > 0) {
+                grandTotal += res.total;
+                fileResults.push({
+                    name: f.name,
+                    path: f.path,
+                    type: f.type,
+                    size: f.size,
+                    total: res.total,
+                    matches: res.matches,
+                });
+                for (const m of res.matches) {
+                    if (combinedMatches.length < limit) {
+                        combinedMatches.push(m);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Error searching vault file:", f.name, err);
+        }
+    }
+
+    fileResults.sort((a, b) => b.total - a.total);
+
+    return {
+        total: grandTotal,
+        matches: combinedMatches,
+        fileResults,
+        totalFiles: allFiles.length,
+        searchedFiles: fileResults.length,
+    };
 }
 
 /** Build a collision-resistant output path under LOCAL_PROCESSED_ROOT. */
@@ -5914,6 +6522,7 @@ module.exports = {
     getDiskStats,
     resolveLocalInput,
     searchTextFile,
+    searchAllVaultFiles,
     processedOutputPath,
     renderSaveError,
     scanDirFiles,

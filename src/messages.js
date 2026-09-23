@@ -1931,6 +1931,197 @@ function searchResultKeyboard(query, total = 0) {
 }
 
 /**
+ * Render local search result message.
+ */
+/**
+ * Render local search result message.
+ */
+function renderLocalSearch(params = {}) {
+    const p = (params && typeof params === "object") ? params : {};
+    const query = String(p.query || "");
+    const total = Number(p.total) || 0;
+    const matches = Array.isArray(p.matches) ? p.matches : [];
+    const fileName = p.fileName || null;
+    const fileSize = p.fileSize || 0;
+    const fileResults = Array.isArray(p.fileResults) ? p.fileResults : null;
+    const isAll = Boolean(p.isAll || fileResults);
+
+    const lines = [];
+    lines.push(
+        `${tgEmoji("🔎")}  ${B(isAll ? "VAULT SEARCH RESULTS" : "LOCAL FILE SEARCH")}  ${tgEmoji("⚡️")}`,
+        RULE,
+    );
+
+    if (fileName) {
+        lines.push(`📂  ${B("File:")} ${CODE(escapeHtml(fileName))}${fileSize > 0 ? ` (${humanSize(fileSize)})` : ""}`);
+    } else if (isAll) {
+        const searched = p.searchedFiles !== undefined ? p.searchedFiles : (fileResults ? fileResults.length : 0);
+        const totalF = p.totalFiles || searched;
+        lines.push(`📁  ${B("Scope:")} All Vault Files (${B(num(searched))} of ${num(totalF)} matched)`);
+    }
+    lines.push(`🎯  ${B("Query:")} ${CODE(escapeHtml(query))}`);
+    lines.push(`💎  ${B("Total Matches:")} ${B(num(total))} hit${total === 1 ? "" : "s"}`);
+    lines.push(RULE);
+
+    if (total === 0 || matches.length === 0) {
+        lines.push(
+            `⚠️  ${I("No matches found for this query.")}`,
+            "",
+            `💡 ${I("Suggestions:")}`,
+            `  • Try a broader search term (e.g. gmail.com instead of specific user)`,
+            `  • Use /lsearch <query> without a target to search across all vault files`,
+            `  • Save more files with /save`,
+        );
+        return lines.join("\n");
+    }
+
+    if (fileResults && fileResults.length > 0) {
+        lines.push(`${tgEmoji("📊")}  ${B("Matches By File:")}`);
+        const topFiles = fileResults.slice(0, 5);
+        topFiles.forEach((fr, idx) => {
+            if (!fr) return;
+            const icon = fr.type === "proc" ? tgEmoji("💎") : tgEmoji("📥");
+            lines.push(`  ${icon} ${B(`[${idx + 1}]`)} ${escapeHtml(fr.name || "file")}: ${B(num(fr.total))} matches`);
+        });
+        if (fileResults.length > 5) {
+            lines.push(`  ${I(`…+${fileResults.length - 5} more files with matches`)}`);
+        }
+        lines.push(RULE);
+    }
+
+    lines.push(`👁  ${B(`Sample Matches (Showing ${matches.length} of ${num(total)}):`)}`);
+    for (const m of matches.slice(0, 15)) {
+        lines.push(CODE(escapeHtml(m)));
+    }
+
+    if (total > matches.length) {
+        lines.push("");
+        lines.push(`📦  ${I(`+${num(total - matches.length)} more matches in vault files on server disk.`)}`);
+        lines.push(`👇 ${I("Tap Download below to get all matching lines in a clean .txt file!")}`);
+    } else {
+        lines.push("");
+        lines.push(`👇 ${I("Tap Download below to export these results as a text document:")}`);
+    }
+
+    return lines.join("\n");
+}
+
+/**
+ * Inline keyboard shown under local search results.
+ */
+function localSearchResultKeyboard(params = {}) {
+    const p = (params && typeof params === "object") ? params : {};
+    const rows = [];
+    const query = String(p.query || "").trim();
+    const total = Number(p.total) || 0;
+    const fileIdx = p.fileIdx !== undefined ? p.fileIdx : null;
+    const isProc = Boolean(p.isProc);
+    const isAll = Boolean(p.isAll);
+
+    if (total > 0 && query) {
+        const dlPayload = isAll ? `all:${query}` : `${isProc ? "proc" : "raw"}:${fileIdx}:${query}`;
+        rows.push([
+            Markup.button.callback(`📥 Download Matches (${num(total)})`, registerCallbackPayload("lsearch:dl:", dlPayload)),
+        ]);
+    }
+
+    const actionRow = [];
+    if (!isAll && fileIdx !== null) {
+        actionRow.push(Markup.button.callback("🔍 Search File Again", `file:search:${isProc ? "proc:" : ""}${fileIdx}`));
+        actionRow.push(Markup.button.callback("🌐 Search All Vault", registerCallbackPayload("lsearch:all:run:", query)));
+    } else {
+        actionRow.push(Markup.button.callback("🔍 New Vault Search", "lsearch:prompt"));
+    }
+    rows.push(actionRow);
+
+    rows.push([
+        Markup.button.callback("🏠 Back to Server Vault", "server_files"),
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+
+    return createInlineKeyboard(rows);
+}
+
+/**
+ * Render the /lsearch hub message.
+ */
+function renderLocalSearchHub(rawFiles = [], procFiles = []) {
+    const rf = Array.isArray(rawFiles) ? rawFiles : [];
+    const pf = Array.isArray(procFiles) ? procFiles : [];
+    const lines = [];
+    lines.push(
+        `${tgEmoji("🔎")}  ${B("LOCAL VAULT SEARCH HUB")}  ${tgEmoji("⚡️")}`,
+        RULE,
+        `Fast multi-core searching across files stored on your server disk.`,
+        `💡 ${I("Search gigabyte dumps or cleaned output files in milliseconds without high RAM usage.")}`,
+        "",
+        `${tgEmoji("📊")}  ${B("Searchable Vault Inventory:")}`,
+        `  ${tgEmoji("📥")}  Raw Dumps: ${B(num(rf.length))} files`,
+        `  ${tgEmoji("💎")}  Cleaned Vault: ${B(num(pf.length))} files`,
+        RULE,
+        `💡  ${B("How to Search:")}`,
+        `  • ${CODE("/lsearch <query>")} — Search across ${B("ALL")} vault files`,
+        `  • ${CODE("/lsearch <query> <# or filename>")} — Search a ${B("specific")} file`,
+        `  • ${CODE("/lsearch <query> clean")} — Search only ${B("cleaned")} vault files`,
+        `  • ${CODE("/lsearch <query> raw")} — Search only ${B("raw")} dumps`,
+        "",
+        `💬 ${I("Or tap a quick search button below, or tap 'Enter Search Query':")}`,
+    );
+    return lines.join("\n");
+}
+
+/**
+ * Keyboard for /lsearch hub.
+ */
+function localSearchHubKeyboard(rawFiles = [], procFiles = []) {
+    const rows = [];
+    rows.push([
+        Markup.button.callback("✏️ Enter Search Query", "lsearch:prompt"),
+    ]);
+    rows.push([
+        Markup.button.callback("📧 Search Gmail", registerCallbackPayload("lsearch:all:run:", "gmail.com")),
+        Markup.button.callback("📧 Search Hotmail", registerCallbackPayload("lsearch:all:run:", "hotmail.com")),
+    ]);
+    rows.push([
+        Markup.button.callback("📧 Search Yahoo", registerCallbackPayload("lsearch:all:run:", "yahoo.com")),
+        Markup.button.callback("🌐 Search .com", registerCallbackPayload("lsearch:all:run:", ".com")),
+    ]);
+    rows.push([
+        Markup.button.callback("📂 Browse Server Vault", "server_files"),
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+    return createInlineKeyboard(rows);
+}
+
+/**
+ * Keyboard for single-file search prompt.
+ */
+function localFileSearchKeyboard(fileIdx = 0, isProc = false) {
+    const safeIdx = (typeof fileIdx === "number" || typeof fileIdx === "string") ? fileIdx : 0;
+    const rows = [];
+    const prefix = isProc ? "file:dosearch:proc:" : "file:dosearch:";
+    rows.push([
+        Markup.button.callback("✏️ Type Custom Query", `file:search:custom:${isProc ? "proc:" : ""}${safeIdx}`),
+    ]);
+    rows.push([
+        Markup.button.callback("📧 Gmail", `${prefix}${safeIdx}:gmail.com`),
+        Markup.button.callback("📧 Hotmail", `${prefix}${safeIdx}:hotmail.com`),
+    ]);
+    rows.push([
+        Markup.button.callback("📧 Yahoo", `${prefix}${safeIdx}:yahoo.com`),
+        Markup.button.callback("🌐 .com", `${prefix}${safeIdx}:.com`),
+    ]);
+    rows.push([
+        Markup.button.callback("🌐 Search All Vault Files Instead", "lsearch:prompt"),
+    ]);
+    rows.push([
+        Markup.button.callback("🔙 Back to Vault", "server_files"),
+        Markup.button.callback("❌ Cancel", "search:cancel"),
+    ]);
+    return createInlineKeyboard(rows);
+}
+
+/**
  * Seconds label for the send pacing, e.g. 7000 -> "7s".
  * @param {number} ms
  */
@@ -2759,6 +2950,11 @@ module.exports = {
     registerCallbackPayload,
     resolveCallbackPayload,
     ensureAnimatedEmojis,
+    renderLocalSearch,
+    localSearchResultKeyboard,
+    renderLocalSearchHub,
+    localSearchHubKeyboard,
+    localFileSearchKeyboard,
 };
 
 

@@ -126,7 +126,7 @@ class WorkerPool {
         }
     }
 
-    exec(payload) {
+    exec(payload, timeoutMs = 60000) {
         if (this.isClosed) {
             return Promise.reject(new Error("WORKER_POOL_CLOSED"));
         }
@@ -136,7 +136,38 @@ class WorkerPool {
         }
         this._ensureWorkers();
         return new Promise((resolve, reject) => {
-            this.queue.push({ payload, resolve, reject });
+            let timer = null;
+            if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
+                timer = setTimeout(() => {
+                    const idx = this.queue.findIndex((t) => t.resolve === resolve);
+                    if (idx !== -1) this.queue.splice(idx, 1);
+                    for (const [id, task] of this.pending.entries()) {
+                        if (task.resolve === resolve) {
+                            this.pending.delete(id);
+                            if (task.worker) {
+                                task.worker.terminate().catch(() => {});
+                                const wIdx = this.workers.indexOf(task.worker);
+                                if (wIdx !== -1) this.workers.splice(wIdx, 1);
+                                const fIdx = this.freeWorkers.indexOf(task.worker);
+                                if (fIdx !== -1) this.freeWorkers.splice(fIdx, 1);
+                                if (!this.isClosed) this._spawnWorker();
+                            }
+                            break;
+                        }
+                    }
+                    reject(new Error("WORKER_TASK_TIMEOUT"));
+                }, timeoutMs);
+                if (timer.unref) timer.unref();
+            }
+            const wrappedResolve = (val) => {
+                if (timer) clearTimeout(timer);
+                resolve(val);
+            };
+            const wrappedReject = (err) => {
+                if (timer) clearTimeout(timer);
+                reject(err);
+            };
+            this.queue.push({ payload, resolve: wrappedResolve, reject: wrappedReject });
             this._drainQueue();
         });
     }

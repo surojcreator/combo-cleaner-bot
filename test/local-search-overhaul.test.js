@@ -372,6 +372,72 @@ test("12. Bot file search custom query and download export flow", async () => {
     await fake.close();
 });
 
+test("13. Universal cancel words typed by user cancel search prompts immediately", async () => {
+    const fake = await startFakeApi();
+    const bot = makeBot(fake.apiRoot);
+    const chatId = 8883;
+
+    bot.userPromptState.set(chatId, { action: "lsearch:query", createdAt: Date.now() });
+    await bot.handleUpdate(textUpdate("cancel", chatId));
+
+    assert.ok(!bot.userPromptState.has(chatId), "Typing 'cancel' should clear userPromptState");
+    const cancelledMsg = fake.calls.some((c) => c.payload.text && c.payload.text.includes("Action cancelled"));
+    assert.ok(cancelledMsg, "Should reply with Action cancelled message");
+
+    // Test with 'stop'
+    bot.userPromptState.set(chatId, { action: "file:search:custom", createdAt: Date.now() });
+    await bot.handleUpdate(textUpdate("stop", chatId));
+    assert.ok(!bot.userPromptState.has(chatId), "Typing 'stop' should clear userPromptState");
+
+    await fake.close();
+});
+
+test("14. Search prompt expires after TTL and does not hijack subsequent messages", async () => {
+    const fake = await startFakeApi();
+    const bot = makeBot(fake.apiRoot);
+    const chatId = 8884;
+
+    // Set an expired prompt state (> 2 minutes old)
+    bot.userPromptState.set(chatId, {
+        action: "lsearch:query",
+        createdAt: Date.now() - (3 * 60 * 1000),
+    });
+
+    await bot.handleUpdate(textUpdate("hello bot", chatId));
+
+    assert.ok(!bot.userPromptState.has(chatId), "Expired prompt should be removed");
+    // Should have sent the default file guidance rather than SEARCHING ALL VAULT FILES
+    const searchMsg = fake.calls.some((c) => c.payload.text && c.payload.text.includes("SEARCHING ALL VAULT FILES"));
+    assert.equal(searchMsg, false, "Expired prompt must not trigger SEARCHING ALL VAULT FILES");
+
+    await fake.close();
+});
+
+test("15. Concurrency guard prevents duplicate simultaneous vault searches", async () => {
+    const fake = await startFakeApi();
+    const bot = makeBot(fake.apiRoot);
+    const chatId = 8885;
+
+    // Simulate active search running
+    bot.activeVaultSearches.set(chatId, {
+        query: "existing_query",
+        startedAt: Date.now(),
+        controller: new AbortController(),
+    });
+
+    bot.userPromptState.set(chatId, { action: "lsearch:query", createdAt: Date.now() });
+    await bot.handleUpdate(textUpdate("new_query", chatId));
+
+    const alreadyRunningMsg = fake.calls.some(
+        (c) => c.payload.text && c.payload.text.includes("vault search is already running")
+    );
+    assert.ok(alreadyRunningMsg, "Should inform user that a search is already running");
+
+    // Clean up
+    bot.activeVaultSearches.delete(chatId);
+    await fake.close();
+});
+
 test.after(() => {
     try {
         fs.rmSync(TEST_DIR, { recursive: true, force: true });

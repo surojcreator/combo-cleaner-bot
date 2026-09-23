@@ -107,7 +107,11 @@ if (parentPort) {
                         const nlIdx = buf.indexOf(0x0a, chunkOffset);
                         if (nlIdx === -1 || nlIdx >= bytesRead) {
                             const unread = buf.subarray(chunkOffset, bytesRead);
-                            remainder = remainder.length > 0 ? Buffer.concat([remainder, unread]) : Buffer.from(unread);
+                            if (remainder.length + unread.length > 32 * 1024 * 1024) {
+                                remainder = Buffer.alloc(0);
+                            } else {
+                                remainder = remainder.length > 0 ? Buffer.concat([remainder, unread]) : Buffer.from(unread);
+                            }
                             curFilePos += bytesRead;
                             break;
                         }

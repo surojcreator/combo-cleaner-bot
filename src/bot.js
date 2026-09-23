@@ -241,6 +241,8 @@ function createBot(token, meta = {}) {
     /** chatId -> { action: string, messageId?: number } active prompt state */
     const userPromptState = new Map();
     bot.userPromptState = userPromptState;
+    const activeVaultSearches = new Map();
+    bot.activeVaultSearches = activeVaultSearches;
     /** chatId -> absolute path currently being processed */
     const localJobs = new Map();
     /** chatId -> { items: Array<{ doc: any, ctx: any, name: string, messageId: number }>, timer: any, noticeId: number|null, latestCtx: any } */
@@ -1791,20 +1793,31 @@ function createBot(token, meta = {}) {
 
     bot.action("lsearch:prompt", async (ctx) => {
         await ctx.answerCbQuery().catch(() => { });
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const procFiles = scanDirFiles(localProcessedRoot());
+        const total = rawFiles.length + procFiles.length;
+        if (total === 0) {
+            userPromptState.delete(ctx.chat.id);
+            await safeReply(
+                ctx,
+                `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                mainKeyboard()
+            );
+            return;
+        }
         userPromptState.set(ctx.chat.id, {
             action: "lsearch:query",
             createdAt: Date.now(),
         });
-        const rawFiles = scanDirFiles(localProcessRoot());
-        const procFiles = scanDirFiles(localProcessedRoot());
         await safeReply(
             ctx,
             [
                 `${tgEmoji("🔎")}  ${B("ENTER VAULT SEARCH QUERY")}`,
                 RULE,
-                `🌐  Search will run across ${B(num(rawFiles.length + procFiles.length))} files in your server vault.`,
+                `🌐  Search will run across ${B(num(total))} files in your server vault.`,
                 "",
                 `💬  ${I("Send the word, email, domain, or keyword to search across all vault files:")}`,
+                `💡  ${I("Send cancel or tap below at any time to exit.")}`,
             ].join("\n"),
             createInlineKeyboard([
                 [Markup.button.callback("❌ Cancel", "search:cancel")],
@@ -1814,6 +1827,11 @@ function createBot(token, meta = {}) {
 
     bot.action("search:cancel", async (ctx) => {
         userPromptState.delete(ctx.chat.id);
+        if (activeVaultSearches.has(ctx.chat.id)) {
+            const active = activeVaultSearches.get(ctx.chat.id);
+            if (active && active.controller) active.controller.abort();
+            activeVaultSearches.delete(ctx.chat.id);
+        }
         await ctx.answerCbQuery("Search cancelled").catch(() => { });
         await safeReply(ctx, `🚫 Search prompt cancelled.`, mainKeyboard());
     });
@@ -1821,12 +1839,42 @@ function createBot(token, meta = {}) {
     bot.action(/^lsearch:all:run:(.+)$/, async (ctx) => {
         const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Searching vault for "${query}"…`);
+
+        const rawFiles = scanDirFiles(localProcessRoot());
+        const procFiles = scanDirFiles(localProcessedRoot());
+        if (rawFiles.length + procFiles.length === 0) {
+            await safeReply(
+                ctx,
+                `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                mainKeyboard()
+            );
+            return;
+        }
+
+        if (activeVaultSearches.has(ctx.chat.id)) {
+            await safeReply(
+                ctx,
+                `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+            );
+            return;
+        }
+
+        const abortController = new AbortController();
+        activeVaultSearches.set(ctx.chat.id, {
+            query,
+            startedAt: Date.now(),
+            controller: abortController,
+        });
+
         const status = await safeReply(
             ctx,
             `${tgEmoji("🔎")}  ${B("SEARCHING ALL VAULT FILES")}  ${tgEmoji("⚡️")}\nQuery: ${CODE(escapeHtml(query))}\n${I("Scanning server disk…")}`
         );
         try {
-            const result = await searchAllVaultFiles(query, { limit: 20 });
+            const result = await searchAllVaultFiles(query, {
+                limit: 20,
+                signal: abortController.signal,
+            });
             const card = renderLocalSearch({
                 query,
                 total: result.total,
@@ -1847,12 +1895,20 @@ function createBot(token, meta = {}) {
                 await safeReply(ctx, card, kb);
             }
         } catch (err) {
+            if (abortController.signal.aborted) {
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, "🚫 Vault search cancelled.", mainKeyboard());
+                }
+                return;
+            }
             const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
             if (status && status.message_id) {
                 await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
             } else {
                 await safeReply(ctx, errMsg, mainKeyboard());
             }
+        } finally {
+            activeVaultSearches.delete(ctx.chat.id);
         }
     });
 
@@ -2469,12 +2525,30 @@ function createBot(token, meta = {}) {
             return;
         }
 
+        if (activeVaultSearches.has(ctx.chat.id)) {
+            await safeReply(
+                ctx,
+                `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+            );
+            return;
+        }
+
+        const abortController = new AbortController();
+        activeVaultSearches.set(ctx.chat.id, {
+            query,
+            startedAt: Date.now(),
+            controller: abortController,
+        });
+
         const status = await safeReply(
             ctx,
             `${tgEmoji("🔎")}  ${B("SEARCHING ALL VAULT FILES")}  ${tgEmoji("⚡️")}\nQuery: ${CODE(escapeHtml(query))}\n${I("Scanning server disk…")}`
         );
         try {
-            const result = await searchAllVaultFiles(query, { limit: 20 });
+            const result = await searchAllVaultFiles(query, {
+                limit: 20,
+                signal: abortController.signal,
+            });
             const card = renderLocalSearch({
                 query,
                 total: result.total,
@@ -2495,12 +2569,20 @@ function createBot(token, meta = {}) {
                 await safeReply(ctx, card, kb);
             }
         } catch (err) {
+            if (abortController.signal.aborted) {
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, "🚫 Vault search cancelled.", mainKeyboard());
+                }
+                return;
+            }
             const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
             if (status && status.message_id) {
                 await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
             } else {
                 await safeReply(ctx, errMsg, mainKeyboard());
             }
+        } finally {
+            activeVaultSearches.delete(ctx.chat.id);
         }
     });
 
@@ -4157,20 +4239,28 @@ function createBot(token, meta = {}) {
         if (msg.text && userPromptState.has(ctx.chat.id)) {
             const prompt = userPromptState.get(ctx.chat.id);
             const promptStart = prompt.startedAt || prompt.createdAt || 0;
-            const promptTtl = prompt.action === "save:listening" ? 60 * 60 * 1000 : 15 * 60 * 1000;
+            const promptTtl = prompt.action === "save:listening" ? 60 * 60 * 1000 : 2 * 60 * 1000;
             if (promptStart > 0 && (Date.now() - promptStart > promptTtl)) {
                 userPromptState.delete(ctx.chat.id);
             } else {
                 const input = msg.text.trim();
-
-            if (prompt.action === "save:listening") {
                 const lower = input.toLowerCase();
-                if (lower === "done" || lower === "finish" || lower === "complete") {
-                    await finishSaveSession(ctx);
+
+                // Universal cancel across all interactive prompts
+                if (lower === "cancel" || lower === "stop" || lower === "exit" || lower === "quit" || lower === "back" || lower === "menu") {
+                    userPromptState.delete(ctx.chat.id);
+                    if (activeVaultSearches.has(ctx.chat.id)) {
+                        const active = activeVaultSearches.get(ctx.chat.id);
+                        if (active && active.controller) active.controller.abort();
+                        activeVaultSearches.delete(ctx.chat.id);
+                    }
+                    await safeReply(ctx, `🚫 Action cancelled.`, mainKeyboard());
                     return;
                 }
-                if (lower === "cancel" || lower === "stop") {
-                    await cancelSaveSession(ctx);
+
+            if (prompt.action === "save:listening") {
+                if (lower === "done" || lower === "finish" || lower === "complete") {
+                    await finishSaveSession(ctx);
                     return;
                 }
                 await safeReply(
@@ -4291,12 +4381,42 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
                     return;
                 }
+
+                const rawFiles = scanDirFiles(localProcessRoot());
+                const procFiles = scanDirFiles(localProcessedRoot());
+                if (rawFiles.length + procFiles.length === 0) {
+                    await safeReply(
+                        ctx,
+                        `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                        mainKeyboard()
+                    );
+                    return;
+                }
+
+                if (activeVaultSearches.has(ctx.chat.id)) {
+                    await safeReply(
+                        ctx,
+                        `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+                    );
+                    return;
+                }
+
+                const abortController = new AbortController();
+                activeVaultSearches.set(ctx.chat.id, {
+                    query,
+                    startedAt: Date.now(),
+                    controller: abortController,
+                });
+
                 const status = await safeReply(
                     ctx,
                     `${tgEmoji("🔎")}  ${B("SEARCHING ALL VAULT FILES")}  ${tgEmoji("⚡️")}\nQuery: ${CODE(escapeHtml(query))}\n${I("Scanning server disk…")}`
                 );
                 try {
-                    const result = await searchAllVaultFiles(query, { limit: 20 });
+                    const result = await searchAllVaultFiles(query, {
+                        limit: 20,
+                        signal: abortController.signal,
+                    });
                     const card = renderLocalSearch({
                         query,
                         total: result.total,
@@ -4317,12 +4437,20 @@ function createBot(token, meta = {}) {
                         await safeReply(ctx, card, kb);
                     }
                 } catch (err) {
+                    if (abortController.signal.aborted) {
+                        if (status && status.message_id) {
+                            await safeEdit(ctx, status.message_id, "🚫 Vault search cancelled.", mainKeyboard());
+                        }
+                        return;
+                    }
                     const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
                     if (status && status.message_id) {
                         await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
                     } else {
                         await safeReply(ctx, errMsg, mainKeyboard());
                     }
+                } finally {
+                    activeVaultSearches.delete(ctx.chat.id);
                 }
                 return;
             }
@@ -4334,12 +4462,30 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
                     return;
                 }
+
+                if (activeVaultSearches.has(ctx.chat.id)) {
+                    await safeReply(
+                        ctx,
+                        `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+                    );
+                    return;
+                }
+
+                const abortController = new AbortController();
+                activeVaultSearches.set(ctx.chat.id, {
+                    query,
+                    startedAt: Date.now(),
+                    controller: abortController,
+                });
+
                 const status = await safeReply(
                     ctx,
                     `${tgEmoji("🔎")}  ${B("SEARCHING")} ${escapeHtml(prompt.fileName)} for ${CODE(escapeHtml(query))}…`
                 );
                 try {
-                    const res = await searchTextFile(prompt.filePath, query, 20);
+                    const res = await searchTextFile(prompt.filePath, query, 20, {
+                        signal: abortController.signal,
+                    });
                     const card = renderLocalSearch({
                         query,
                         total: res.total,
@@ -4361,12 +4507,20 @@ function createBot(token, meta = {}) {
                         await safeReply(ctx, card, kb);
                     }
                 } catch (err) {
+                    if (abortController.signal.aborted) {
+                        if (status && status.message_id) {
+                            await safeEdit(ctx, status.message_id, "🚫 Vault search cancelled.", mainKeyboard());
+                        }
+                        return;
+                    }
                     const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
                     if (status && status.message_id) {
                         await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
                     } else {
                         await safeReply(ctx, errMsg, mainKeyboard());
                     }
+                } finally {
+                    activeVaultSearches.delete(ctx.chat.id);
                 }
                 return;
             }
@@ -6172,14 +6326,27 @@ function getDiskStats(dirPath = null) {
  * @param {number} [limit=20]
  * @returns {Promise<{ total: number, matches: string[], isZip?: boolean }>}
  */
-async function searchTextFile(filePath, query, limit = 20) {
+async function searchTextFile(filePath, query, limit = 20, options = {}) {
     const q = String(query || "").trim();
     if (!q || !filePath) return { total: 0, matches: [] };
     if (!fs.existsSync(filePath)) return { total: 0, matches: [] };
+    const signal = options && options.signal ? options.signal : null;
+    if (signal && signal.aborted) {
+        const err = new Error("SEARCH_ABORTED");
+        err.name = "AbortError";
+        throw err;
+    }
 
     // Support zip archives
     if (filePath.toLowerCase().endsWith(".zip")) {
         try {
+            const stat = fs.statSync(filePath);
+            const maxZipBytes = processMaxZipBytes();
+            if (stat.size > maxZipBytes) {
+                console.warn(`Skipping zip search for ${filePath}: size ${stat.size} exceeds cap ${maxZipBytes}`);
+                return { total: 0, matches: [], isZip: true, skipped: true };
+            }
+
             const AdmZip = require("adm-zip");
             const zip = new AdmZip(filePath);
             const entries = zip.getEntries();
@@ -6188,6 +6355,11 @@ async function searchTextFile(filePath, query, limit = 20) {
             const qLower = q.toLowerCase();
 
             for (const entry of entries) {
+                if (signal && signal.aborted) {
+                    const err = new Error("SEARCH_ABORTED");
+                    err.name = "AbortError";
+                    throw err;
+                }
                 if (entry.isDirectory) continue;
                 const lowerName = entry.entryName.toLowerCase();
                 if (
@@ -6211,9 +6383,11 @@ async function searchTextFile(filePath, query, limit = 20) {
                         }
                     }
                 }
+                await new Promise((r) => setImmediate(r));
             }
             return { total, matches, isZip: true };
         } catch (err) {
+            if (err.name === "AbortError" || (signal && signal.aborted)) throw err;
             console.error("Error reading zip during search:", filePath, err);
             return { total: 0, matches: [], isZip: true };
         }
@@ -6248,6 +6422,7 @@ async function searchTextFile(filePath, query, limit = 20) {
             return { total: res.total, matches: res.matches || [], isZip: false };
         }
     } catch (err) {
+        if (err.name === "AbortError" || (signal && signal.aborted)) throw err;
         console.error("Worker pool search error, falling back to streaming search:", err);
     }
 
@@ -6262,6 +6437,12 @@ async function searchTextFile(filePath, query, limit = 20) {
         const matches = [];
         let total = 0;
         for await (let line of rl) {
+            if (signal && signal.aborted) {
+                rl.close();
+                const err = new Error("SEARCH_ABORTED");
+                err.name = "AbortError";
+                throw err;
+            }
             if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
             if (line.toLowerCase().includes(qLower)) {
                 total++;
@@ -6270,6 +6451,7 @@ async function searchTextFile(filePath, query, limit = 20) {
         }
         return { total, matches, isZip: false };
     } catch (fallbackErr) {
+        if (fallbackErr.name === "AbortError" || (signal && signal.aborted)) throw fallbackErr;
         console.error("Streaming search failed:", fallbackErr);
         return { total: 0, matches: [], isZip: false };
     }
@@ -6282,12 +6464,16 @@ async function searchTextFile(filePath, query, limit = 20) {
  * @param {number} [options.limit=20]
  * @param {string} [options.rawRoot]
  * @param {string} [options.procRoot]
+ * @param {AbortSignal} [options.signal]
+ * @param {number} [options.timeoutMs=25000]
  * @returns {Promise<{ total: number, matches: string[], fileResults: Array, totalFiles: number, searchedFiles: number }>}
  */
 async function searchAllVaultFiles(query, options = {}) {
     const limit = typeof options.limit === "number" ? options.limit : 20;
     const q = String(query || "").trim();
     if (!q) return { total: 0, matches: [], fileResults: [], totalFiles: 0, searchedFiles: 0 };
+    const signal = options && options.signal ? options.signal : null;
+    const timeoutMs = typeof options.timeoutMs === "number" ? options.timeoutMs : 25000;
 
     const rawRoot = options.rawRoot === null ? null : (options.rawRoot ? path.resolve(options.rawRoot) : localProcessRoot());
     const procRoot = options.procRoot === null ? null : (options.procRoot ? path.resolve(options.procRoot) : localProcessedRoot());
@@ -6302,10 +6488,23 @@ async function searchAllVaultFiles(query, options = {}) {
     let grandTotal = 0;
     const combinedMatches = [];
     const fileResults = [];
+    const startTime = Date.now();
 
     for (const f of allFiles) {
+        if (signal && signal.aborted) {
+            const err = new Error("SEARCH_ABORTED");
+            err.name = "AbortError";
+            throw err;
+        }
+        if (Date.now() - startTime > timeoutMs) {
+            console.warn(`searchAllVaultFiles reached timeout of ${timeoutMs}ms; returning partial results`);
+            break;
+        }
+        // Yield to event loop between files so the bot stays completely responsive to typing!
+        await new Promise((r) => setImmediate(r));
+
         try {
-            const res = await searchTextFile(f.path, q, limit);
+            const res = await searchTextFile(f.path, q, limit, { signal });
             if (res.total > 0) {
                 grandTotal += res.total;
                 fileResults.push({
@@ -6323,6 +6522,7 @@ async function searchAllVaultFiles(query, options = {}) {
                 }
             }
         } catch (err) {
+            if (err.name === "AbortError" || (signal && signal.aborted)) throw err;
             console.error("Error searching vault file:", f.name, err);
         }
     }

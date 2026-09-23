@@ -817,6 +817,10 @@ function afterCombineKeyboard(downloadUrl = null) {
         Markup.button.callback("📊 Stats", "stats"),
     ]);
     rows.push([
+        Markup.button.callback("🚀 ULP Search", "ulp:menu"),
+        Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+    ]);
+    rows.push([
         Markup.button.callback("📂 Server Vault", "server_files"),
         Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
     ]);
@@ -843,6 +847,10 @@ function forwardedLogsKeyboard(downloadUrl = "", token = null) {
     row2.push(Markup.button.callback("📊 Stats", "stats"));
     rows.push(row2);
     rows.push([
+        Markup.button.callback("🚀 ULP Search", "ulp:menu"),
+        Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+    ]);
+    rows.push([
         Markup.button.callback("📂 Server Vault", "server_files"),
         Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
     ]);
@@ -868,6 +876,10 @@ function forwardedZipKeyboard(downloadUrl = "", token = null) {
     }
     row2.push(Markup.button.callback("📊 Stats", "stats"));
     rows.push(row2);
+    rows.push([
+        Markup.button.callback("🚀 ULP Search", "ulp:menu"),
+        Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+    ]);
     rows.push([
         Markup.button.callback("📂 Server Vault", "server_files"),
         Markup.button.callback("🧹 Wipe Batch", "clear:ask"),

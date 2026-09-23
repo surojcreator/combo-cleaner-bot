@@ -34,6 +34,17 @@ test("freemail domains are never returned as the site", () => {
     assert.strictEqual(isFreemail("GMAIL.com"), true);
 });
 
+test("AOL family and webmail domains are recognized as freemail and never returned as site", () => {
+    assert.strictEqual(isFreemail("aol.com"), true);
+    assert.strictEqual(isFreemail("AIM.COM"), true);
+    assert.strictEqual(isFreemail("verizon.net"), true);
+    assert.strictEqual(isFreemail("netscape.net"), true);
+    assert.strictEqual(isFreemail("aol.co.uk"), true);
+    assert.strictEqual(isFreemail("compuserve.com"), true);
+    assert.strictEqual(detectSite("user@aim.com:pass\nperson@verizon.net:12345", ""), null);
+});
+
+
 test("siteFromFileName prefers domains, falls back to brand", () => {
     assert.strictEqual(siteFromFileName("my.site.org_list.txt"), "my.site.org");
     assert.strictEqual(siteFromFileName("netflix_dump.zip"), "netflix");

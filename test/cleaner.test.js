@@ -246,4 +246,14 @@ test("cleanLine and cleanLinesArray preserve and enforce url:username/email/pass
     ];
     const resWithUrl = cleanLinesArray(stealerBlockWithUrl, { keepUrl: true, fallbackUrl: "fallback.com" });
     assert.deepEqual(resWithUrl.lines, ["https://myportal.com/login:admin:mypassword"]);
-});
+
+    // 6. TSV and CSV lines with keepUrl and fallbackUrl
+    assert.equal(
+        cleanLine("user@domain.com\tSecretPass", { keepUrl: true, fallbackUrl: "service.com" }),
+        "service.com:user@domain.com:SecretPass",
+    );
+    assert.equal(
+        cleanLine("\"user@domain.com\",\"SecretPass\"", { keepUrl: true, fallbackUrl: "service.com" }),
+        "service.com:user@domain.com:SecretPass",
+    );
+});

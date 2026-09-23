@@ -921,14 +921,18 @@ function cleanLine(rawLine, options = {}) {
     if (line.includes("\t")) {
         const tsvFields = line.split(/\t+/).map((f) => unquote(f.trim())).filter((f) => f !== "");
         const tsvRes = extractFromFields(tsvFields, options);
-        if (tsvRes !== null) return tsvRes;
+        if (tsvRes !== null) {
+            return keepUrl && fallbackUrl && !hasUrlPrefix(tsvRes) ? `${fallbackUrl}:${tsvRes}` : tsvRes;
+        }
     }
 
     // Check for CSV format (comma-separated, respecting quotes)
     if (line.includes(",")) {
         const csvFields = splitCsvLine(line).map((f) => unquote(f.trim())).filter((f) => f !== "");
         const csvRes = extractFromFields(csvFields, options);
-        if (csvRes !== null) return csvRes;
+        if (csvRes !== null) {
+            return keepUrl && fallbackUrl && !hasUrlPrefix(csvRes) ? `${fallbackUrl}:${csvRes}` : csvRes;
+        }
     }
 
     // Check for leading label prefixes (e.g. "action:user:pass" -> "user:pass", "user:login:pass" -> "login:pass")

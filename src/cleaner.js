@@ -237,7 +237,7 @@ function cleanCcLine(line) {
 function isUrlOrDomain(left) {
     if (typeof left !== "string") return false;
     const value = left.trim();
-    if (!value) return false;
+    if (!value || (!value.includes(".") && !value.includes("/"))) return false;
     if (SCHEME_URL_RE.test(value)) return true;
     if (IPV4_RE.test(value)) return true;
     if (DOMAIN_RE.test(value)) return true;
@@ -797,6 +797,47 @@ function cleanLine(rawLine, options = {}) {
                             return keepUrl ? line : `${user}:${cleanPass}`;
                         } else if (isUsername(user, cleanPass)) {
                             return keepUrl ? line : `${user}:${cleanPass}`;
+                        }
+                    }
+                }
+            }
+        } else {
+            const thirdSep = line.indexOf(":", nextSep + 1);
+            if (thirdSep === -1 && !line.includes("\t") && !line.includes(",")) {
+                // Exactly TWO colons on the line, e.g. "site.com:user:pass"
+                const domainToken = line.slice(0, fastSep).trim();
+                if (isUrlOrDomain(domainToken)) {
+                    const userToken = line.slice(fastSep + 1, nextSep).trim();
+                    const userLower = userToken.toLowerCase();
+                    if (!CREDENTIAL_LABELS.has(userLower) && !PURE_FIELD_LABELS.has(userLower)) {
+                        const rawPass = line.slice(nextSep + 1);
+                        const cleanPass = stripTrailingMetadata(rawPass);
+                        if (cleanPass.length > 0 && !isJunkPair(userToken, cleanPass)) {
+                            if (userToken.includes("@") ? EMAIL_RE.test(userToken) : (isPhone(userToken) || isUsername(userToken, cleanPass))) {
+                                return keepUrl ? (userToken === line.slice(fastSep + 1, nextSep) && cleanPass === rawPass ? line : `${domainToken}:${userToken}:${cleanPass}`) : `${userToken}:${cleanPass}`;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else if (fastSep === 4 || fastSep === 5) {
+        // Fast path for URL-prefixed combos: "https://site.com/path:user@mail.com:pass"
+        if (line.charCodeAt(fastSep + 1) === 47 && line.charCodeAt(fastSep + 2) === 47) {
+            const afterScheme = fastSep + 3;
+            const urlSep1 = line.indexOf(":", afterScheme);
+            if (urlSep1 > 0) {
+                const urlSep2 = line.indexOf(":", urlSep1 + 1);
+                if (urlSep2 > 0 && line.indexOf(":", urlSep2 + 1) === -1 && !line.includes("\t") && !line.includes(",")) {
+                    const userToken = line.slice(urlSep1 + 1, urlSep2).trim();
+                    const userLower = userToken.toLowerCase();
+                    if (!CREDENTIAL_LABELS.has(userLower) && !PURE_FIELD_LABELS.has(userLower)) {
+                        const rawPass = line.slice(urlSep2 + 1);
+                        const cleanPass = stripTrailingMetadata(rawPass);
+                        if (cleanPass.length > 0 && !isJunkPair(userToken, cleanPass)) {
+                            if (userToken.includes("@") ? EMAIL_RE.test(userToken) : (isPhone(userToken) || isUsername(userToken, cleanPass))) {
+                                return keepUrl ? (userToken === line.slice(urlSep1 + 1, urlSep2) && cleanPass === rawPass ? line : `${line.slice(0, urlSep1).trim()}:${userToken}:${cleanPass}`) : `${userToken}:${cleanPass}`;
+                            }
                         }
                     }
                 }

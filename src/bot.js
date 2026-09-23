@@ -693,6 +693,7 @@ function createBot(token, meta = {}) {
             batch = [];
         };
 
+        let writeBuffer = "";
         const writeLine = async (line) => {
             if (seen.has(line)) {
                 totalDupes++;
@@ -703,8 +704,38 @@ function createBot(token, meta = {}) {
             }
             totalKept++;
             batch.push(line);
-            if (!outStream.write(line + "\n")) {
-                await once(outStream, "drain");
+            writeBuffer += line + "\n";
+            if (writeBuffer.length >= 262144) {
+                if (!outStream.write(writeBuffer)) {
+                    await once(outStream, "drain");
+                }
+                writeBuffer = "";
+            }
+            if (batch.length >= 10000) {
+                flushBatch();
+            }
+        };
+
+        const writeLinesBatch = async (lines) => {
+            if (!lines || lines.length === 0) return;
+            for (let k = 0; k < lines.length; k++) {
+                const line = lines[k];
+                if (seen.has(line)) {
+                    totalDupes++;
+                    continue;
+                }
+                if (seen.size < store.MAX_LINES_PER_CHAT) {
+                    seen.add(line);
+                }
+                totalKept++;
+                batch.push(line);
+                writeBuffer += line + "\n";
+                if (writeBuffer.length >= 262144) {
+                    if (!outStream.write(writeBuffer)) {
+                        await once(outStream, "drain");
+                    }
+                    writeBuffer = "";
+                }
             }
             if (batch.length >= 10000) {
                 flushBatch();
@@ -740,9 +771,7 @@ function createBot(token, meta = {}) {
                                 if (lower.endsWith(".txt") || lower.endsWith(".log") || lower.endsWith(".csv") || lower.endsWith(".tsv")) {
                                     const text = entry.getData().toString("utf8");
                                     const res = await extractAndCleanTextAsync(text, { keepUrl: true, dedupe: false });
-                                    for (const line of res.lines) {
-                                        await writeLine(line);
-                                    }
+                                    await writeLinesBatch(res.lines);
                                     totalDupes += res.stats.duplicates || 0;
                                     await reportProgress({
                                         currentFileIndex: fileIdx + 1,
@@ -764,16 +793,14 @@ function createBot(token, meta = {}) {
                         input: fs.createReadStream(f.path, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
                         crlfDelay: Infinity,
                     });
-                    const { cleanLinesArray } = require("./cleaner");
+                    const { getSharedPool } = require("./worker-pool");
                     let chunk = [];
                     for await (const line of rl) {
                         chunk.push(line);
                         if (chunk.length >= 25000) {
-                            const res = cleanLinesArray(chunk, { keepUrl: true, dedupe: false });
+                            const res = await getSharedPool().cleanLinesParallel(chunk, { keepUrl: true, dedupe: false });
                             chunk = [];
-                            for (const cl of res.lines) {
-                                await writeLine(cl);
-                            }
+                            await writeLinesBatch(res.lines);
                             totalDupes += res.stats.duplicates || 0;
                             await reportProgress({
                                 currentFileIndex: fileIdx + 1,
@@ -787,11 +814,9 @@ function createBot(token, meta = {}) {
                         }
                     }
                     if (chunk.length > 0) {
-                        const res = cleanLinesArray(chunk, { keepUrl: true, dedupe: false });
+                        const res = await getSharedPool().cleanLinesParallel(chunk, { keepUrl: true, dedupe: false });
                         chunk = [];
-                        for (const cl of res.lines) {
-                            await writeLine(cl);
-                        }
+                        await writeLinesBatch(res.lines);
                         totalDupes += res.stats.duplicates || 0;
                     }
                 }
@@ -807,6 +832,12 @@ function createBot(token, meta = {}) {
             }, true);
 
             flushBatch();
+            if (writeBuffer.length > 0) {
+                if (!outStream.write(writeBuffer)) {
+                    await once(outStream, "drain");
+                }
+                writeBuffer = "";
+            }
             outStream.end();
             await once(outStream, "finish");
             fs.renameSync(partialPath, outPath);

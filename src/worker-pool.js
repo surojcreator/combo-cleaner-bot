@@ -4,6 +4,7 @@ const { Worker } = require("node:worker_threads");
 const os = require("node:os");
 const path = require("node:path");
 const fs = require("node:fs");
+const { createSearchMatcher, searchBufferCI } = require("./cleaner");
 
 class WorkerPool {
     constructor(workerPath, numWorkers) {
@@ -277,16 +278,16 @@ class WorkerPool {
             if (typeof limitOrOptions.chunkSize === "number") actualChunkSize = limitOrOptions.chunkSize;
         }
 
-        const qLower = String(query).trim().toLowerCase();
-        if (!qLower) return { total: 0, matches: [] };
+        const matcher = createSearchMatcher(query);
+        if (!matcher) return { total: 0, matches: [] };
 
-        // Fast path for small queries without worker overhead
-        if (lines.length < 5000) {
+        // Fast path for batches up to 50k lines without worker thread IPC overhead
+        if (lines.length < 50000) {
             let total = 0;
             const matches = [];
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
-                if (typeof line === "string" && line.toLowerCase().includes(qLower)) {
+                if (matcher(line)) {
                     total++;
                     if (matches.length < limit) matches.push(line);
                 }
@@ -299,7 +300,7 @@ class WorkerPool {
 
         for (let i = 0; i < lines.length; i += size) {
             const slice = lines.slice(i, i + size);
-            tasks.push(this.exec({ type: "search", lines: slice, query: qLower, limit }));
+            tasks.push(this.exec({ type: "search", lines: slice, query, limit }));
         }
 
         const results = await Promise.all(tasks);
@@ -342,26 +343,18 @@ class WorkerPool {
         const fileSize = stat.size;
         if (fileSize === 0) return { total: 0, matches: [] };
 
-        const qLower = q.toLowerCase();
-
-        // For small files (< 256KB), avoid worker dispatch overhead and do fast direct scan
-        if (fileSize < 256 * 1024) {
-            const matches = [];
-            let total = 0;
-            const content = fs.readFileSync(filePath, "utf8");
-            const lines = content.split("\n");
-            for (let i = 0; i < lines.length; i++) {
-                const raw = lines[i];
-                const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-                if (line.toLowerCase().includes(qLower)) {
-                    total++;
-                    if (matches.length < limit) matches.push(line);
-                }
+        // For files under 8MB, avoid worker dispatch overhead and do lightning-fast buffer scan
+        if (fileSize < 8 * 1024 * 1024) {
+            try {
+                const buf = fs.readFileSync(filePath);
+                return searchBufferCI(buf, q, limit);
+            } catch (_) {
+                // fall through to multi-core slice search if readFileSync fails
             }
-            return { total, matches };
         }
 
         this._ensureWorkers();
+
         const numSlices = Math.max(1, Math.min(this.numWorkers, Math.ceil(fileSize / (1024 * 1024))));
         const sliceSize = Math.ceil(fileSize / numSlices);
         const tasks = [];

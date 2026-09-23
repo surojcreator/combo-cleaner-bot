@@ -2,7 +2,7 @@
 
 const { parentPort } = require("node:worker_threads");
 const fs = require("node:fs");
-const { cleanLinesArray } = require("./cleaner");
+const { cleanLinesArray, createSearchMatcher } = require("./cleaner");
 
 if (parentPort) {
     parentPort.on("message", (msg) => {
@@ -15,41 +15,40 @@ if (parentPort) {
                     result,
                 });
             } else if (type === "search") {
-            const q = String(query || "").trim();
-            const qLower = q.toLowerCase();
-            const maxMatches = typeof msg.limit === "number" && msg.limit > 0 ? msg.limit : 50;
-            const matches = [];
-            let total = 0;
+                const matcher = createSearchMatcher(query);
+                const maxMatches = typeof msg.limit === "number" && msg.limit > 0 ? msg.limit : 50;
+                const matches = [];
+                let total = 0;
 
-            if (qLower && Array.isArray(lines)) {
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
-                    if (typeof line === "string" && line.toLowerCase().includes(qLower)) {
-                        total++;
-                        if (matches.length < maxMatches) matches.push(line);
+                if (matcher && Array.isArray(lines)) {
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        if (matcher(line)) {
+                            total++;
+                            if (matches.length < maxMatches) matches.push(line);
+                        }
                     }
                 }
-            }
 
-            parentPort.postMessage({
-                id,
-                result: { total, matches },
-            });
-        } else if (type === "searchFileSlice") {
-            const { filePath, start = 0, end = 0, limit } = msg;
-            const q = String(query || "").trim();
-            const qLower = q.toLowerCase();
-            const maxMatches = typeof limit === "number" && limit > 0 ? limit : 50;
-            const matches = [];
-            let total = 0;
-
-            if (!qLower || !filePath || end <= start) {
                 parentPort.postMessage({
                     id,
-                    result: { total: 0, matches: [] },
+                    result: { total, matches },
                 });
-                return;
-            }
+            } else if (type === "searchFileSlice") {
+                const { filePath, start = 0, end = 0, limit } = msg;
+                const matcher = createSearchMatcher(query);
+                const maxMatches = typeof limit === "number" && limit > 0 ? limit : 50;
+                const matches = [];
+                let total = 0;
+
+                if (!matcher || !filePath || end <= start) {
+                    parentPort.postMessage({
+                        id,
+                        result: { total: 0, matches: [] },
+                    });
+                    return;
+                }
+
 
             let fd = null;
             try {
@@ -93,7 +92,7 @@ if (parentPort) {
                         if (remainder.length > 0 && lineStartPos < end) {
                             let line = remainder.toString("utf8");
                             if (line.endsWith("\r")) line = line.slice(0, -1);
-                            if (line.toLowerCase().includes(qLower)) {
+                            if (matcher(line)) {
                                 total++;
                                 if (matches.length < maxMatches) matches.push(line);
                             }
@@ -123,7 +122,7 @@ if (parentPort) {
                         if (lineStartPos < end) {
                             let line = fullLineBuf.toString("utf8");
                             if (line.endsWith("\r")) line = line.slice(0, -1);
-                            if (line.toLowerCase().includes(qLower)) {
+                            if (matcher(line)) {
                                 total++;
                                 if (matches.length < maxMatches) matches.push(line);
                             }

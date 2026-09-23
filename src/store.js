@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { createSearchMatcher } = require("./cleaner");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const CUSTOM_DOMAINS_FILE = process.env.CUSTOM_DOMAINS_FILE || path.join(DATA_DIR, "custom-domains.json");
@@ -193,19 +194,19 @@ function getRawChat(chatId) {
  */
 function searchLines(chatId, query, limit = 20) {
     const chat = chats.get(chatId);
-    const q = String(query || "").trim();
-    if (!chat || !q) return { total: 0, matches: [] };
-    const qLower = q.toLowerCase();
+    const matcher = createSearchMatcher(query);
+    if (!chat || !matcher) return { total: 0, matches: [] };
     const matches = [];
     let total = 0;
     for (const line of chat.lines) {
-        if (typeof line === "string" && line.toLowerCase().includes(qLower)) {
+        if (matcher(line)) {
             total += 1;
             if (matches.length < limit) matches.push(line);
         }
     }
     return { total, matches };
 }
+
 
 function getLines(chatId) {
     const chat = chats.get(chatId);

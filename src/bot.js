@@ -12,7 +12,7 @@ const {
     mergeZipFiles,
     isZipBuffer,
 } = require("./extractor");
-const { cleanUserPassOnly } = require("./cleaner");
+const { cleanUserPassOnly, createSearchMatcher, searchBufferCI } = require("./cleaner");
 const { sanitizeSiteSlug, detectSite } = require("./sites");
 const { getSharedPool } = require("./worker-pool");
 const searchbot = require("./searchbot");
@@ -563,11 +563,12 @@ function createBot(token, meta = {}) {
         }
         const chatStats = store.getStats(ctx.chat.id);
         let result;
-        if (chatStats && chatStats.size > 5000) {
+        if (chatStats && chatStats.size > 100000) {
             result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
         } else {
             result = store.searchLines(ctx.chat.id, query, 20);
         }
+
         if (result && Array.isArray(result.matches)) {
             result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
         }
@@ -2234,7 +2235,7 @@ function createBot(token, meta = {}) {
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
         const chatStats = store.getStats(ctx.chat.id);
         let result;
-        if (chatStats && chatStats.size > 5000) {
+        if (chatStats && chatStats.size > 100000) {
             result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
         } else {
             result = store.searchLines(ctx.chat.id, query, 20);
@@ -2250,13 +2251,14 @@ function createBot(token, meta = {}) {
         await safeAnswerCbQuery(ctx, `Preparing "${query}" export…`);
         let matches = [];
         const chatStats = store.getStats(ctx.chat.id);
-        if (chatStats && chatStats.size > 5000) {
+        if (chatStats && chatStats.size > 100000) {
             const res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 100000);
             matches = res.matches;
         } else {
             const res = store.searchLines(ctx.chat.id, query, 100000);
             matches = res.matches;
         }
+
         if (matches.length === 0) {
             await safeReply(ctx, `⚠️ No matches found in batch for ${CODE(escapeHtml(query))}.`, mainKeyboard());
             return;
@@ -3743,13 +3745,19 @@ function createBot(token, meta = {}) {
     // Inline button: site:view:<site>
     bot.action(/^site:view:(.+)$/, async (ctx) => {
         const domain = resolveCallbackPayload(ctx.match[1]);
-        await ctx.answerCbQuery(`Searching for ${domain}…`).catch(() => {});
-        const res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), domain, 20);
+        const chatStats = store.getStats(ctx.chat.id);
+        let res;
+        if (chatStats && chatStats.size > 100000) {
+            res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), domain, 20);
+        } else {
+            res = store.searchLines(ctx.chat.id, domain, 20);
+        }
         if (res && Array.isArray(res.matches)) {
             res.matches = res.matches.map((m) => cleanUserPassOnly(m) || m);
         }
         await safeReply(ctx, renderSearch(domain, res), searchResultKeyboard(domain, res.total));
     });
+
 
     // Inline button: Preview
     bot.action("preview", async (ctx) => {
@@ -4336,11 +4344,12 @@ function createBot(token, meta = {}) {
                 }
                 const chatStats = store.getStats(ctx.chat.id);
                 let result;
-                if (chatStats && chatStats.size > 5000) {
+                if (chatStats && chatStats.size > 100000) {
                     result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
                 } else {
                     result = store.searchLines(ctx.chat.id, query, 20);
                 }
+
                 if (result && Array.isArray(result.matches)) {
                     result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
                 }
@@ -6502,17 +6511,11 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
                     lowerName.endsWith(".json") ||
                     !lowerName.includes(".")
                 ) {
-                    const text = entry.getData().toString("utf8");
-                    const lines = text.split(/\r?\n/);
-                    for (let i = 0; i < lines.length; i++) {
-                        let line = lines[i];
-                        if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
-                        if (line.toLowerCase().includes(qLower)) {
-                            total++;
-                            if (matches.length < limit) {
-                                matches.push(line);
-                            }
-                        }
+                    const entryBuf = entry.getData();
+                    const subRes = searchBufferCI(entryBuf, q, limit - matches.length);
+                    total += subRes.total;
+                    for (const m of subRes.matches) {
+                        if (matches.length < limit) matches.push(m);
                     }
                 }
                 await new Promise((r) => setImmediate(r));
@@ -6528,23 +6531,12 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
     // Text file search
     try {
         const stat = fs.statSync(filePath);
-        const qLower = q.toLowerCase();
 
-        // Fast in-memory path for files under 512 KB
-        if (stat.size < 512 * 1024) {
-            const content = fs.readFileSync(filePath, "utf8");
-            const lines = content.split(/\r?\n/);
-            const matches = [];
-            let total = 0;
-            for (let i = 0; i < lines.length; i++) {
-                let line = lines[i];
-                if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
-                if (line.toLowerCase().includes(qLower)) {
-                    total++;
-                    if (matches.length < limit) matches.push(line);
-                }
-            }
-            return { total, matches, isZip: false };
+        // Fast in-memory buffer path for files under 16 MB
+        if (stat.size < 16 * 1024 * 1024) {
+            const buf = fs.readFileSync(filePath);
+            const res = searchBufferCI(buf, q, limit);
+            return { total: res.total, matches: res.matches, isZip: false };
         }
 
         // Multi-core parallel search for larger files
@@ -6565,7 +6557,7 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
             input: fs.createReadStream(filePath, { encoding: "utf8", highWaterMark: 1024 * 1024 }),
             crlfDelay: Infinity,
         });
-        const qLower = q.toLowerCase();
+        const matcher = createSearchMatcher(q);
         const matches = [];
         let total = 0;
         for await (let line of rl) {
@@ -6576,7 +6568,7 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
                 throw err;
             }
             if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
-            if (line.toLowerCase().includes(qLower)) {
+            if (matcher && matcher(line)) {
                 total++;
                 if (matches.length < limit) matches.push(line);
             }
@@ -6622,7 +6614,9 @@ async function searchAllVaultFiles(query, options = {}) {
     const fileResults = [];
     const startTime = Date.now();
 
-    for (const f of allFiles) {
+    // Concurrently process vault files in batches of 4 to maximize I/O and CPU throughput
+    const CONCURRENCY = 4;
+    for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
         if (signal && signal.aborted) {
             const err = new Error("SEARCH_ABORTED");
             err.name = "AbortError";
@@ -6632,11 +6626,24 @@ async function searchAllVaultFiles(query, options = {}) {
             console.warn(`searchAllVaultFiles reached timeout of ${timeoutMs}ms; returning partial results`);
             break;
         }
-        // Yield to event loop between files so the bot stays completely responsive to typing!
-        await new Promise((r) => setImmediate(r));
 
-        try {
-            const res = await searchTextFile(f.path, q, limit, { signal });
+        const batch = allFiles.slice(i, i + CONCURRENCY);
+        const batchResults = await Promise.all(batch.map(async (f) => {
+            if (signal && signal.aborted) return null;
+            if (Date.now() - startTime > timeoutMs) return null;
+            try {
+                const res = await searchTextFile(f.path, q, limit, { signal });
+                return { f, res };
+            } catch (err) {
+                if (err.name === "AbortError" || (signal && signal.aborted)) throw err;
+                console.error("Error searching vault file:", f.name, err);
+                return null;
+            }
+        }));
+
+        for (const item of batchResults) {
+            if (!item || !item.res) continue;
+            const { f, res } = item;
             if (res.total > 0) {
                 grandTotal += res.total;
                 fileResults.push({
@@ -6653,10 +6660,10 @@ async function searchAllVaultFiles(query, options = {}) {
                     }
                 }
             }
-        } catch (err) {
-            if (err.name === "AbortError" || (signal && signal.aborted)) throw err;
-            console.error("Error searching vault file:", f.name, err);
         }
+
+        // Yield to event loop between file batches so the bot stays completely responsive!
+        await new Promise((r) => setImmediate(r));
     }
 
     fileResults.sort((a, b) => b.total - a.total);
@@ -6669,6 +6676,7 @@ async function searchAllVaultFiles(query, options = {}) {
         searchedFiles: fileResults.length,
     };
 }
+
 
 /** Build a collision-resistant output path under LOCAL_PROCESSED_ROOT. */
 function processedOutputPath(name, chatId) {

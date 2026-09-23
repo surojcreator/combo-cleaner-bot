@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { cleanLine, cleanUserPassOnly, cleanText, isEmail, isPhone, isUrlOrDomain } = require("../src/cleaner");
+const { cleanLine, cleanUserPassOnly, createSearchMatcher, searchBufferCI, cleanText, isEmail, isPhone, isUrlOrDomain } = require("../src/cleaner");
 
 test("keeps plain email:password", () => {
     assert.equal(cleanLine("user@example.com:Passw0rd!"), "user@example.com:Passw0rd!");
@@ -305,4 +305,60 @@ test("cleanUserPassOnly strips URLs and domain prefixes returning pure user:pass
     assert.equal(cleanUserPassOnly(null), null);
     assert.equal(cleanUserPassOnly(undefined), null);
 });
+
+test("createSearchMatcher matches case-insensitively and escapes special regex chars", () => {
+    const matcher = createSearchMatcher("PayPal.Com");
+    assert.ok(matcher);
+    assert.equal(matcher("https://paypal.com/login:user:pass"), true);
+    assert.equal(matcher("USER@PAYPAL.COM:SECRET"), true);
+    assert.equal(matcher("otherdomain.org:user:pass"), false);
+    assert.equal(matcher(null), false);
+    assert.equal(matcher(12345), false);
+
+    // Special regex characters in query (e.g. +, *, ?, (), [])
+    const specialMatcher = createSearchMatcher("user+tag@domain.com");
+    assert.equal(specialMatcher("user+tag@domain.com:Pass123"), true);
+    assert.equal(specialMatcher("usertag@domain.com:Pass123"), false);
+
+    // Empty query returns null
+    assert.equal(createSearchMatcher(""), null);
+    assert.equal(createSearchMatcher("   "), null);
+    assert.equal(createSearchMatcher(null), null);
+});
+
+test("searchBufferCI scans buffers via Boyer-Moore-Horspool with zero garbage collection", () => {
+    const textData = [
+        "https://target.com/login:user1@mail.com:pass1",
+        "service.com:user2@target.com:pass2",
+        "https://target.com/acc?site=target.com:user3:pass3", // contains target.com twice on same line
+        "other.org:user4@somewhere.net:pass4",
+    ].join("\r\n");
+
+    const buf = Buffer.from(textData, "utf8");
+    const res = searchBufferCI(buf, "target.com", 10);
+    assert.equal(res.total, 3, "expected 3 distinct matching lines");
+    assert.equal(res.matches.length, 3);
+    assert.equal(res.matches[0], "https://target.com/login:user1@mail.com:pass1");
+    assert.equal(res.matches[1], "service.com:user2@target.com:pass2");
+    assert.equal(res.matches[2], "https://target.com/acc?site=target.com:user3:pass3");
+
+    // Single line without newline
+    const singleBuf = Buffer.from("SINGLE_TARGET_LINE");
+    const singleRes = searchBufferCI(singleBuf, "target");
+    assert.equal(singleRes.total, 1);
+    assert.equal(singleRes.matches[0], "SINGLE_TARGET_LINE");
+
+    // File with UTF-8 BOM
+    const bomBuf = Buffer.from("\uFEFFtarget.com:admin:secret\r\n");
+    const bomRes = searchBufferCI(bomBuf, "target.com");
+    assert.equal(bomRes.total, 1);
+    assert.equal(bomRes.matches[0], "target.com:admin:secret");
+
+    // Non-ASCII fallback query
+    const unicodeBuf = Buffer.from("секретный_логин:пароль123\nother:pass", "utf8");
+    const unicodeRes = searchBufferCI(unicodeBuf, "секретный", 10);
+    assert.equal(unicodeRes.total, 1);
+    assert.equal(unicodeRes.matches[0], "секретный_логин:пароль123");
+});
+
 

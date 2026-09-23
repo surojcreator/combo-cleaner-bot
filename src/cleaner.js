@@ -1320,9 +1320,103 @@ function cleanUserPassOnly(rawLine) {
     return trimmed;
 }
 
+/**
+ * Fast case-insensitive string matcher without per-line string allocations.
+ * Precompiles a case-insensitive RegExp from an escaped query string.
+ *
+ * @param {string} query
+ * @returns {((line: string) => boolean)|null}
+ */
+function createSearchMatcher(query) {
+    const q = String(query || "").trim();
+    if (!q) return null;
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(escaped, "i");
+    return (line) => typeof line === "string" && regex.test(line);
+}
+
+/**
+ * Fast case-insensitive search across a Buffer without splitting lines or allocating strings for non-matches.
+ * Uses Boyer-Moore-Horspool for ASCII queries and RegExp for non-ASCII queries.
+ *
+ * @param {Buffer} buf
+ * @param {string} query
+ * @param {number} [limit=20]
+ * @returns {{ total: number, matches: string[] }}
+ */
+function searchBufferCI(buf, query, limit = 20) {
+    const q = String(query || "").trim();
+    if (!q || !buf || buf.length === 0) return { total: 0, matches: [] };
+
+    const matches = [];
+    let total = 0;
+    const len = buf.length;
+    const maxMatches = typeof limit === "number" && limit > 0 ? limit : 20;
+
+    const isAscii = !/[^\x00-\x7F]/.test(q);
+
+    if (isAscii && q.length <= 256) {
+        const m = q.length;
+        const qLower = q.toLowerCase();
+        const table = new Uint8Array(256);
+        table.fill(m);
+        for (let i = 0; i < m - 1; i++) {
+            const c = qLower.charCodeAt(i);
+            table[c] = m - 1 - i;
+            if (c >= 97 && c <= 122) table[c - 32] = m - 1 - i;
+        }
+
+        let i = m - 1;
+        while (i < len) {
+            let k = 0;
+            while (k < m) {
+                let b = buf[i - k];
+                if (b >= 65 && b <= 90) b += 32;
+                if (b !== qLower.charCodeAt(m - 1 - k)) break;
+                k++;
+            }
+            if (k === m) {
+                const hit = i - m + 1;
+                let lineStart = buf.lastIndexOf(0x0a, hit);
+                lineStart = lineStart === -1 ? 0 : lineStart + 1;
+                let lineEnd = buf.indexOf(0x0a, hit);
+                if (lineEnd === -1) lineEnd = len;
+
+                let line = buf.subarray(lineStart, lineEnd).toString("utf8");
+                if (line.endsWith("\r")) line = line.slice(0, -1);
+                if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+
+                total++;
+                if (matches.length < maxMatches) matches.push(line);
+
+                i = lineEnd + m;
+            } else {
+                i += table[buf[i]];
+            }
+        }
+        return { total, matches };
+    }
+
+    const text = buf.toString("utf8");
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(escaped, "i");
+    const lines = text.split(/\r?\n/);
+    for (let j = 0; j < lines.length; j++) {
+        let line = lines[j];
+        if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+        if (regex.test(line)) {
+            total++;
+            if (matches.length < maxMatches) matches.push(line);
+        }
+    }
+    return { total, matches };
+}
+
 module.exports = {
     cleanLine,
     cleanUserPassOnly,
+    createSearchMatcher,
+    searchBufferCI,
     cleanCcLine,
     isCcLine,
     isCreditCardLine: isCcLine,
@@ -1339,4 +1433,4 @@ module.exports = {
     normalizeLine,
     splitCsvLine,
     isPlaceholder,
-};
+};

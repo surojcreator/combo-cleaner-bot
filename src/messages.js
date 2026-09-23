@@ -138,6 +138,10 @@ const EMOJI_KEY_MAP = {
     "➡": "arrow_right",
     "⬅️": "arrow_left",
     "⬅": "arrow_left",
+    "↔️": "arrow_left_right",
+    "↔": "arrow_left_right",
+    "🚫": "prohibited",
+    "👀": "eyes",
 };
 
 const REVERSE_EMOJI_KEY_MAP = Object.fromEntries(
@@ -368,6 +372,13 @@ const DEFAULT_CUSTOM_ANIMATED_EMOJIS = {
     "⬅️": "5371077759080598906",
     "⬅": "5371077759080598906",
     "arrow_left": "5371077759080598906",
+    "↔️": "5371077759080598905",
+    "↔": "5371077759080598905",
+    "arrow_left_right": "5371077759080598905",
+    "🚫": "5371077759080598847",
+    "prohibited": "5371077759080598847",
+    "👀": "5371077759080598831",
+    "eyes": "5371077759080598831",
 };
 
 /**
@@ -461,9 +472,9 @@ function attachButtonEmoji(btn) {
     let id = null;
 
     // Check for leading emoji
-    const match = text.match(/^([\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\uFE0F|\u200D)+/u);
+    const match = text.match(/^((?:[\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\uFE0F|\u200D)+)\s*/u);
     if (match) {
-        const sym = match[0].trim();
+        const sym = match[1].trim();
         id =
             customAnimatedEmojis.get(sym) ||
             (EMOJI_KEY_MAP[sym] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[sym]) : null) ||
@@ -589,15 +600,68 @@ function createInlineKeyboard(rows) {
  * @returns {string} HTML string with <tg-emoji> or fallback unicode
  */
 function tgEmoji(symbol, nameKey) {
+    if (!symbol) return "";
     const key = nameKey || EMOJI_KEY_MAP[symbol] || symbol;
-    const id =
+    let id =
         customAnimatedEmojis.get(symbol) ||
         (nameKey ? customAnimatedEmojis.get(nameKey) : null) ||
         customAnimatedEmojis.get(key);
+    if (!id && customAnimatedEmojis.size > 0) {
+        id =
+            DEFAULT_CUSTOM_ANIMATED_EMOJIS[symbol] ||
+            (EMOJI_KEY_MAP[symbol] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[symbol]] : null) ||
+            DEFAULT_CUSTOM_ANIMATED_EMOJIS[key];
+        if (!id && typeof symbol === "string") {
+            const stripped = symbol.replace(/\uFE0F/g, "");
+            id =
+                DEFAULT_CUSTOM_ANIMATED_EMOJIS[stripped] ||
+                (EMOJI_KEY_MAP[stripped] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[stripped]] : null);
+        }
+    }
     if (id) {
         return `${LT}tg-emoji emoji-id="${escapeHtml(id)}"${GT}${symbol}${LT}/tg-emoji${GT}`;
     }
     return symbol;
+}
+
+const HAS_EMOJI_RE = /(?:[0-9#*]\uFE0F?\u20E3|\p{Extended_Pictographic}|\p{Regional_Indicator}|[\u2190-\u21FF\u2300-\u23FF\u2460-\u27BF\u2900-\u2BFF])/u;
+const EMOJI_TOKEN_RE = /(<tg-emoji[^>]*>.*?<\/tg-emoji>|<[^>]+>)|((?:[0-9#*]\uFE0F?\u20E3)|(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|\uFE0F|\u200D|[\u2190-\u21FF\u2300-\u23FF\u2460-\u27BF\u2900-\u2BFF])+)/gu;
+
+/**
+ * Automatically transform bare unicode emojis in text into animated <tg-emoji> tags.
+ * If an emoji cannot be animated (no ID), remove it so no unanimated emojis appear.
+ * @param {string} html
+ * @returns {string}
+ */
+function ensureAnimatedEmojis(html) {
+    if (!html || typeof html !== "string") return html;
+    if (customAnimatedEmojis.size === 0) return html;
+    if (!HAS_EMOJI_RE.test(html)) {
+        return html;
+    }
+    return html.replace(EMOJI_TOKEN_RE, (match, tag, emoji) => {
+        if (tag) return tag;
+        if (!emoji) return match;
+        const sym = emoji.trim();
+        if (!sym) return "";
+        let id =
+            customAnimatedEmojis.get(sym) ||
+            (EMOJI_KEY_MAP[sym] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[sym]) : null) ||
+            DEFAULT_CUSTOM_ANIMATED_EMOJIS[sym] ||
+            (EMOJI_KEY_MAP[sym] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[sym]] : null);
+        if (!id) {
+            const stripped = sym.replace(/\uFE0F/g, "");
+            id =
+                customAnimatedEmojis.get(stripped) ||
+                (EMOJI_KEY_MAP[stripped] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[stripped]) : null) ||
+                DEFAULT_CUSTOM_ANIMATED_EMOJIS[stripped] ||
+                (EMOJI_KEY_MAP[stripped] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[stripped]] : null);
+        }
+        if (id) {
+            return `${LT}tg-emoji emoji-id="${escapeHtml(id)}"${GT}${sym}${LT}/tg-emoji${GT}`;
+        }
+        return "";
+    });
 }
 
 // Escape entities (for escaping user text), built from the ampersand char code.
@@ -2680,6 +2744,7 @@ module.exports = {
     EMOJI_KEY_MAP,
     registerCallbackPayload,
     resolveCallbackPayload,
+    ensureAnimatedEmojis,
 };
 
 

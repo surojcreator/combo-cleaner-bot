@@ -119,15 +119,15 @@ function normalizeLine(line) {
  */
 function unquote(s) {
     if (!s || typeof s !== "string") return "";
-    let str = s.trim();
-    if (
-        (str.startsWith('"') && str.endsWith('"') && str.length >= 2) ||
-        (str.startsWith("'") && str.endsWith("'") && str.length >= 2) ||
-        (str.startsWith("`") && str.endsWith("`") && str.length >= 2)
-    ) {
-        return str.slice(1, -1).trim();
+    const len = s.length;
+    if (len < 2) return s.trim();
+    const c0 = s.charCodeAt(0);
+    if (c0 === 34 /* '"' */ || c0 === 39 /* "'" */ || c0 === 96 /* '`' */) {
+        if (s.charCodeAt(len - 1) === c0) {
+            return s.slice(1, -1).trim();
+        }
     }
-    return str;
+    return s.trim();
 }
 
 /**
@@ -332,8 +332,23 @@ function isPlaceholder(val) {
  * @returns {boolean}
  */
 function isJunkPair(user, pass) {
-    const u = String(user || "").trim().toLowerCase();
-    const p = String(pass || "").trim().toLowerCase();
+    if (!user || !pass) return true;
+    const uLen = typeof user === "string" ? user.length : String(user).length;
+    const pLen = typeof pass === "string" ? pass.length : String(pass).length;
+    if (uLen === 0 || pLen === 0) return true;
+
+    // Fast check: credentials > 9 chars cannot match any of the short placeholders
+    // (longest placeholder is "anonymous" which is 9 chars) unless starting with punctuation
+    if (uLen > 9 && pLen > 9) {
+        const u0 = user.charCodeAt(0);
+        const p0 = pass.charCodeAt(0);
+        if (u0 !== 40 && u0 !== 60 && u0 !== 91 && p0 !== 40 && p0 !== 60 && p0 !== 91) {
+            return false;
+        }
+    }
+
+    const u = String(user).trim().toLowerCase();
+    const p = String(pass).trim().toLowerCase();
     if (!u || !p) return true;
     if (isPlaceholder(u) || isPlaceholder(p)) return true;
     if (
@@ -643,11 +658,6 @@ function cleanLine(rawLine, options = {}) {
     let line = typeof rawLine === "string" && !SPECIAL_WS_RE.test(rawLine) ? rawLine.trim() : normalizeLine(rawLine);
     if (!line) return null;
 
-    // Strip SQL INSERT / VALUES prefix
-    if (/^(?:INSERT\s+INTO\s+.*?\s+VALUES\s*|VALUES\s*)/i.test(line)) {
-        line = line.replace(/^(?:INSERT\s+INTO\s+.*?\s+VALUES\s*|VALUES\s*)/i, "").trim();
-    }
-
     // Strip trailing semicolons or commas from SQL / CSV / JSON lines
     if (line.endsWith(";") || line.endsWith(",")) {
         const strippedTrailing = line.replace(/[,;]+$/, "").trim();
@@ -664,8 +674,11 @@ function cleanLine(rawLine, options = {}) {
         }
     }
 
+    const len = line.length;
+    const c0 = line.charCodeAt(0);
+
     // Check for JSON object line (e.g. NDJSON database dumps or stealer logs)
-    if (line.charCodeAt(0) === 123 /* '{' */ && line.charCodeAt(line.length - 1) === 125 /* '}' */) {
+    if (c0 === 123 /* '{' */ && line.charCodeAt(len - 1) === 125 /* '}' */) {
         try {
             const obj = JSON.parse(line);
             if (obj && typeof obj === "object") {
@@ -713,52 +726,68 @@ function cleanLine(rawLine, options = {}) {
         } catch (_) {}
     }
 
+
+    // Strip SQL INSERT / VALUES prefix only if line starts with i/I/v/V
+    const lowerC0 = c0 | 32;
+    if (lowerC0 === 105 /* i */ || lowerC0 === 118 /* v */) {
+        if (/^(?:INSERT\s+INTO\s+.*?\s+VALUES\s*|VALUES\s*)/i.test(line)) {
+            line = line.replace(/^(?:INSERT\s+INTO\s+.*?\s+VALUES\s*|VALUES\s*)/i, "").trim();
+        }
+    }
+
     // Normalize SQL tuple parentheses: ('user', 'pass') -> 'user', 'pass'
     if (line.charCodeAt(0) === 40 /* '(' */ && line.charCodeAt(line.length - 1) === 41 /* ')' */) {
         line = line.slice(1, -1).trim();
     }
 
     // Normalize wrapping quotes or quoted delimiter lines (e.g. "user:pass", "user":"pass", "user","pass")
-    if (
-        (line.startsWith('"') && line.endsWith('"') && line.length >= 2 && line.indexOf('"', 1) === line.length - 1) ||
-        (line.startsWith("'") && line.endsWith("'") && line.length >= 2 && line.indexOf("'", 1) === line.length - 1)
-    ) {
-        line = line.slice(1, -1).trim();
-    } else if (
-        line.startsWith('"') &&
-        line.endsWith('"') &&
-        line.length >= 5 &&
-        /^"[^"]+"\s*[:|,]\s*"[^"]+"$/.test(line)
-    ) {
-        line = line.slice(1, -1).replace(/"\s*[:|,]\s*"/, ":").trim();
-    } else if (
-        line.startsWith("'") &&
-        line.endsWith("'") &&
-        line.length >= 5 &&
-        /^'[^']+'\s*[:|,]\s*'[^']+'$/.test(line)
-    ) {
-        line = line.slice(1, -1).replace(/'\s*[:|,]\s*'/, ":").trim();
+    if (line.charCodeAt(0) === 34 /* '"' */ || line.charCodeAt(0) === 39 /* "'" */) {
+        const curLen = line.length;
+        const quoteChar = line[0];
+        if (line.charCodeAt(curLen - 1) === line.charCodeAt(0) && line.indexOf(quoteChar, 1) === curLen - 1) {
+            line = line.slice(1, -1).trim();
+        } else if (curLen >= 5 && /^"[^"]+"\s*[:|,]\s*"[^"]+"$/.test(line)) {
+            line = line.slice(1, -1).replace(/"\s*[:|,]\s*"/, ":").trim();
+        } else if (curLen >= 5 && /^'[^']+'\s*[:|,]\s*'[^']+'$/.test(line)) {
+            line = line.slice(1, -1).replace(/'\s*[:|,]\s*'/, ":").trim();
+        }
     }
 
-    // Ultra-fast path: standard email:password, phone:password, or username:password lines with no URL, pipe, semicolon, comma, or labels
+    // Ultra-fast path: standard email:password, phone:password, or username:password lines with no URL or conflicting colons
     const fastSep = line.indexOf(":");
     if (
         fastSep > 0 &&
-        !line.includes("|") &&
-        !line.includes(";") &&
-        !line.includes(",") &&
-        !line.includes("\t") &&
         line.charCodeAt(fastSep + 1) !== 47 /* '/' */ &&
         line.charCodeAt(fastSep + 1) !== 58 /* ':' */
     ) {
         const nextSep = line.indexOf(":", fastSep + 1);
-        if (nextSep === -1 && !line.includes(" ")) {
-            // Exactly ONE colon on the entire line and zero spaces
-            const user = line.slice(0, fastSep);
-            if (!user.includes(" ")) {
-                const pass = line.slice(fastSep + 1);
-                if (pass.length > 0 && !isJunkPair(user, pass)) {
-                    const cleanPass = !/[\s;|,[()\]]/.test(pass) ? pass : stripTrailingMetadata(pass);
+        if (nextSep === -1) {
+            // Exactly ONE colon on the entire line
+            if (!/[|;,\t ()\[\]]/.test(line)) {
+                // Zero spaces, zero delimiters, zero brackets: pristine combo
+                const user = line.slice(0, fastSep);
+                const userLower = user.toLowerCase();
+                if (!CREDENTIAL_LABELS.has(userLower) && !PURE_FIELD_LABELS.has(userLower)) {
+                    const pass = line.slice(fastSep + 1);
+                    if (pass.length > 0 && !isJunkPair(user, pass)) {
+                        if (user.includes("@")) {
+                            if (EMAIL_RE.test(user)) {
+                                return line;
+                            }
+                        } else if (isPhone(user)) {
+                            return line;
+                        } else if (isUsername(user, pass)) {
+                            return line;
+                        }
+                    }
+                }
+            } else if (!line.includes("\t") && !line.includes(",")) {
+                // Has spaces or bracket/pipe metadata (e.g. "user:pass | IP: 1.2.3.4" or "user:pass [Chrome]")
+                const user = line.slice(0, fastSep).trim();
+                const userLower = user.toLowerCase();
+                if (!user.includes(" ") && !user.includes("|") && !user.includes(";") && !CREDENTIAL_LABELS.has(userLower) && !PURE_FIELD_LABELS.has(userLower)) {
+                    const rawPass = line.slice(fastSep + 1);
+                    const cleanPass = stripTrailingMetadata(rawPass);
                     if (cleanPass.length > 0 && !isJunkPair(user, cleanPass)) {
                         if (user.includes("@")) {
                             if (EMAIL_RE.test(user)) {
@@ -1098,7 +1127,7 @@ function cleanLinesArray(rawLines, options = {}) {
         }
 
         // Standard single-line processing
-        const res = cleanLine(raw, options);
+        const res = cleanLine(trimmed, options);
         if (res === null) {
             if (trimmed !== "") dropped++;
             i++;

@@ -234,26 +234,32 @@ async function extractAndCleanZipAsync(zipBuffer, options = {}) {
     };
 
     const chunks = collectTextFromZip(zipBuffer, state);
-    const combined = chunks.join("\n");
-    const rawSample = combined.slice(0, MAX_SITE_SAMPLE);
+    let sampleLen = 0;
+    let rawSample = "";
+    for (let i = 0; i < chunks.length && sampleLen < MAX_SITE_SAMPLE; i++) {
+        const take = chunks[i].slice(0, MAX_SITE_SAMPLE - sampleLen);
+        rawSample += take;
+        sampleLen += take.length;
+    }
     const site = detectSite(rawSample, options.sourceName || "");
 
-    let lines, stats;
-    if (combined.length >= 150000) {
-        const rawLines = combined.split(/\r?\n/);
-        if (rawLines.length >= 5000) {
-            const { getSharedPool } = require("./worker-pool");
-            const pool = getSharedPool();
-            const res = await pool.cleanLinesParallel(rawLines, options);
-            lines = res.lines;
-            stats = res.stats;
-        } else {
-            const res = cleanLinesArray(rawLines, options);
-            lines = res.lines;
-            stats = res.stats;
+    const rawLines = [];
+    for (let i = 0; i < chunks.length; i++) {
+        const split = chunks[i].split(/\r?\n/);
+        for (let j = 0; j < split.length; j++) {
+            rawLines.push(split[j]);
         }
+    }
+
+    let lines, stats;
+    if (rawLines.length >= 2000) {
+        const { getSharedPool } = require("./worker-pool");
+        const pool = getSharedPool();
+        const res = await pool.cleanLinesParallel(rawLines, options);
+        lines = res.lines;
+        stats = res.stats;
     } else {
-        const res = cleanText(combined, options);
+        const res = cleanLinesArray(rawLines, options);
         lines = res.lines;
         stats = res.stats;
     }
@@ -287,21 +293,15 @@ async function extractAndCleanTextAsync(text, options = {}) {
 
     let lines, stats;
     const str = String(text || "");
-    if (str.length >= 150000) {
-        const rawLines = str.split(/\r?\n/);
-        if (rawLines.length >= 5000) {
-            const { getSharedPool } = require("./worker-pool");
-            const pool = getSharedPool();
-            const res = await pool.cleanLinesParallel(rawLines, options);
-            lines = res.lines;
-            stats = res.stats;
-        } else {
-            const res = cleanLinesArray(rawLines, options);
-            lines = res.lines;
-            stats = res.stats;
-        }
+    const rawLines = str.split(/\r?\n/);
+    if (rawLines.length >= 2000) {
+        const { getSharedPool } = require("./worker-pool");
+        const pool = getSharedPool();
+        const res = await pool.cleanLinesParallel(rawLines, options);
+        lines = res.lines;
+        stats = res.stats;
     } else {
-        const res = cleanText(str, options);
+        const res = cleanLinesArray(rawLines, options);
         lines = res.lines;
         stats = res.stats;
     }

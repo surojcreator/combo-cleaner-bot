@@ -161,9 +161,7 @@ class WorkerPool {
 
         const size = Math.max(5000, Math.min(chunkSize, Math.ceil(lines.length / this.numWorkers)));
         const tasks = [];
-        const isDedupe = options && options.dedupe !== false;
-        // Workers don't need to maintain separate dedupe sets if final dedupe will run
-        const workerOptions = isDedupe ? { ...options, dedupe: false } : options;
+        const workerOptions = options;
 
         for (let i = 0; i < lines.length; i += size) {
             const slice = lines.slice(i, i + size);

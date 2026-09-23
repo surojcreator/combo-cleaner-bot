@@ -79,6 +79,7 @@ const {
     RULE,
     compact,
     resolveCallbackPayload,
+    ensureAnimatedEmojis,
 } = require("./messages");
 
 // Telegram Bot API caps bot downloads at 20 MB.
@@ -3688,8 +3689,11 @@ async function safeAnswerCbQuery(ctx, text = "", showAlert = false) {
  */
 async function safeReply(ctx, text, extra = {}) {
     let sendText = typeof text === "string" ? text : String(text || "");
+    if (!botApiCustomEmojiRejected) {
+        sendText = ensureAnimatedEmojis(sendText);
+    }
     if (sendText.length > TELEGRAM_MSG_LIMIT) {
-        sendText = sendText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… ⚠️ [TRUNCATED]";
+        sendText = sendText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… [TRUNCATED]";
     }
     let sendExtra = extra;
     if (botApiCustomEmojiRejected) {
@@ -3752,8 +3756,11 @@ async function safeReply(ctx, text, extra = {}) {
  */
 async function safeEdit(ctx, messageId, text, extra = {}) {
     let editText = typeof text === "string" ? text : String(text || "");
+    if (!botApiCustomEmojiRejected) {
+        editText = ensureAnimatedEmojis(editText);
+    }
     if (editText.length > TELEGRAM_MSG_LIMIT) {
-        editText = editText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… ⚠️ [TRUNCATED]";
+        editText = editText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… [TRUNCATED]";
     }
     let editExtra = extra;
     if (botApiCustomEmojiRejected) {
@@ -3947,6 +3954,9 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
         );
     }
     let sendExtra = extra ? { ...extra } : {};
+    if (!botApiCustomEmojiRejected && sendExtra.caption && typeof sendExtra.caption === "string") {
+        sendExtra.caption = ensureAnimatedEmojis(sendExtra.caption);
+    }
     if (sendExtra.caption && typeof sendExtra.caption === "string" && sendExtra.caption.length > 1000) {
         sendExtra.caption = sendExtra.caption.slice(0, 950) + "…";
     }
@@ -4262,6 +4272,9 @@ async function sendCombined(ctx, force = false) {
  */
 async function sendHtml(ctx, text, extra = {}) {
     let sendText = text;
+    if (!botApiCustomEmojiRejected && typeof sendText === "string") {
+        sendText = ensureAnimatedEmojis(sendText);
+    }
     let sendExtra = extra;
     if (botApiCustomEmojiRejected) {
         if (sendText && sendText.includes("<tg-emoji")) {
@@ -4315,6 +4328,9 @@ async function sendHtml(ctx, text, extra = {}) {
  */
 async function sendHtmlTo(telegram, chatId, text) {
     let sendText = text;
+    if (!botApiCustomEmojiRejected && typeof sendText === "string") {
+        sendText = ensureAnimatedEmojis(sendText);
+    }
     if (botApiCustomEmojiRejected) {
         if (sendText && sendText.includes("<tg-emoji")) {
             sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");

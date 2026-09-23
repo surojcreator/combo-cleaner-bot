@@ -56,6 +56,7 @@ const SCHEMES = new Set([
 
 // Labels that represent metadata / form headers / handlers and are NEVER valid usernames.
 const PURE_FIELD_LABELS = new Set([
+    "menu", "search", "searching", "query", "history",
     "url", "uri", "link", "href", "host", "site", "website", "page", "target", "domain", "server", "address",
     "action", "form_action", "form", "submit", "submit_url", "post_url", "login_url", "auth_url",
     "soft", "software", "browser", "app", "application", "client",
@@ -429,8 +430,8 @@ function isUsername(login, password) {
         return false;
     }
     if (login.includes(".") && isUrlOrDomain(login)) return false;
-    // A scheme like "https" is followed by "//"; reject that shape.
-    if (password && password.startsWith("//")) return false;
+    // A password in a combo line cannot be a URL scheme, full URL, or bare domain
+    if (password && (password.startsWith("//") || SCHEME_URL_RE.test(password) || isUrlOrDomain(password))) return false;
     return true;
 }
 

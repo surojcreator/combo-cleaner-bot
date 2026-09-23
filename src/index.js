@@ -176,9 +176,15 @@ async function connectUserbot() {
  * @param {any} msg
  */
 async function relayUserbotResult(peer, msg) {
+    const isDoc = Boolean(msg && (msg.media || msg.document || msg.file));
+    const rawText = String((msg && (msg.message || msg.text)) || "");
+    const hasCombos = !isDoc && rawText && userbot.containsComboCredentials(rawText);
+    if (!isDoc && !hasCombos) {
+        return; // Ignore query echoes, menus, and status messages
+    }
     const searcherChatId = peer.searcherId || SEARCHER_FALLBACK_ID;
     const messageId = Number(msg && msg.id) || null;
-    const kind = msg && (msg.media || msg.document) ? "document" : "text";
+    const kind = isDoc ? "document" : "text";
     const targets = searchbot.noteResult(searcherChatId, { messageId, kind });
     if (!Array.isArray(targets) || targets.length === 0) return; // nobody asked — leave the user's dialog alone
     for (const chatId of targets) {

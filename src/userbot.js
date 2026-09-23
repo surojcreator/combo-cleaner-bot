@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { cleanLine, isEmail, isPhone, isCcLine, PURE_FIELD_LABELS } = require("./cleaner");
 
 /**
  * MTProto "userbot" transport — the bypass for sealed search bots.
@@ -537,6 +538,43 @@ function parseChannelFilename(fileName) {
     return null;
 }
 
+const BOT_MESSAGE_LABELS = new Set([
+    "menu", "search", "searching", "result", "results", "history", "hist",
+    "date", "folder", "page", "attempt", "step", "error", "warning",
+    "info", "notice", "status", "query", "url", "link", "domain", "site",
+    "bot", "help", "download", "dump", "select", "enter", "choose", "file", "no"
+]);
+
+/**
+ * Check if raw text actually contains valid combo credentials (user:pass).
+ * @param {string} text
+ * @returns {boolean}
+ */
+function containsComboCredentials(text) {
+    if (!text || typeof text !== "string") return false;
+    const lines = text.split(/[\r\n]+/);
+    for (const l of lines) {
+        const trimmed = l.trim();
+        if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("/")) continue;
+        if (typeof isCcLine === "function" && isCcLine(trimmed)) return true;
+        const cleaned = cleanLine(trimmed);
+        if (!cleaned) continue;
+        const [u, p] = cleaned.split(":");
+        if (!u || !p) continue;
+        const uLower = u.toLowerCase();
+        if (BOT_MESSAGE_LABELS.has(uLower) || (PURE_FIELD_LABELS && PURE_FIELD_LABELS.has(uLower))) {
+            continue;
+        }
+        if (typeof isEmail === "function" && isEmail(u)) return true;
+        if (typeof isPhone === "function" && isPhone(u)) return true;
+        // For plain username:password, if original line contains multiple English words, it is prose
+        const words = trimmed.split(/\s+/);
+        if (words.length > 2 && (!isEmail || !isEmail(u))) continue;
+        return true;
+    }
+    return false;
+}
+
 module.exports = {
     ULP_MARKER,
     CALL_TIMEOUT_MS,
@@ -557,6 +595,7 @@ module.exports = {
     isMenuMessage,
     isHistButton,
     detectLatestBatchDate,
+    containsComboCredentials,
     createUserbot,
     syncCustomEmojis,
     extractForwardOrigin,
@@ -642,6 +681,16 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
     async function forwardResult(toChatId, msg, forwardOpts = {}) {
         if (!ready || !client) return "skipped";
         if (!msg || !msg.id) return "skipped";
+
+        const isDoc = Boolean(msg.media || msg.document || msg.file);
+        const text = String(msg.message || msg.text || "");
+        const hasCombos = !isDoc && text && containsComboCredentials(text);
+
+        // Never forward prompts, menus, status updates, or echoes of the search URL
+        if (!isDoc && !hasCombos) {
+            return "skipped";
+        }
+
         const fwdKey = `${toChatId}:${msg.id}`;
         if (forwardedMsgKeys.has(fwdKey)) {
             return "already_forwarded";
@@ -682,7 +731,6 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             log.log(`forward blocked (${err && err.message ? err.message : err}) - copying instead`);
         }
 
-        const text = msg.message || "";
         const media = msg.media;
         if (media) {
             const buffer = await withTimeout(client.downloadMedia(msg, {}), timeoutMs, "userbot downloadMedia").catch(() => null);
@@ -709,7 +757,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 return "copy";
             }
         }
-        if (text) {
+        if (text && hasCombos) {
             await withTimeout(
                 client.sendMessage(targetPeer, { message: `${ULP_MARKER} ${text}` }),
                 timeoutMs,
@@ -1418,42 +1466,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             }
                         }
                         domainSent = true;
-                        await sleep(Math.max(1500, Math.min(stepDelayMs, 2500)));
-
-                        // Check for immediate responses from the bot to the domain query
-                        for (let qResp = 0; qResp < 4; qResp++) {
-                            if (shouldStop()) return { status: "stopped", daysProcessed };
-                            try {
-                                const recents = await client.getMessages(searchTarget, { limit: 8 });
-                                if (Array.isArray(recents)) {
-                                    for (const m of recents) {
-                                        if (!m.out && !seenResultIds.has(m.id)) {
-                                            if (m.media || m.document || (m.text && m.text.includes(query))) {
-                                                seenResultIds.add(m.id);
-                                                if (options.onResult) {
-                                                    try {
-                                                        await options.onResult(m);
-                                                    } catch (resErr) {
-                                                        log.error("userbot onResult error:", resErr && resErr.message ? resErr.message : resErr);
-                                                    }
-                                                }
-                                                if (resultSink) {
-                                                    try {
-                                                        await resultSink(m);
-                                                    } catch (sinkErr) {
-                                                        log.error("userbot resultSink error:", sinkErr && sinkErr.message ? sinkErr.message : sinkErr);
-                                                    }
-                                                }
-                                                if (chatId && typeof forwardResult === "function") {
-                                                    await forwardResult(chatId, m, { botUsername: options.botUsername || botUsername || cfg.botUsername }).catch(() => {});
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } catch {}
-                            await sleep(500);
-                        }
+                        await sleep(Math.max(1000, Math.min(stepDelayMs, 2000)));
                     }
 
                     if (shouldStop()) return { status: "stopped", daysProcessed };
@@ -1560,16 +1573,17 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                     const latest = await client.getMessages(searchTarget, { limit: 12 });
                                     if (Array.isArray(latest)) {
                                         for (const m of latest) {
+                                            const isDoc = Boolean(m.media || m.document || m.file);
+                                            const rawText = String(m.message || m.text || "");
+                                            const hasCombos = !isDoc && rawText && containsComboCredentials(rawText);
                                             const isTargetMsg =
                                                 !m.out &&
                                                 !seenResultIds.has(m.id) &&
-                                                (m.id > (folderView.id || 0) ||
-                                                    (sentStart && m.id > sentStart.id) ||
-                                                    (waitAttempt > 0 && (m.media || m.document)));
+                                                (isDoc || hasCombos);
                                             if (isTargetMsg) {
                                                 seenResultIds.add(m.id);
                                                 foundAny = true;
-                                                if (m.media || m.document || m.file) {
+                                                if (isDoc) {
                                                     foundDoc = true;
                                                 }
                                                 if (options.onResult) {

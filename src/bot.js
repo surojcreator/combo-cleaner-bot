@@ -5776,7 +5776,17 @@ async function relaySearcherMessage(ctx, params) {
     const { searchOptions } = params;
     const msg = (ctx && (ctx.message || ctx.channelPost)) || {};
     const searcherChatId = ctx.chat.id;
-    const kind = msg.document ? "document" : msg.photo ? "photo" : msg.video ? "video" : "text";
+    const isDoc = Boolean(msg.document);
+    const rawText = msg.text || msg.caption || "";
+    const textRes = (!isDoc && rawText) ? extractAndCleanText(rawText, { keepUrl: false }) : { lines: [] };
+
+    // Ignore text messages from searcher bot that contain no valid credentials
+    // (e.g. prompts, echoes of the search URL, menus). Prevents forwarding query loops.
+    if (!isDoc && textRes.lines.length === 0) {
+        return;
+    }
+
+    const kind = isDoc ? "document" : msg.photo ? "photo" : msg.video ? "video" : "text";
 
     const targets = searchbot.noteResult(searcherChatId, { messageId: msg.message_id, kind });
 
@@ -5897,6 +5907,14 @@ async function ackSharedResult(ctx, params) {
         }
     }
     const hasDocument = Boolean(msg.document);
+    const rawText = msg.text || msg.caption || "";
+    const textRes = (!hasDocument && rawText) ? extractAndCleanText(rawText, { keepUrl: false }) : { lines: [] };
+
+    // Ignore text messages that contain no credential lines (e.g. prompts, echoes of the search URL, menus)
+    if (!hasDocument && textRes.lines.length === 0) {
+        return;
+    }
+
     const query = run ? run.query : "";
     const scope = run ? run.scope : "day";
     const count = run ? run.results.length : 1;
@@ -5989,15 +6007,9 @@ async function ackSharedResult(ctx, params) {
                 trackIngestion(chatId, p);
             }
         }
-    } else {
-        const rawText = msg.text || msg.caption || "";
-        if (rawText) {
-            const res = extractAndCleanText(rawText, { keepUrl: false });
-            if (res.lines.length > 0) {
-                const site = sanitizeSiteSlug(query) || "cleaned";
-                store.addLines(chatId, res.lines, site, { isTextResponse: true });
-            }
-        }
+    } else if (textRes.lines.length > 0) {
+        const site = sanitizeSiteSlug(query) || "cleaned";
+        store.addLines(chatId, textRes.lines, site, { isTextResponse: true });
     }
 }
 

@@ -819,6 +819,46 @@ test("ULP flow: ackSharedResult delivers document and card to owner chat when re
     }
 });
 
+test("ULP flow: ignores query echoes, menus, and text status messages without credentials", async () => {
+    const { containsComboCredentials } = require("../src/userbot");
+    assert.equal(containsComboCredentials("https://target.com"), false);
+    assert.equal(containsComboCredentials("Searching target.com..."), false);
+    assert.equal(containsComboCredentials("No history for https://target.com"), false);
+    assert.equal(containsComboCredentials("Menu: choose date folder"), false);
+    assert.equal(containsComboCredentials("user@target.com:password123"), true);
+
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        const USERBOT_ID = 55512345;
+        const bot = makeBot(api.apiRoot);
+        searchbot.startRun(OWNER_CHAT, { query: "target.com", scope: "day" });
+
+        // Update arrives with an echo of the query URL without any credentials
+        await bot.handleUpdate({
+            update_id: 402,
+            message: {
+                message_id: 100,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: USERBOT_ID, type: "private" },
+                from: { id: USERBOT_ID, is_bot: false, first_name: "MyUserbot" },
+                text: "#ulp Searching: https://target.com",
+            },
+        });
+
+        // Verify nothing was forwarded or sent to OWNER_CHAT for this useless echo
+        const ownerDeliveries = api.calls.filter(
+            (c) => c.payload && c.payload.chat_id === OWNER_CHAT && (c.method === "forwardMessage" || /RESULT IN|RESULTS INCOMING/.test(c.payload.text || ""))
+        );
+        assert.equal(ownerDeliveries.length, 0, "expected query echo to NOT be relayed to OWNER_CHAT");
+
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
 test.after(() => {
     const { getSharedPool } = require("../src/worker-pool");
     getSharedPool().close();

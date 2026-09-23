@@ -239,9 +239,34 @@ function isUrlOrDomain(left) {
     if (typeof left !== "string") return false;
     const value = left.trim();
     if (!value || (!value.includes(".") && !value.includes("/"))) return false;
+    if (value.includes("@")) return false;
     if (SCHEME_URL_RE.test(value)) return true;
     if (IPV4_RE.test(value)) return true;
     if (DOMAIN_RE.test(value)) return true;
+    const hostPart = value.split(/[\/?#:]/)[0];
+    if (hostPart && (DOMAIN_RE.test(hostPart) || IPV4_RE.test(hostPart))) return true;
+    return false;
+}
+
+/**
+ * Checks whether a line already has a URL or domain prefix.
+ * @param {string} line
+ * @returns {boolean}
+ */
+function hasUrlPrefix(line) {
+    if (!line || typeof line !== "string") return false;
+    const trimmed = line.trim();
+    if (SCHEME_URL_RE.test(trimmed)) return true;
+    const firstSep = trimmed.indexOf(":");
+    if (firstSep > 0) {
+        const firstToken = trimmed.slice(0, firstSep).trim();
+        if (isUrlOrDomain(firstToken)) return true;
+    }
+    const firstSpace = trimmed.search(/\s+/);
+    if (firstSpace > 0) {
+        const firstToken = trimmed.slice(0, firstSpace).trim();
+        if (isUrlOrDomain(firstToken)) return true;
+    }
     return false;
 }
 
@@ -474,6 +499,9 @@ function extractFromKeyValueLabels(line, options = {}) {
             const userLower = user.toLowerCase();
             if (!PURE_FIELD_LABELS.has(userLower) && userLower !== "http" && userLower !== "https") {
                 if (keepUrl) {
+                    const fallbackUrl = (options && (options.fallbackUrl || options.defaultUrl || options.url))
+                        ? String(options.fallbackUrl || options.defaultUrl || options.url).trim()
+                        : null;
                     const urlMatch = line.match(
                         /(?:^|[\s|;,:"'{])["']?(?:url|uri|host|site|website|link|action|form_action)["']?\s*[:=]\s*(?:["']([^"'\r\n]+)["']|([^\s|;,]+))/i,
                     );
@@ -481,6 +509,9 @@ function extractFromKeyValueLabels(line, options = {}) {
                     const url = unquote(rawUrl || "");
                     if (url && isUrlOrDomain(url)) {
                         return `${url}:${user}:${pass}`;
+                    }
+                    if (fallbackUrl) {
+                        return `${fallbackUrl}:${user}:${pass}`;
                     }
                 }
                 return `${user}:${pass}`;
@@ -656,6 +687,9 @@ function extractFromFields(fields, options = {}) {
  */
 function cleanLine(rawLine, options = {}) {
     const keepUrl = Boolean(options && options.keepUrl);
+    const fallbackUrl = (options && (options.fallbackUrl || options.defaultUrl || options.url))
+        ? String(options.fallbackUrl || options.defaultUrl || options.url).trim()
+        : null;
     let line = typeof rawLine === "string" && !SPECIAL_WS_RE.test(rawLine) ? rawLine.trim() : normalizeLine(rawLine);
     if (!line) return null;
 
@@ -716,8 +750,13 @@ function cleanLine(rawLine, options = {}) {
                     const u = unquote(String(user));
                     const p = stripTrailingMetadata(unquote(String(pass)));
                     if (u && p && !isPlaceholder(u) && !isPlaceholder(p)) {
-                        if (keepUrl && url && isUrlOrDomain(String(url))) {
-                            return `${String(url).trim()}:${u}:${p}`;
+                        if (keepUrl) {
+                            if (url && isUrlOrDomain(String(url))) {
+                                return `${String(url).trim()}:${u}:${p}`;
+                            }
+                            if (fallbackUrl) {
+                                return `${fallbackUrl}:${u}:${p}`;
+                            }
                         }
                         return `${u}:${p}`;
                     }
@@ -773,12 +812,12 @@ function cleanLine(rawLine, options = {}) {
                     if (pass.length > 0 && !isJunkPair(user, pass)) {
                         if (user.includes("@")) {
                             if (EMAIL_RE.test(user)) {
-                                return line;
+                                return keepUrl && fallbackUrl ? `${fallbackUrl}:${line}` : line;
                             }
                         } else if (isPhone(user)) {
-                            return line;
+                            return keepUrl && fallbackUrl ? `${fallbackUrl}:${line}` : line;
                         } else if (isUsername(user, pass)) {
-                            return line;
+                            return keepUrl && fallbackUrl ? `${fallbackUrl}:${line}` : line;
                         }
                     }
                 }
@@ -792,12 +831,12 @@ function cleanLine(rawLine, options = {}) {
                     if (cleanPass.length > 0 && !isJunkPair(user, cleanPass)) {
                         if (user.includes("@")) {
                             if (EMAIL_RE.test(user)) {
-                                return `${user}:${cleanPass}`;
+                                return keepUrl && fallbackUrl ? `${fallbackUrl}:${user}:${cleanPass}` : `${user}:${cleanPass}`;
                             }
                         } else if (isPhone(user)) {
-                            return `${user}:${cleanPass}`;
+                            return keepUrl && fallbackUrl ? `${fallbackUrl}:${user}:${cleanPass}` : `${user}:${cleanPass}`;
                         } else if (isUsername(user, cleanPass)) {
-                            return `${user}:${cleanPass}`;
+                            return keepUrl && fallbackUrl ? `${fallbackUrl}:${user}:${cleanPass}` : `${user}:${cleanPass}`;
                         }
                     }
                 }
@@ -934,13 +973,16 @@ function cleanLine(rawLine, options = {}) {
                 const rest = stripTrailingMetadata(rawRest);
                 if (rest && !isJunkPair(firstToken, rest)) {
                     if (firstToken.includes("@") && isEmail(firstToken)) {
-                        return `${firstToken}:${rest}`;
+                        const pair = `${firstToken}:${rest}`;
+                        return keepUrl && fallbackUrl ? `${fallbackUrl}:${pair}` : pair;
                     }
                     if (isPhone(firstToken)) {
-                        return `${firstToken}:${rest}`;
+                        const pair = `${firstToken}:${rest}`;
+                        return keepUrl && fallbackUrl ? `${fallbackUrl}:${pair}` : pair;
                     }
                     if (isUsername(firstToken, rest)) {
-                        return `${firstToken}:${rest}`;
+                        const pair = `${firstToken}:${rest}`;
+                        return keepUrl && fallbackUrl ? `${fallbackUrl}:${pair}` : pair;
                     }
                 }
             }
@@ -955,7 +997,11 @@ function cleanLine(rawLine, options = {}) {
     for (const { login, password } of candidates) {
         if (!password || isJunkPair(login, password)) continue;
         if (isEmail(login) || isPhone(login)) {
-            return keepUrl ? normalizeUlpOutput(strippedLine) : `${login}:${password}`;
+            if (keepUrl) {
+                const norm = normalizeUlpOutput(strippedLine);
+                return fallbackUrl && !hasUrlPrefix(norm) ? `${fallbackUrl}:${norm}` : norm;
+            }
+            return `${login}:${password}`;
         }
     }
 
@@ -977,7 +1023,11 @@ function cleanLine(rawLine, options = {}) {
         }
     }
     if (bestUsernameCandidate) {
-        return keepUrl ? normalizeUlpOutput(strippedLine) : `${bestUsernameCandidate.login}:${bestUsernameCandidate.password}`;
+        if (keepUrl) {
+            const norm = normalizeUlpOutput(strippedLine);
+            return fallbackUrl && !hasUrlPrefix(norm) ? `${fallbackUrl}:${norm}` : norm;
+        }
+        return `${bestUsernameCandidate.login}:${bestUsernameCandidate.password}`;
     }
 
     // Pass 3: when keepUrl is enabled, also support shorter or non-standard
@@ -994,7 +1044,8 @@ function cleanLine(rawLine, options = {}) {
                 !password.startsWith("//") &&
                 login.length >= 1
             ) {
-                return normalizeUlpOutput(strippedLine);
+                const norm = normalizeUlpOutput(strippedLine);
+                return fallbackUrl && !hasUrlPrefix(norm) ? `${fallbackUrl}:${norm}` : norm;
             }
         }
     }
@@ -1019,6 +1070,9 @@ function cleanLinesArray(rawLines, options = {}) {
         rawLines = rawLines ? [rawLines] : [];
     }
     const keepUrl = Boolean(options && options.keepUrl);
+    const fallbackUrl = (options && (options.fallbackUrl || options.defaultUrl || options.url))
+        ? String(options.fallbackUrl || options.defaultUrl || options.url).trim()
+        : null;
     const dedupe = options && options.dedupe !== false;
     const seen = dedupe ? new Set() : null;
     const cleaned = [];
@@ -1139,6 +1193,8 @@ function cleanLinesArray(rawLines, options = {}) {
                 let res;
                 if (keepUrl && recordUrl && isUrlOrDomain(recordUrl)) {
                     res = `${recordUrl}:${recordUser}:${recordPass}`;
+                } else if (keepUrl && fallbackUrl) {
+                    res = `${fallbackUrl}:${recordUser}:${recordPass}`;
                 } else {
                     res = `${recordUser}:${recordPass}`;
                 }

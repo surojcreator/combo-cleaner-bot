@@ -3878,7 +3878,7 @@ function createBot(token, meta = {}) {
             return;
         }
         await ctx.answerCbQuery("\uD83E\uDDFC Cleaning\u2026").catch(() => { });
-        await ingestDocument(ctx, doc, { keepUrl: false });
+        await ingestDocument(ctx, doc, { keepUrl: true });
     });
 
 
@@ -5932,7 +5932,7 @@ async function relaySearcherMessage(ctx, params) {
     const searcherChatId = ctx.chat.id;
     const isDoc = Boolean(msg.document);
     const rawText = msg.text || msg.caption || "";
-    const textRes = (!isDoc && rawText) ? extractAndCleanText(rawText, { keepUrl: false }) : { lines: [] };
+    const textRes = (!isDoc && rawText) ? extractAndCleanText(rawText, { keepUrl: true }) : { lines: [] };
 
     // Ignore text messages from searcher bot that contain no valid credentials
     // (e.g. prompts, echoes of the search URL, menus). Prevents forwarding query loops.
@@ -5960,7 +5960,7 @@ async function relaySearcherMessage(ctx, params) {
             );
         }
         if (!msg.document && msg.text && run && run.query) {
-            const res = extractAndCleanText(msg.text, { keepUrl: false });
+            const res = extractAndCleanText(msg.text, { keepUrl: true, fallbackUrl: run.query });
             if (res.lines.length > 0) {
                 const site = sanitizeSiteSlug(run.query) || "cleaned";
                 store.addLines(chatId, res.lines, site, { isTextResponse: true });
@@ -5974,7 +5974,7 @@ async function relaySearcherMessage(ctx, params) {
                     telegram: ctx.telegram,
                     chat: { id: chatId },
                     reply: (text, extra) => ctx.telegram.sendMessage(chatId, text, extra),
-                }, doc, { keepUrl: false }).catch((err) => {
+                }, doc, { keepUrl: true, fallbackUrl: run ? run.query : null }).catch((err) => {
                     console.error("auto ingestDocument in relay failed:", err && err.message ? err.message : err);
                 });
                 trackIngestion(chatId, p);
@@ -6013,9 +6013,10 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
                     userbot.resolveSafeFileName(msg, `ulp_result_${msg.id || "file"}`);
                 const name = userbot.resolveSafeFileName(candidateName, `ulp_result_${msg.id || "file"}`);
                 const isZip = name.toLowerCase().endsWith(".zip") || isZipBuffer(buffer);
+                const fallbackUrl = query ? String(query).trim() : null;
                 const result = isZip
-                    ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl: false })
-                    : await extractAndCleanTextAsync(buffer.toString("utf8"), { sourceName: name, keepUrl: false });
+                    ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl: true, fallbackUrl })
+                    : await extractAndCleanTextAsync(buffer.toString("utf8"), { sourceName: name, keepUrl: true, fallbackUrl });
                 if (result.site) {
                     site = sanitizeSiteSlug(result.site) || site;
                 }
@@ -6025,7 +6026,8 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
         }
 
         if (text) {
-            const result = await extractAndCleanTextAsync(text, { keepUrl: false });
+            const fallbackUrl = query ? String(query).trim() : null;
+            const result = await extractAndCleanTextAsync(text, { keepUrl: true, fallbackUrl });
             if (result.site) {
                 site = sanitizeSiteSlug(result.site) || site;
             }
@@ -6062,14 +6064,14 @@ async function ackSharedResult(ctx, params) {
     }
     const hasDocument = Boolean(msg.document);
     const rawText = msg.text || msg.caption || "";
-    const textRes = (!hasDocument && rawText) ? extractAndCleanText(rawText, { keepUrl: false }) : { lines: [] };
+    const query = run ? run.query : "";
+    const textRes = (!hasDocument && rawText) ? extractAndCleanText(rawText, { keepUrl: true, fallbackUrl: query }) : { lines: [] };
 
     // Ignore text messages that contain no credential lines (e.g. prompts, echoes of the search URL, menus)
     if (!hasDocument && textRes.lines.length === 0) {
         return;
     }
 
-    const query = run ? run.query : "";
     const scope = run ? run.scope : "day";
     const count = run ? run.results.length : 1;
     const isRelayedFromUserbot = ctx.chat && ctx.chat.id !== chatId;
@@ -6142,7 +6144,7 @@ async function ackSharedResult(ctx, params) {
         const doc = msg.document;
         const size = doc.file_size || 0;
         if (size <= MAX_DOWNLOAD_BYTES) {
-            const p = ingestDocument(targetCtx, doc, { keepUrl: false }).catch((err) => {
+            const p = ingestDocument(targetCtx, doc, { keepUrl: true, fallbackUrl: query }).catch((err) => {
                 console.error("auto ingestDocument failed:", err && err.message ? err.message : err);
             });
             trackIngestion(chatId, p);
@@ -6154,7 +6156,7 @@ async function ackSharedResult(ctx, params) {
                     root: localProcessRoot(),
                     fileName: name,
                 })
-                    .then((saved) => processFile(targetCtx, saved.path, null, { keepUrl: false }))
+                    .then((saved) => processFile(targetCtx, saved.path, null, { keepUrl: true, fallbackUrl: query }))
                     .catch((err) => {
                         console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
                     });

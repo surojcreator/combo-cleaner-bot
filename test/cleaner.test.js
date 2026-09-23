@@ -205,3 +205,45 @@ test("cleanText with keepUrl keeps URLs and checks for duplicates", () => {
     assert.equal(stats.duplicates, 2);
     assert.equal(stats.dropped, 1);
 });
+
+test("cleanLine and cleanLinesArray preserve and enforce url:username/email/password structure with fallbackUrl", () => {
+    // 1. Bare email:pass receives fallbackUrl to satisfy url:email:password structure
+    assert.equal(
+        cleanLine("alice@domain.com:Password123", { keepUrl: true, fallbackUrl: "domain.com" }),
+        "domain.com:alice@domain.com:Password123",
+    );
+
+    // 2. Bare user:pass receives fallbackUrl to satisfy url:username:password structure
+    assert.equal(
+        cleanLine("john_doe:SecretPass456", { keepUrl: true, fallbackUrl: "domain.com" }),
+        "domain.com:john_doe:SecretPass456",
+    );
+
+    // 3. Line with existing URL/domain retains its own URL (no double-prefixing)
+    assert.equal(
+        cleanLine("https://specific.domain.com/login:john_doe:SecretPass456", { keepUrl: true, fallbackUrl: "domain.com" }),
+        "https://specific.domain.com/login:john_doe:SecretPass456",
+    );
+    assert.equal(
+        cleanLine("other.com:alice@domain.com:Password123", { keepUrl: true, fallbackUrl: "domain.com" }),
+        "other.com:alice@domain.com:Password123",
+    );
+
+    // 4. Multi-line stealer block without URL gets fallbackUrl
+    const stealerBlockNoUrl = [
+        "Username: admin",
+        "Password: mypassword",
+    ];
+    const { cleanLinesArray } = require("../src/cleaner");
+    const resNoUrl = cleanLinesArray(stealerBlockNoUrl, { keepUrl: true, fallbackUrl: "myportal.com" });
+    assert.deepEqual(resNoUrl.lines, ["myportal.com:admin:mypassword"]);
+
+    // 5. Multi-line stealer block with URL retains its own URL
+    const stealerBlockWithUrl = [
+        "URL: https://myportal.com/login",
+        "Username: admin",
+        "Password: mypassword",
+    ];
+    const resWithUrl = cleanLinesArray(stealerBlockWithUrl, { keepUrl: true, fallbackUrl: "fallback.com" });
+    assert.deepEqual(resWithUrl.lines, ["https://myportal.com/login:admin:mypassword"]);
+});

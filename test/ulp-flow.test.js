@@ -489,7 +489,7 @@ test("ULP flow: searchDayByDay automatically cleans onResult messages and combin
     }
 });
 
-test("ULP flow: removes URL prefixes from credentials and query when searching", async () => {
+test("ULP flow: clean ulp files retain url:username/email/password structure and normalize query", async () => {
     searchbot.resetRuns();
     const api = await startFakeApi();
     const store = require("../src/store");
@@ -524,9 +524,50 @@ test("ULP flow: removes URL prefixes from credentials and query when searching",
         assert.ok(searchedOpts, "expected searchDayByDay to be called");
         assert.equal(searchedOpts.query, "example.com", "expected query to have URL and path removed");
         assert.deepEqual(capturedLines, [
-            "user@example.com:pass123",
-            "anotheruser:secret456",
-        ], "expected URLs to be stripped from combo results");
+            "https://example.com/path:user@example.com:pass123",
+            "example.com:anotheruser:secret456",
+        ], "expected clean ULP files to preserve url:username/email/password structure");
+        searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+test("ULP flow: applies fallback query domain when ULP lines lack URL prefix", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    const store = require("../src/store");
+    try {
+        const dummyContent = "bareuser@example.com:secretPass\nplainuser:plainPass\n";
+        let capturedLines = [];
+        const peer = {
+            kind: "userbot",
+            isReady: () => true,
+            searcherId: SEARCHER_ID,
+            classify: () => "other",
+            send: async () => ({ message_id: 1, chat: { id: SEARCHER_ID } }),
+            downloadMedia: async () => Buffer.from(dummyContent, "utf8"),
+            searchDayByDay: async (opts) => {
+                if (opts.onResult) {
+                    await opts.onResult({
+                        id: 1000,
+                        media: true,
+                        file: { name: "targetsite.com_20.09.2026.txt" },
+                    });
+                    capturedLines = [...store.getLines(OWNER_CHAT)];
+                }
+                return { status: "done", daysProcessed: 1 };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+        peer.botRef = bot;
+        await bot.handleUpdate(commandUpdate("/ulp targetsite.com 20.09.2026"));
+
+        assert.deepEqual(capturedLines, [
+            "targetsite.com:bareuser@example.com:secretPass",
+            "targetsite.com:plainuser:plainPass",
+        ], "expected fallback domain to give bare credentials url:username/email/password structure");
         searchbot.resetRuns();
     } finally {
         await api.close();

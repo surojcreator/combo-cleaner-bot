@@ -365,6 +365,191 @@ test("mergeFilesOnServer reports live progress via onProgress callback", async (
     }
 });
 
+test("Clean files merge on server vault combines cleaned outputs with fast deduplication without returning to Telegram", async () => {
+    const chatId = 995;
+    store.clear(chatId);
+
+    // Create 2 test clean output files under PROC_ROOT
+    const clean1Path = path.join(PROC_ROOT, `clean1_${Date.now()}.txt`);
+    const clean2Path = path.join(PROC_ROOT, `clean2_${Date.now()}.txt`);
+    fs.writeFileSync(clean1Path, "alice@site.com:p1\nbob@site.com:p2\ncommon@site.com:same\n", "utf8");
+    fs.writeFileSync(clean2Path, "charlie@site.com:p3\ncommon@site.com:same\ndave@site.com:p4\n", "utf8");
+
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot);
+
+        // Merge the two clean files using bot.mergeFilesOnServer
+        const ctx = { chat: { id: chatId }, answerCbQuery: async () => {} };
+        const stats = await bot.mergeFilesOnServer(ctx, [clean1Path, clean2Path]);
+
+        assert.equal(stats.totalFiles, 2);
+        assert.equal(stats.keptLines, 5); // alice, bob, common, charlie, dave
+        assert.equal(stats.duplicatesStripped, 1); // common only once
+        assert.ok(fs.existsSync(stats.outPath));
+
+        const content = fs.readFileSync(stats.outPath, "utf8");
+        assert.match(content, /alice@site\.com:p1/);
+        assert.match(content, /dave@site\.com:p4/);
+        const dupeCount = (content.match(/common@site\.com:same/g) || []).length;
+        assert.equal(dupeCount, 1);
+    } finally {
+        store.clear(chatId);
+        await api.close();
+    }
+});
+
+test("files:merge:proc:all action triggers 1-click merge of all cleaned outputs in vault", async () => {
+    const chatId = 996;
+    store.clear(chatId);
+
+    // Clean existing PROC_ROOT files for clean state
+    for (const f of fs.readdirSync(PROC_ROOT)) {
+        try { fs.rmSync(path.join(PROC_ROOT, f), { force: true }); } catch (_) {}
+    }
+
+    const c1 = path.join(PROC_ROOT, `vault_clean_1.txt`);
+    const c2 = path.join(PROC_ROOT, `vault_clean_2.txt`);
+    fs.writeFileSync(c1, "u1@proc.com:pw1\nu2@proc.com:pw2\n", "utf8");
+    fs.writeFileSync(c2, "u3@proc.com:pw3\nu1@proc.com:pw1\n", "utf8");
+
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot);
+
+        // Trigger files:merge:proc:all
+        await bot.handleUpdate(callbackUpdate("files:merge:proc:all", chatId));
+
+        assert.equal(
+            await waitFor(() => api.calls.some((c) => /FILES MERGED ON SERVER VAULT/.test(c.payload.text || ""))),
+            true,
+        );
+
+        // Ensure NO document was sent to Telegram
+        assert.equal(api.calls.filter((c) => c.method === "sendDocument").length, 0);
+
+        // Verify master output file
+        const mergedFiles = fs.readdirSync(PROC_ROOT).filter((f) => f.startsWith("merged_vault_") && f.endsWith(".txt"));
+        assert.ok(mergedFiles.length > 0);
+        const mergedContent = fs.readFileSync(path.join(PROC_ROOT, mergedFiles[mergedFiles.length - 1]), "utf8");
+        assert.match(mergedContent, /u1@proc\.com:pw1/);
+        assert.match(mergedContent, /u2@proc\.com:pw2/);
+        assert.match(mergedContent, /u3@proc\.com:pw3/);
+        const dupes = (mergedContent.match(/u1@proc\.com:pw1/g) || []).length;
+        assert.equal(dupes, 1);
+    } finally {
+        store.clear(chatId);
+        await api.close();
+    }
+});
+
+test("vault:sel:proc selects only cleaned files and vault:sel:raw selects only raw files", async () => {
+    const chatId = 997;
+    store.clear(chatId);
+
+    // Clean test directories
+    for (const f of fs.readdirSync(RAW_ROOT)) {
+        try { fs.rmSync(path.join(RAW_ROOT, f), { force: true }); } catch (_) {}
+    }
+    for (const f of fs.readdirSync(PROC_ROOT)) {
+        try { fs.rmSync(path.join(PROC_ROOT, f), { force: true }); } catch (_) {}
+    }
+
+    fs.writeFileSync(path.join(RAW_ROOT, "raw_sample.txt"), "a@b.com:123\n");
+    fs.writeFileSync(path.join(PROC_ROOT, "clean_sample.txt"), "c@d.com:456\n");
+
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot);
+
+        // Open select tab
+        await bot.handleUpdate(callbackUpdate("files:tab:select", chatId));
+
+        // Click vault:sel:proc
+        await bot.handleUpdate(callbackUpdate("vault:sel:proc", chatId));
+
+        let state = bot.vaultSelectState.get(chatId);
+        assert.ok(state);
+        assert.equal(state.selected.size, 1);
+        const allFiles = getAllVaultFiles("size", RAW_ROOT, PROC_ROOT);
+        const selectedIdx = Array.from(state.selected)[0];
+        assert.equal(allFiles[selectedIdx].type, "proc");
+
+        // Click vault:sel:raw
+        await bot.handleUpdate(callbackUpdate("vault:sel:raw", chatId));
+        state = bot.vaultSelectState.get(chatId);
+        assert.equal(state.selected.size, 1);
+        const rawSelectedIdx = Array.from(state.selected)[0];
+        assert.equal(allFiles[rawSelectedIdx].type, "raw");
+    } finally {
+        store.clear(chatId);
+        await api.close();
+    }
+});
+
+test("/mergeclean command merges all cleaned files in vault disk without returning to Telegram", async () => {
+    const chatId = 998;
+    store.clear(chatId);
+
+    for (const f of fs.readdirSync(PROC_ROOT)) {
+        try { fs.rmSync(path.join(PROC_ROOT, f), { force: true }); } catch (_) {}
+    }
+
+    fs.writeFileSync(path.join(PROC_ROOT, "cmd_clean_1.txt"), "test1@mail.com:abc\n");
+    fs.writeFileSync(path.join(PROC_ROOT, "cmd_clean_2.txt"), "test2@mail.com:def\n");
+
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot);
+
+        await bot.handleUpdate(command("/mergeclean", chatId));
+
+        assert.equal(
+            await waitFor(() => api.calls.some((c) => /FILES MERGED ON SERVER VAULT/.test(c.payload.text || ""))),
+            true,
+        );
+
+        assert.equal(api.calls.filter((c) => c.method === "sendDocument").length, 0);
+    } finally {
+        store.clear(chatId);
+        await api.close();
+    }
+});
+
+test("serverFilesKeyboard and renderServerFiles render clean vs raw indicators and merge buttons", () => {
+    const rawFiles = [{ name: "raw1.txt", size: 100, mtime: new Date(), type: "raw" }];
+    const procFiles = [
+        { name: "clean1.txt", size: 200, mtime: new Date(), type: "proc" },
+        { name: "clean2.txt", size: 300, mtime: new Date(), type: "proc" },
+    ];
+
+    // Check proc tab keyboard: should have "Merge All Cleaned (2)" button
+    const procKb = messages.serverFilesKeyboard(rawFiles, procFiles, { tab: "proc" });
+    const procBtns = procKb.reply_markup.inline_keyboard.flat();
+    assert.ok(procBtns.some((b) => b.callback_data === "files:merge:proc:all" && b.text.includes("Merge All Cleaned (2)")));
+
+    // Check select tab keyboard: should have "Select Clean" and "Select Raw" buttons
+    const selectKb = messages.serverFilesKeyboard(rawFiles, procFiles, { tab: "select" });
+    const selectBtns = selectKb.reply_markup.inline_keyboard.flat();
+    assert.ok(selectBtns.some((b) => b.callback_data === "vault:sel:proc" && b.text.includes("Select Clean")));
+    assert.ok(selectBtns.some((b) => b.callback_data === "vault:sel:raw" && b.text.includes("Select Raw")));
+
+    // Check rendered text in select tab
+    const text = messages.renderServerFiles({
+        rawFiles,
+        processedFiles: procFiles,
+        rawRoot: RAW_ROOT,
+        processedRoot: PROC_ROOT,
+        humanSize: (n) => `${n} B`,
+        tab: "select",
+        page: 0,
+        pageSize: 5,
+    });
+    assert.match(text, /\[Clean\]/);
+    assert.match(text, /\[Raw\]/);
+    assert.match(text, /MULTI-FILE SELECT & MERGE/);
+});
+
 test.after(() => {
     fs.rmSync(TEST_ROOT, { recursive: true, force: true });
     const { closeSharedPool } = require("../src/worker-pool");

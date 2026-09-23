@@ -573,18 +573,26 @@ function createBot(token, meta = {}) {
         const root = vaultProcessedRoot;
         fs.mkdirSync(root, { recursive: true });
 
-        // Normalize file items to { path, name, size }
+        // Normalize file items to { path, name, size, isClean, type }
         const normalized = (fileList || []).map((f) => {
             if (typeof f === "string") {
                 let sz = 0;
                 try { sz = fs.statSync(f).size; } catch (_) {}
-                return { path: f, name: path.basename(f), size: sz };
+                const isProc = path.resolve(f).startsWith(path.resolve(root));
+                return { path: f, name: path.basename(f), size: sz, isClean: isProc, type: isProc ? "proc" : "raw" };
             }
             let sz = f.size;
             if (sz === undefined && f.path) {
                 try { sz = fs.statSync(f.path).size; } catch (_) {}
             }
-            return { path: f.path, name: f.name || (f.path ? path.basename(f.path) : "unknown"), size: sz || 0 };
+            const isProc = Boolean(f.isClean || f.type === "proc" || (f.path && path.resolve(f.path).startsWith(path.resolve(root))));
+            return {
+                path: f.path,
+                name: f.name || (f.path ? path.basename(f.path) : "unknown"),
+                size: sz || 0,
+                isClean: isProc,
+                type: isProc ? "proc" : (f.type || "raw"),
+            };
         }).filter((f) => f.path && fs.existsSync(f.path));
 
         if (normalized.length === 0) {
@@ -788,6 +796,34 @@ function createBot(token, meta = {}) {
                     } catch (err) {
                         console.error("Error extracting zip entry during merge:", f.name, err);
                     }
+                } else if (f.isClean) {
+                    const rl = readline.createInterface({
+                        input: fs.createReadStream(f.path, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
+                        crlfDelay: Infinity,
+                    });
+                    let chunk = [];
+                    for await (const line of rl) {
+                        const trimmed = line.trim();
+                        if (!trimmed) continue;
+                        chunk.push(trimmed);
+                        if (chunk.length >= 25000) {
+                            await writeLinesBatch(chunk);
+                            chunk = [];
+                            await reportProgress({
+                                currentFileIndex: fileIdx + 1,
+                                totalFiles: normalized.length,
+                                currentFileName: f.name,
+                                currentFileSize: f.size,
+                                keptLines: totalKept,
+                                duplicatesStripped: totalDupes,
+                                phase: `Deduplicating cleaned stream…`,
+                            }, false);
+                        }
+                    }
+                    if (chunk.length > 0) {
+                        await writeLinesBatch(chunk);
+                        chunk = [];
+                    }
                 } else {
                     const rl = readline.createInterface({
                         input: fs.createReadStream(f.path, { encoding: "utf8", highWaterMark: 4 * 1024 * 1024 }),
@@ -963,6 +999,108 @@ function createBot(token, meta = {}) {
         await showVaultSelect(ctx);
     });
 
+    bot.command(["mergeclean", "mergeproc"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const processedFiles = scanDirFiles(vaultProcessedRoot);
+        if (processedFiles.length < 2) {
+            await safeReply(ctx, `⚠️ Found ${processedFiles.length} cleaned file(s). Need at least 2 to merge.\nUse /vault to browse or /save to add more.`, mainKeyboard());
+            return;
+        }
+        const statusMsg = await safeReply(ctx, `⏳ Merging ${processedFiles.length} cleaned vault files on server disk…`);
+        try {
+            const stats = await mergeFilesOnServer(ctx, processedFiles, {
+                statusMsgId: statusMsg ? statusMsg.message_id : null,
+            });
+            const report = renderMergeComplete(stats);
+            const kb = mergeCompleteKeyboard(stats.outName);
+            if (statusMsg && statusMsg.message_id) {
+                await safeEdit(ctx, statusMsg.message_id, report, kb);
+            } else {
+                await safeReply(ctx, report, kb);
+            }
+        } catch (err) {
+            console.error("mergeclean command error:", err);
+            await safeReply(ctx, `❌ Failed to merge cleaned files: ${err.message}`);
+        }
+    });
+
+    bot.command("mergeraw", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const rawFiles = scanDirFiles(vaultRawRoot);
+        if (rawFiles.length < 2) {
+            await safeReply(ctx, `⚠️ Found ${rawFiles.length} raw file(s). Need at least 2 to merge.\nUse /vault to browse or /save to add more.`, mainKeyboard());
+            return;
+        }
+        const statusMsg = await safeReply(ctx, `⏳ Merging and cleaning ${rawFiles.length} raw dump files on server disk…`);
+        try {
+            const stats = await mergeFilesOnServer(ctx, rawFiles, {
+                statusMsgId: statusMsg ? statusMsg.message_id : null,
+            });
+            const report = renderMergeComplete(stats);
+            const kb = mergeCompleteKeyboard(stats.outName);
+            if (statusMsg && statusMsg.message_id) {
+                await safeEdit(ctx, statusMsg.message_id, report, kb);
+            } else {
+                await safeReply(ctx, report, kb);
+            }
+        } catch (err) {
+            console.error("mergeraw command error:", err);
+            await safeReply(ctx, `❌ Failed to merge raw files: ${err.message}`);
+        }
+    });
+
+    bot.command("merge", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const arg = (ctx.message?.text || "").replace(/^\/\S+\s*/, "").trim().toLowerCase();
+        if (arg === "clean" || arg === "cleaned" || arg === "proc") {
+            const processedFiles = scanDirFiles(vaultProcessedRoot);
+            if (processedFiles.length < 2) {
+                await safeReply(ctx, `⚠️ Found ${processedFiles.length} cleaned file(s). Need at least 2 to merge.`, mainKeyboard());
+                return;
+            }
+            const statusMsg = await safeReply(ctx, `⏳ Merging ${processedFiles.length} cleaned vault files on server disk…`);
+            try {
+                const stats = await mergeFilesOnServer(ctx, processedFiles, {
+                    statusMsgId: statusMsg ? statusMsg.message_id : null,
+                });
+                const report = renderMergeComplete(stats);
+                const kb = mergeCompleteKeyboard(stats.outName);
+                if (statusMsg && statusMsg.message_id) {
+                    await safeEdit(ctx, statusMsg.message_id, report, kb);
+                } else {
+                    await safeReply(ctx, report, kb);
+                }
+            } catch (err) {
+                await safeReply(ctx, `❌ Failed to merge: ${err.message}`);
+            }
+            return;
+        }
+        if (arg === "raw") {
+            const rawFiles = scanDirFiles(vaultRawRoot);
+            if (rawFiles.length < 2) {
+                await safeReply(ctx, `⚠️ Found ${rawFiles.length} raw file(s). Need at least 2 to merge.`, mainKeyboard());
+                return;
+            }
+            const statusMsg = await safeReply(ctx, `⏳ Merging ${rawFiles.length} raw dump files on server disk…`);
+            try {
+                const stats = await mergeFilesOnServer(ctx, rawFiles, {
+                    statusMsgId: statusMsg ? statusMsg.message_id : null,
+                });
+                const report = renderMergeComplete(stats);
+                const kb = mergeCompleteKeyboard(stats.outName);
+                if (statusMsg && statusMsg.message_id) {
+                    await safeEdit(ctx, statusMsg.message_id, report, kb);
+                } else {
+                    await safeReply(ctx, report, kb);
+                }
+            } catch (err) {
+                await safeReply(ctx, `❌ Failed to merge: ${err.message}`);
+            }
+            return;
+        }
+        await showVaultSelect(ctx);
+    });
+
     bot.action("server_files", async (ctx) => {
         await ctx.answerCbQuery("📂 Opening server vault…").catch(() => { });
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
@@ -1017,6 +1155,38 @@ function createBot(token, meta = {}) {
         await showVaultSelect(ctx, msg ? msg.message_id : null, state ? state.page : 0);
     });
 
+    bot.action("vault:sel:proc", async (ctx) => {
+        const allFiles = getVaultFiles();
+        let state = vaultSelectState.get(ctx.chat.id);
+        if (!state) state = { selected: new Set(), page: 0 };
+        state.selected = new Set();
+        allFiles.forEach((f, i) => {
+            if (f.type === "proc" || f.isClean || (f.path && path.resolve(f.path).startsWith(path.resolve(vaultProcessedRoot)))) {
+                state.selected.add(i);
+            }
+        });
+        vaultSelectState.set(ctx.chat.id, state);
+        await ctx.answerCbQuery(`Selected ${state.selected.size} cleaned files`).catch(() => {});
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showVaultSelect(ctx, msg ? msg.message_id : null, state.page);
+    });
+
+    bot.action("vault:sel:raw", async (ctx) => {
+        const allFiles = getVaultFiles();
+        let state = vaultSelectState.get(ctx.chat.id);
+        if (!state) state = { selected: new Set(), page: 0 };
+        state.selected = new Set();
+        allFiles.forEach((f, i) => {
+            if (f.type !== "proc" && !f.isClean && !(f.path && path.resolve(f.path).startsWith(path.resolve(vaultProcessedRoot)))) {
+                state.selected.add(i);
+            }
+        });
+        vaultSelectState.set(ctx.chat.id, state);
+        await ctx.answerCbQuery(`Selected ${state.selected.size} raw dumps`).catch(() => {});
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        await showVaultSelect(ctx, msg ? msg.message_id : null, state.page);
+    });
+
     bot.action(/^vault:sel:page:(\d+)$/, async (ctx) => {
         const page = parseInt(ctx.match[1], 10) || 0;
         await ctx.answerCbQuery(`Page ${page + 1}`).catch(() => {});
@@ -1063,6 +1233,56 @@ function createBot(token, meta = {}) {
         } catch (err) {
             console.error("Multi-select merge error:", err);
             await safeReply(ctx, `❌ Failed to merge files on server: ${err.message}`);
+        }
+    });
+
+    bot.action("files:merge:proc:all", async (ctx) => {
+        await ctx.answerCbQuery("🔀 Merging all cleaned vault files on server…").catch(() => {});
+        const processedFiles = scanDirFiles(vaultProcessedRoot);
+        if (processedFiles.length < 2) {
+            await safeReply(ctx, "⚠️ Need at least 2 cleaned files in the vault to merge.", mainKeyboard());
+            return;
+        }
+        const statusMsg = await safeReply(ctx, `⏳ Merging ${processedFiles.length} cleaned output files into one master deduplicated file…`);
+        try {
+            const stats = await mergeFilesOnServer(ctx, processedFiles, {
+                statusMsgId: statusMsg ? statusMsg.message_id : null,
+            });
+            const report = renderMergeComplete(stats);
+            const kb = mergeCompleteKeyboard(stats.outName);
+            if (statusMsg && statusMsg.message_id) {
+                await safeEdit(ctx, statusMsg.message_id, report, kb);
+            } else {
+                await safeReply(ctx, report, kb);
+            }
+        } catch (err) {
+            console.error("Cleaned vault merge error:", err);
+            await safeReply(ctx, `❌ Failed to merge cleaned files: ${err.message}`);
+        }
+    });
+
+    bot.action("files:merge:raw:all", async (ctx) => {
+        await ctx.answerCbQuery("🔀 Merging all raw dumps on server…").catch(() => {});
+        const rawFiles = scanDirFiles(vaultRawRoot);
+        if (rawFiles.length < 2) {
+            await safeReply(ctx, "⚠️ Need at least 2 raw files in the vault to merge.", mainKeyboard());
+            return;
+        }
+        const statusMsg = await safeReply(ctx, `⏳ Merging and cleaning ${rawFiles.length} raw dump files on server disk…`);
+        try {
+            const stats = await mergeFilesOnServer(ctx, rawFiles, {
+                statusMsgId: statusMsg ? statusMsg.message_id : null,
+            });
+            const report = renderMergeComplete(stats);
+            const kb = mergeCompleteKeyboard(stats.outName);
+            if (statusMsg && statusMsg.message_id) {
+                await safeEdit(ctx, statusMsg.message_id, report, kb);
+            } else {
+                await safeReply(ctx, report, kb);
+            }
+        } catch (err) {
+            console.error("Raw vault merge error:", err);
+            await safeReply(ctx, `❌ Failed to merge raw files: ${err.message}`);
         }
     });
 
@@ -5272,8 +5492,10 @@ function scanDirFiles(dir, sortBy = "size") {
  * @returns {Array<{ name: string, path: string, size: number, mtime: Date }>}
  */
 function getAllVaultFiles(sortBy = "size", rawOverride = null, procOverride = null) {
-    const rawFiles = scanDirFiles(rawOverride ? path.resolve(rawOverride) : localProcessRoot(), sortBy);
-    const processedFiles = scanDirFiles(procOverride ? path.resolve(procOverride) : localProcessedRoot(), sortBy);
+    const rawFiles = scanDirFiles(rawOverride ? path.resolve(rawOverride) : localProcessRoot(), sortBy)
+        .map((f) => ({ ...f, type: "raw", isClean: false }));
+    const processedFiles = scanDirFiles(procOverride ? path.resolve(procOverride) : localProcessedRoot(), sortBy)
+        .map((f) => ({ ...f, type: "proc", isClean: true }));
     const combined = [...rawFiles, ...processedFiles];
     if (sortBy === "mtime") {
         combined.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());

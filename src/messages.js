@@ -913,9 +913,13 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
             const f = selSlice[i];
             const isChecked = selected.has(actualIdx);
             const mark = isChecked ? "☑️" : "⬜️";
-            const icon = f.name.toLowerCase().endsWith(".zip") ? "📦" : "📄";
+            const isClean = f.type === "proc" || f.isClean || (Array.isArray(processedFiles) && processedFiles.some((pf) => pf.name === f.name && pf.size === f.size));
+            const icon = isClean ? "💎" : (f.name.toLowerCase().endsWith(".zip") ? "📦" : "📥");
+            const tag = isClean ? " [Clean]" : " [Raw]";
+            const maxNameLen = 18;
+            const displayName = f.name.length > maxNameLen ? f.name.slice(0, maxNameLen - 1) + "…" : f.name;
             rows.push([
-                Markup.button.callback(`${mark} [${actualIdx + 1}] ${icon} ${f.name} (${humanSize(f.size)})`, `vault:sel:toggle:${actualIdx}`),
+                Markup.button.callback(`${mark} [${actualIdx + 1}] ${icon} ${displayName}${tag} (${humanSize(f.size)})`, `vault:sel:toggle:${actualIdx}`),
             ]);
         }
 
@@ -931,6 +935,10 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         rows.push([
             Markup.button.callback("⚡️ Select All", "vault:sel:all"),
             Markup.button.callback("🧹 Deselect All", "vault:sel:clear"),
+        ]);
+        rows.push([
+            Markup.button.callback(`💎 Select Clean (${procCount})`, "vault:sel:proc"),
+            Markup.button.callback(`📥 Select Raw (${rawCount})`, "vault:sel:raw"),
         ]);
         rows.push([
             Markup.button.callback(`🔀 Merge Selected (${count} file${count === 1 ? "" : "s"})`, "vault:sel:merge"),
@@ -978,6 +986,7 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         const bulkRow = [];
         if (rawCount > 1) {
             bulkRow.push(Markup.button.callback(`⚡️ Clean All Raw (${rawCount})`, "files:clean:all"));
+            bulkRow.push(Markup.button.callback(`🔀 Merge All Raw (${rawCount})`, "files:merge:raw:all"));
         }
         if (rawCount > 0) {
             bulkRow.push(Markup.button.callback(`🧹 Wipe All Raw`, "files:wipe:raw:ask"));
@@ -1028,6 +1037,9 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
 
         // Bulk operations
         const bulkRow = [];
+        if (procCount > 1) {
+            bulkRow.push(Markup.button.callback(`🔀 Merge All Cleaned (${procCount})`, "files:merge:proc:all"));
+        }
         bulkRow.push(Markup.button.callback("📦 Get Combined File", "combine"));
         if (procCount > 0) {
             bulkRow.push(Markup.button.callback(`🧹 Wipe All Outputs`, "files:wipe:proc:ask"));
@@ -2254,10 +2266,10 @@ function renderServerFiles(info = {}) {
         lines.push(
             `${tgEmoji("🔀")}  ${B("MULTI-FILE SELECT & MERGE (SORTED BY SIZE)")}  ${tgEmoji("⚡️")}`,
             RULE,
-            `Select files below to merge into ${B("one clean deduplicated file on disk")}.`,
-            `💡 ${I("The clean file will be stored in your server vault (it won't be returned to Telegram).")}`,
+            `Select clean files and/or raw dumps below to merge into ${B("one deduplicated file on disk")}.`,
+            `💡 ${I("Clean output files will be stored in your server vault (never leaked or returned to Telegram).")}`,
             "",
-            `📁  Selected: ${B(selected.size)} file(s) · Total: ${B(num(totalItems))} file(s) in vault`,
+            `📁  Selected: ${B(selected.size)} file(s) · Total: ${B(num(totalItems))} file(s) (${num(rawFiles.length)} raw, ${num(processedFiles.length)} clean)`,
             RULE,
         );
         if (totalItems === 0) {
@@ -2272,8 +2284,10 @@ function renderServerFiles(info = {}) {
                 const isChecked = selected.has(actualIdx);
                 const mark = isChecked ? "☑️" : "⬜️";
                 const isZip = f.name.toLowerCase().endsWith(".zip");
-                const icon = isZip ? tgEmoji("📦") : tgEmoji("📄");
-                lines.push(`  ${mark} ${B(`[${actualIdx + 1}]`)} ${icon} ${B(escapeHtml(f.name))} (${CODE(humanSize(f.size))})`);
+                const isClean = f.type === "proc" || f.isClean || (f.path && (f.path.includes(processedRoot) || f.path.startsWith(processedRoot)));
+                const badge = isClean ? `[Clean]` : `[Raw]`;
+                const icon = isClean ? tgEmoji("💎") : (isZip ? tgEmoji("📦") : tgEmoji("📥"));
+                lines.push(`  ${mark} ${B(`[${actualIdx + 1}]`)} ${icon} ${B(escapeHtml(f.name))} ${CODE(badge)} (${CODE(humanSize(f.size))})`);
             });
             if (selected.size > 0) {
                 lines.push("");

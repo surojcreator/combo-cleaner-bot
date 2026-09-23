@@ -3948,6 +3948,12 @@ function createBot(token, meta = {}) {
         await deliverCombinedAndResetBatch(ctx);
     });
 
+    bot.action("ulp:status_bar", async (ctx) => {
+        const run = searchbot.getRun(ctx.chat.id);
+        const query = run && run.query ? `for "${run.query}"` : "";
+        await ctx.answerCbQuery(`🔍 ULP Search in progress ${query}...`).catch(() => {});
+    });
+
     // "Clean into batch" on a relayed document. The button lives on our card,
     // which replies to the result message — so the file may come from the
     // reply target rather than the card itself.
@@ -5892,18 +5898,19 @@ async function beginUlpRun(ctx, params) {
                         query,
                         stats: store.getStats(chatId),
                     });
+                    const kb = ulpKeyboard(scope, { attempt: st.attempt, maxTries: st.totalDays });
                     if (now - lastStatusEdit >= 1200) {
                         lastStatusEdit = now;
                         if (pendingStatusTimer) {
                             clearTimeout(pendingStatusTimer);
                             pendingStatusTimer = null;
                         }
-                        safeEdit(ctx, card.message_id, text, ulpKeyboard(scope)).catch(() => {});
+                        safeEdit(ctx, card.message_id, text, kb).catch(() => {});
                     } else if (!pendingStatusTimer) {
                         pendingStatusTimer = setTimeout(() => {
                             pendingStatusTimer = null;
                             lastStatusEdit = Date.now();
-                            safeEdit(ctx, card.message_id, text, ulpKeyboard(scope)).catch(() => {});
+                            safeEdit(ctx, card.message_id, text, kb).catch(() => {});
                         }, 1200 - (now - lastStatusEdit));
                     }
                 },
@@ -6002,7 +6009,7 @@ async function beginUlpRun(ctx, params) {
                             query,
                             stats: store.getStats(chatId),
                         }),
-                        ulpKeyboard(scope),
+                        ulpKeyboard(scope, { attempt: event.attempt, maxTries: searchOptions.maxTries }),
                     ).catch(() => {});
                 },
             });

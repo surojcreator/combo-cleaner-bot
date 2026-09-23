@@ -2302,10 +2302,41 @@ function mentionOf(username) {
 }
 
 /**
- * Scope buttons for the ULP relay.
- * @param {string} [scope]
+ * Render a visual progress bar gauge.
+ * @param {number} current
+ * @param {number} total
+ * @param {number} [width=12]
+ * @returns {{ pct: number, gauge: string, filled: number, width: number }}
  */
-function ulpKeyboard(status = true) {
+function renderGauge(current, total, width = 12) {
+    const toNum = (val, fb = 0) => {
+        if (typeof val === "symbol" || typeof val === "function") return fb;
+        try {
+            const n = Number(val);
+            return Number.isFinite(n) ? n : fb;
+        } catch {
+            return fb;
+        }
+    };
+    const curr = Math.max(0, toNum(current, 0));
+    const tot = Math.max(1, toNum(total, 1));
+    const w = Math.max(1, Math.min(50, Math.floor(toNum(width, 12))));
+    const pct = Math.min(100, Math.max(0, Math.round((curr / tot) * 100)));
+    const filled = Math.min(w, Math.max(0, Math.round((curr / tot) * w)));
+    const gauge = "▰".repeat(filled) + "▱".repeat(Math.max(0, w - filled));
+    return { pct, gauge, filled, width: w };
+}
+
+/**
+ * Scope buttons for the ULP relay.
+ * @param {string|boolean|object} [status]
+ * @param {object|null} [progress]
+ */
+function ulpKeyboard(status = true, progress = null) {
+    if (status && typeof status === "object" && !progress && status.attempt) {
+        progress = status;
+        status = true;
+    }
     const isFinished = status === false || status === "stopped" || status === "done" || status === "exhausted";
     if (isFinished) {
         return createInlineKeyboard([
@@ -2323,16 +2354,25 @@ function ulpKeyboard(status = true) {
             ],
         ]);
     }
-    return createInlineKeyboard([
-        [
-            Markup.button.callback("📦 Get Combined File", "combine"),
-            Markup.button.callback("🛑 Stop Search", "ulp:stop"),
-        ],
-        [
-            Markup.button.callback("📊 Live Batch Stats", "stats"),
-            Markup.button.callback("👁 Line Preview", "preview"),
-        ],
+
+    const rows = [];
+    if (progress && typeof progress === "object" && progress.attempt && progress.maxTries) {
+        const { pct, gauge } = renderGauge(progress.attempt, progress.maxTries, 8);
+        rows.push([
+            Markup.button.callback(`📊 [${gauge}] ${pct}% · Day ${progress.attempt}/${progress.maxTries}`, "ulp:status_bar"),
+        ]);
+    }
+
+    rows.push([
+        Markup.button.callback("📦 Get Combined File", "combine"),
+        Markup.button.callback("🛑 Stop Search", "ulp:stop"),
     ]);
+    rows.push([
+        Markup.button.callback("📊 Live Batch Stats", "stats"),
+        Markup.button.callback("👁 Line Preview", "preview"),
+    ]);
+
+    return createInlineKeyboard(rows);
 }
 
 /**
@@ -2423,10 +2463,7 @@ function renderUlpProgress(info = {}) {
         : `${num(info.sends || 0)} step(s) sent`;
     const attempt = Number(info.attempt || 1);
     const maxTries = Number(info.maxTries || 5);
-    const pct = Math.min(100, Math.max(0, Math.round((attempt / maxTries) * 100)));
-    const width = 12;
-    const filled = Math.min(width, Math.max(0, Math.round((attempt / maxTries) * width)));
-    const gauge = "▰".repeat(filled) + "▱".repeat(width - filled);
+    const { pct, gauge } = renderGauge(attempt, maxTries, 12);
 
     const lines = [
         `${tgEmoji("📡")}  ${B("ULP SEARCH IN PROGRESS")} · ${B(`[Day ${attempt}/${maxTries}]`)}  ${tgEmoji("⏳")}`,
@@ -3092,6 +3129,7 @@ module.exports = {
     renderUlpHint,
     renderUlpStart,
     renderUlpProgress,
+    renderGauge,
     renderUlpResults,
     renderUlpDone,
     renderUlpEmpty,

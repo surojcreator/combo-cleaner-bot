@@ -510,6 +510,15 @@ describe("User Requested Features & Optimizations", () => {
         assert.match(ulpProg, /<b>ULP SEARCH IN PROGRESS<\/b>/);
         assert.match(ulpProg, /\[Day 2\/5\]/);
         assert.match(ulpProg, /40%/);
+        assert.ok(ulpProg.includes("Progress:"));
+
+        const gaugeRes = messages.renderGauge(2, 5, 12);
+        assert.equal(gaugeRes.pct, 40);
+        assert.equal(gaugeRes.gauge, "▰▰▰▰▰▱▱▱▱▱▱▱");
+
+        const kbWithProg = messages.ulpKeyboard("running", { attempt: 2, maxTries: 5 });
+        const kbBtns = kbWithProg.reply_markup.inline_keyboard.flat();
+        assert.ok(kbBtns.some(b => b.callback_data === "ulp:status_bar" && b.text.includes("40%")));
 
         const keyboard = messages.mainKeyboard();
         const buttons = keyboard.reply_markup.inline_keyboard.flat().map(b => b.text);

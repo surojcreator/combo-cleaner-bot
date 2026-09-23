@@ -135,8 +135,10 @@ if (parentPort) {
                         if (lineStartPos < end) {
                             let line = fullLineBuf.toString("utf8");
                             if (line.endsWith("\r")) line = line.slice(0, -1);
-                            recentLines.push(line);
-                            if (recentLines.length > 20) recentLines.shift();
+                            if (matches.length < maxMatches) {
+                                recentLines.push(line);
+                                if (recentLines.length > 20) recentLines.shift();
+                            }
 
                             if (matcher(line)) {
                                 total++;

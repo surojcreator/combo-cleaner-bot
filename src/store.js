@@ -198,12 +198,12 @@ function searchLines(chatId, query, limit = 20) {
     if (!chat || !matcher) return { total: 0, matches: [] };
     const matches = [];
     let total = 0;
-    for (const line of chat.lines) {
+    chat.lines.forEach((line) => {
         if (matcher(line)) {
             total += 1;
             if (matches.length < limit) matches.push(line);
         }
-    }
+    });
     return { total, matches };
 }
 

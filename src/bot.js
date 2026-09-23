@@ -563,7 +563,7 @@ function createBot(token, meta = {}) {
         }
         const chatStats = store.getStats(ctx.chat.id);
         let result;
-        if (chatStats && chatStats.size > 100000) {
+        if (chatStats && chatStats.size > 150000) {
             result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
         } else {
             result = store.searchLines(ctx.chat.id, query, 20);
@@ -2235,7 +2235,7 @@ function createBot(token, meta = {}) {
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
         const chatStats = store.getStats(ctx.chat.id);
         let result;
-        if (chatStats && chatStats.size > 100000) {
+        if (chatStats && chatStats.size > 150000) {
             result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
         } else {
             result = store.searchLines(ctx.chat.id, query, 20);
@@ -2251,7 +2251,7 @@ function createBot(token, meta = {}) {
         await safeAnswerCbQuery(ctx, `Preparing "${query}" export…`);
         let matches = [];
         const chatStats = store.getStats(ctx.chat.id);
-        if (chatStats && chatStats.size > 100000) {
+        if (chatStats && chatStats.size > 150000) {
             const res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 100000);
             matches = res.matches;
         } else {
@@ -3747,7 +3747,7 @@ function createBot(token, meta = {}) {
         const domain = resolveCallbackPayload(ctx.match[1]);
         const chatStats = store.getStats(ctx.chat.id);
         let res;
-        if (chatStats && chatStats.size > 100000) {
+        if (chatStats && chatStats.size > 150000) {
             res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), domain, 20);
         } else {
             res = store.searchLines(ctx.chat.id, domain, 20);
@@ -4344,7 +4344,7 @@ function createBot(token, meta = {}) {
                 }
                 const chatStats = store.getStats(ctx.chat.id);
                 let result;
-                if (chatStats && chatStats.size > 100000) {
+                if (chatStats && chatStats.size > 150000) {
                     result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
                 } else {
                     result = store.searchLines(ctx.chat.id, query, 20);

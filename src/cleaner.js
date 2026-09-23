@@ -1470,7 +1470,9 @@ function createSearchMatcher(query) {
 
     const qLower = q.toLowerCase();
     const qUpper = q.toUpperCase();
+    const qTitle = q.length > 1 ? q[0].toUpperCase() + q.slice(1).toLowerCase() : qUpper;
     const hasCaseDiff = qLower !== qUpper;
+    const hasTitleDiff = qTitle !== qLower && qTitle !== qUpper;
 
     const domain = extractSearchDomain(q);
     if (domain && domain.toLowerCase() !== qLower) {
@@ -1478,14 +1480,18 @@ function createSearchMatcher(query) {
         const domainRegex = new RegExp(domainEscaped, "i");
         const dLower = domain.toLowerCase();
         const dUpper = domain.toUpperCase();
+        const dTitle = domain.length > 1 ? domain[0].toUpperCase() + domain.slice(1).toLowerCase() : dUpper;
         const dHasCaseDiff = dLower !== dUpper;
+        const dHasTitleDiff = dTitle !== dLower && dTitle !== dUpper;
 
         return (line) => {
             if (typeof line !== "string") return false;
             // Lightning fast native C++ substring checks
             if (line.includes(qLower)) return true;
+            if (hasTitleDiff && line.includes(qTitle)) return true;
             if (hasCaseDiff && line.includes(qUpper)) return true;
             if (line.includes(dLower)) return true;
+            if (dHasTitleDiff && line.includes(dTitle)) return true;
             if (dHasCaseDiff && line.includes(dUpper)) return true;
             // Case-insensitive regex fallback for mixed-case variations
             return regex.test(line) || domainRegex.test(line);
@@ -1496,6 +1502,7 @@ function createSearchMatcher(query) {
         if (typeof line !== "string") return false;
         // Lightning fast native C++ substring checks
         if (line.includes(qLower)) return true;
+        if (hasTitleDiff && line.includes(qTitle)) return true;
         if (hasCaseDiff && line.includes(qUpper)) return true;
         // Case-insensitive regex fallback for mixed-case variations
         return regex.test(line);
@@ -1580,17 +1587,18 @@ function searchBufferCI(buf, query, limit = 20) {
             }
             if (k === m) {
                 const hit = i - m + 1;
-                let lineStart = buf.lastIndexOf(0x0a, hit);
-                lineStart = lineStart === -1 ? 0 : lineStart + 1;
                 let lineEnd = buf.indexOf(0x0a, hit);
                 if (lineEnd === -1) lineEnd = len;
 
-                let line = buf.subarray(lineStart, lineEnd).toString("utf8");
-                if (line.endsWith("\r")) line = line.slice(0, -1);
-                if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
-
                 total++;
                 if (matches.length < maxMatches) {
+                    let lineStart = buf.lastIndexOf(0x0a, hit);
+                    lineStart = lineStart === -1 ? 0 : lineStart + 1;
+
+                    let line = buf.subarray(lineStart, lineEnd).toString("utf8");
+                    if (line.endsWith("\r")) line = line.slice(0, -1);
+                    if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+
                     let matchResult = line;
                     const trimmedLine = line.trim();
                     if (STEALER_LABEL_RE && STEALER_LABEL_RE.test(trimmedLine)) {

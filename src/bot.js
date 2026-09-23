@@ -90,6 +90,7 @@ const {
     localFileSearchKeyboard,
     previewKeyboard,
     statsKeyboard,
+    fileReportKeyboard,
 } = require("./messages");
 
 // Telegram Bot API caps bot downloads at 20 MB.
@@ -2627,7 +2628,8 @@ function createBot(token, meta = {}) {
         } catch (_) {}
         const latencyMs = Date.now() - t0;
         const uptimeSec = (Date.now() - STARTED_AT) / 1000;
-        await safeReply(ctx, renderPing({ latencyMs, uptimeSec }));
+        const stats = store.getStats(ctx.chat.id);
+        await safeReply(ctx, renderPing({ latencyMs, uptimeSec }), statsKeyboard(stats && stats.size > 0));
     });
 
     bot.command("name", async (ctx) => {
@@ -4992,7 +4994,7 @@ async function ingestDocument(ctx, doc, options = {}) {
         ctx,
         progress.message_id,
         renderFileReport(name, result.stats, added, chatStats, site),
-        mainKeyboard(),
+        fileReportKeyboard(),
     );
 
     // No auto-send: the batch keeps accumulating. Tap "Get combined file"
@@ -6990,11 +6992,11 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
         [
             renderFileReport(name, stats, added, chatStats, site),
             "",
-            `\uD83D\uDCBE  ${B("Full disk output")} \u00B7 ${num(writtenLines)} cleaned lines`,
+            `💾  ${B("Full disk output")} · ${num(writtenLines)} cleaned lines`,
             `${CODE(escapeHtml(outputPath))}`,
             `${I("Search it with /lsearch your-query. Disk output may contain repeated cleaned lines; the RAM batch remains deduped.")}`,
         ].join("\n"),
-        mainKeyboard(),
+        fileReportKeyboard(),
     );
 }
 
@@ -7014,8 +7016,8 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
         ctx,
         progress.message_id,
         [
-            `\uD83D\uDCE6  ${B("Extracting")} ${escapeHtml(name)}`,
-            `     \uD83E\uDDF0  unzipping nested archives\u2026`,
+            `📦  ${B("Extracting")} ${escapeHtml(name)}`,
+            `     🧵  unzipping nested archives…`,
         ].join("\n"),
     );
 
@@ -7048,11 +7050,11 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
         [
             renderFileReport(name, result.stats, added, chatStats, site),
             "",
-            `\uD83D\uDCBE  ${B("Full disk output")}`,
+            `💾  ${B("Full disk output")}`,
             `${CODE(escapeHtml(outputPath))}`,
             `${I("Search it with /lsearch your-query.")}`,
         ].join("\n"),
-        mainKeyboard(),
+        fileReportKeyboard(),
     );
 }
 

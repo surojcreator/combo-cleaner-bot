@@ -1810,6 +1810,29 @@ function renderFileReport(name = "file", stats = {}, added = {}, chatStats = nul
 }
 
 /**
+ * Keyboard shown under per-file multi-core clean report.
+ */
+function fileReportKeyboard() {
+    return createInlineKeyboard([
+        [
+            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+        ],
+        [
+            Markup.button.callback("👁 Line Preview", "preview"),
+            Markup.button.callback("📊 Batch Analytics", "stats"),
+        ],
+        [
+            Markup.button.callback("📥 Save More Files", "save:start"),
+            Markup.button.callback("📂 Server Vault", "server_files"),
+        ],
+        [
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
+}
+
+/**
  * Render report for forwarded log files combined into a single master file with direct download link.
  * @param {object} params
  */
@@ -2319,11 +2342,15 @@ function ulpKeyboard(status = true) {
 function ulpResultKeyboard(hasDocument = false) {
     const rows = [];
     if (hasDocument) {
-        rows.push([Markup.button.callback("\uD83E\uDDFC Clean into batch", "ulp:clean")]);
+        rows.push([Markup.button.callback("🧼 Clean into Batch", "ulp:clean")]);
     }
     rows.push([
-        Markup.button.callback("\uD83D\uDCE6 Get combined file", "combine"),
-        Markup.button.callback("\uD83D\uDCCA Stats", "stats"),
+        Markup.button.callback("📦 Get Combined File", "combine"),
+        Markup.button.callback("📊 Batch Analytics", "stats"),
+    ]);
+    rows.push([
+        Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+        Markup.button.callback("🔙 Main Menu", "help"),
     ]);
     return createInlineKeyboard(rows);
 }
@@ -3026,7 +3053,7 @@ function sitesKeyboard(siteCounts = [], page = 0) {
 
     rows.push([
         Markup.button.callback("📦 Get Combined File", "combine"),
-        Markup.button.callback("📊 System Stats", "stats"),
+        Markup.button.callback("📊 Batch Analytics", "stats"),
     ]);
     rows.push([
         Markup.button.callback("🔙 Main Menu", "help"),
@@ -3133,6 +3160,7 @@ module.exports = {
     localFileSearchKeyboard,
     previewKeyboard,
     statsKeyboard,
+    fileReportKeyboard,
 };
 
 

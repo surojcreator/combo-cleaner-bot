@@ -256,4 +256,9 @@ test("cleanLine and cleanLinesArray preserve and enforce url:username/email/pass
         cleanLine("\"user@domain.com\",\"SecretPass\"", { keepUrl: true, fallbackUrl: "service.com" }),
         "service.com:user@domain.com:SecretPass",
     );
+});
+
+test("cleanLine normalizes zero-width spaces, directional marks, and non-breaking spaces", () => {
+    const dirty = "\u200B\u200Euser@example.com\u200F:\u00A0Pass123\u2028";
+    assert.equal(cleanLine(dirty), "user@example.com:Pass123");
 });

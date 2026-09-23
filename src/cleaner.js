@@ -93,8 +93,8 @@ const DOMAIN_RE =
 const IPV4_RE =
     /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)(?::\d{1,5})?$/;
 
-// Fast check for special whitespace/BOM characters
-const SPECIAL_WS_RE = /[\u200B-\u200D\uFEFF\u00A0]/;
+// Fast check for special whitespace/BOM/invisible characters
+const SPECIAL_WS_RE = /[\u200B-\u200F\u2028\u2029\uFEFF\u00A0]/;
 
 /**
  * Strip a leading BOM and trim whitespace with fast-path for clean strings.
@@ -107,7 +107,7 @@ function normalizeLine(line) {
     if (SPECIAL_WS_RE.test(s)) {
         s = s
             .replace(/^\uFEFF/, "")
-            .replace(/[\u200B-\u200D\uFEFF]/g, "")
+            .replace(/[\u200B-\u200F\u2028\u2029\uFEFF]/g, "")
             .replace(/\u00A0/g, " ");
     }
     return s.trim();

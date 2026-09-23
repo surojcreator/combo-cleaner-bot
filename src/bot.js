@@ -538,19 +538,21 @@ function createBot(token, meta = {}) {
         );
     });
 
-    bot.command("search", async (ctx) => {
+    bot.command(["search", "find", "s", "lookup"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const query = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         if (!query) {
+            userPromptState.set(ctx.chat.id, { action: "batch:search:query", createdAt: Date.now() });
             await safeReply(
                 ctx,
                 [
-                    `\uD83D\uDD0E  ${B("SEARCH")}`,
+                    `🔎  ${B("QUICK BATCH SEARCH")}  ⚡️`,
+                    RULE,
+                    `💎  Batch size: ${B(num(store.getStats(ctx.chat.id)?.size || 0))} lines`,
                     "",
-                    `${I("Usage: /search gmail.com \u2014 finds matches in your batch")}`,
-                    `${I("At least 2 characters, searches everything you uploaded \uD83D\uDCE6")}`,
+                    `👇 ${I("Type any search query directly (e.g. gmail.com) or tap a filter below:")}`,
                 ].join("\n"),
-                mainKeyboard(),
+                searchPromptKeyboard(),
             );
             return;
         }
@@ -2198,12 +2200,13 @@ function createBot(token, meta = {}) {
 
     bot.action("batch:search:prompt", async (ctx) => {
         await ctx.answerCbQuery().catch(() => { });
+        userPromptState.set(ctx.chat.id, { action: "batch:search:query", createdAt: Date.now() });
         const text = [
             `🔎  ${B("QUICK BATCH SEARCH")}  ⚡️`,
             RULE,
             `💎  Batch size: ${B(num(store.getStats(ctx.chat.id)?.size || 0))} lines`,
             "",
-            `👇 ${I("Tap a quick domain filter below or type /search <query>:")}`,
+            `👇 ${I("Type any search query directly (e.g. gmail.com) or tap a filter below:")}`,
         ].join("\n");
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         if (msg) {
@@ -2321,7 +2324,7 @@ function createBot(token, meta = {}) {
         }
     });
 
-    bot.command("lsearch", async (ctx) => {
+    bot.command(["lsearch", "vaultsearch", "vsearch"], async (ctx) => {
         const raw = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         const rawFiles = scanDirFiles(localProcessRoot());
         const procFiles = scanDirFiles(localProcessedRoot());
@@ -2636,7 +2639,7 @@ function createBot(token, meta = {}) {
         );
     });
 
-    bot.command("clear", async (ctx) => {
+    bot.command(["clear", "wipe", "reset", "empty"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const stats = store.getStats(ctx.chat.id);
         if (!stats || stats.size === 0) {
@@ -2656,10 +2659,30 @@ function createBot(token, meta = {}) {
         );
     });
 
-    bot.command("combine", async (ctx) => {
+    bot.command(["combine", "download", "get", "export"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         await ctx.replyWithChatAction("upload_document").catch(() => { });
         await sendCombined(ctx);
+    });
+
+    bot.command("clean", async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const stats = store.getStats(ctx.chat.id);
+        if (stats && stats.size > 0) {
+            await ctx.replyWithChatAction("upload_document").catch(() => { });
+            await sendCombined(ctx);
+        } else {
+            await safeReply(
+                ctx,
+                [
+                    `⚡️  ${B("READY TO CLEAN")}`,
+                    RULE,
+                    `📤 ${I("Send or forward any .txt, .zip, .rar, or .7z log dump to clean it instantly!")}`,
+                    `💾 ${I("Or use /save by replying to any large file to stream it directly to disk.")}`,
+                ].join("\n"),
+                mainKeyboard(),
+            );
+        }
     });
 
     // ---- /process: clean a file already on the server's disk (e.g. /var/data/...)
@@ -3788,14 +3811,23 @@ function createBot(token, meta = {}) {
         const activeDays = parsed.daysCount || (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
         if (!parsed.query) {
+            const hintText = parsed.daysCount
+                ? `📅 ${B("Search duration set to")} ${B(`${parsed.daysCount} Day(s)`)}!\n\n` +
+                  renderUlpHint({
+                      searcherBot: searchOptions.botUsername,
+                      stepDelayMs: searchOptions.stepDelayMs,
+                      maxTries: searchOptions.maxTries,
+                      daysCount: activeDays,
+                  })
+                : renderUlpHint({
+                      searcherBot: searchOptions.botUsername,
+                      stepDelayMs: searchOptions.stepDelayMs,
+                      maxTries: searchOptions.maxTries,
+                      daysCount: activeDays,
+                  });
             await safeReply(
                 ctx,
-                renderUlpHint({
-                    searcherBot: searchOptions.botUsername,
-                    stepDelayMs: searchOptions.stepDelayMs,
-                    maxTries: searchOptions.maxTries,
-                    daysCount: activeDays,
-                }),
+                hintText,
                 ulpMenuKeyboard(activeDays, customDomains),
             );
             return;
@@ -3815,8 +3847,7 @@ function createBot(token, meta = {}) {
         });
     };
 
-    bot.command("ulp", ulpCommand);
-    bot.command("searchbot", ulpCommand); // alias
+    bot.command(["ulp", "searchbot", "ulpsearch"], ulpCommand);
 
     const rerunUlp = async (ctx, scope) => {
         const run = searchbot.getRun(ctx.chat.id);
@@ -4267,6 +4298,24 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, `🚫 Action cancelled.`, mainKeyboard());
                     return;
                 }
+
+            if (prompt.action === "batch:search:query") {
+                userPromptState.delete(ctx.chat.id);
+                const query = input.trim();
+                if (!query || query.length < 2) {
+                    await safeReply(ctx, "⚠️ Query too short — give me at least 2 characters.", mainKeyboard());
+                    return;
+                }
+                const chatStats = store.getStats(ctx.chat.id);
+                let result;
+                if (chatStats && chatStats.size > 5000) {
+                    result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
+                } else {
+                    result = store.searchLines(ctx.chat.id, query, 20);
+                }
+                await safeReply(ctx, renderSearch(query, result), searchResultKeyboard(query, result.total));
+                return;
+            }
 
             if (prompt.action === "save:listening") {
                 if (lower === "done" || lower === "finish" || lower === "complete") {

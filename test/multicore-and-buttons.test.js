@@ -768,6 +768,82 @@ test("bot storage manager handles interactive file deletion and bulk wipe", asyn
     }
 });
 
+test("bot handles QoL command aliases and interactive batch search flow", async () => {
+    const api = await startFakeApi();
+    const testChatId = 887766;
+    try {
+        const bot = createBot("123456:fake-token", {
+            botUsername: "TestBot",
+            telegram: { telegram: { apiRoot: api.apiRoot } },
+            search: { botUsername: "DumpNews14Bot", stepDelayMs: 10, maxTries: 1 },
+        });
+
+        const store = require("../src/store");
+        store.addLines(testChatId, ["target.com:alpha@target.com:Pass1", "beta@other.com:Pass2"]);
+
+        // 1. /find alias executes search directly
+        await bot.handleUpdate({
+            update_id: 101,
+            message: {
+                message_id: 601,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: testChatId, type: "private" },
+                from: { id: 999, is_bot: false },
+                text: "/find target.com",
+                entities: [{ offset: 0, length: 5, type: "bot_command" }],
+            },
+        });
+        const findReply = api.calls.find((c) => c.method === "sendMessage" && c.payload.text && c.payload.text.includes("SEARCH RESULTS"));
+        assert.ok(findReply, "expected /find alias to return search results");
+
+        // 2. /s without query activates interactive batch:search:query prompt
+        await bot.handleUpdate({
+            update_id: 102,
+            message: {
+                message_id: 602,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: testChatId, type: "private" },
+                from: { id: 999, is_bot: false },
+                text: "/s",
+                entities: [{ offset: 0, length: 2, type: "bot_command" }],
+            },
+        });
+        const promptPrompt = api.calls.find((c) => c.method === "sendMessage" && c.payload.text && c.payload.text.includes("QUICK BATCH SEARCH"));
+        assert.ok(promptPrompt, "expected /s without query to render quick batch search prompt");
+
+        // 3. User types plain text query "alpha" which answers the prompt
+        await bot.handleUpdate({
+            update_id: 103,
+            message: {
+                message_id: 603,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: testChatId, type: "private" },
+                from: { id: 999, is_bot: false },
+                text: "alpha",
+            },
+        });
+        const searchRes = api.calls.find((c) => c.method === "sendMessage" && c.payload.text && c.payload.text.includes("alpha@target.com"));
+        assert.ok(searchRes, "expected typing 'alpha' to find alpha@target.com credential");
+
+        // 4. /clean alias with existing batch sends combined file
+        await bot.handleUpdate({
+            update_id: 104,
+            message: {
+                message_id: 604,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: testChatId, type: "private" },
+                from: { id: 999, is_bot: false },
+                text: "/clean",
+                entities: [{ offset: 0, length: 6, type: "bot_command" }],
+            },
+        });
+        const docSend = api.calls.find((c) => c.method === "sendDocument");
+        assert.ok(docSend, "expected /clean to send combined document");
+    } finally {
+        await api.close();
+    }
+});
+
 test.after(() => {
     const { getSharedPool } = require("../src/worker-pool");
     getSharedPool().close();

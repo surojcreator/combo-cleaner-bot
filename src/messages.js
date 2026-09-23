@@ -1353,10 +1353,11 @@ function searchPromptKeyboard() {
         ],
         [
             Markup.button.callback("📧 @yahoo.com", "batch:quicksearch:yahoo.com"),
-            Markup.button.callback("📧 @proton.me", "batch:quicksearch:proton"),
+            Markup.button.callback("📧 @aol.com", "batch:quicksearch:aol.com"),
         ],
         [
-            Markup.button.callback("🔙 Main Menu", "help"),
+            Markup.button.callback("📧 @proton.me", "batch:quicksearch:proton"),
+            Markup.button.callback("🚫 Cancel Search", "help"),
         ],
     ]);
 }
@@ -1964,10 +1965,11 @@ function searchResultKeyboard(query, total = 0) {
         ]);
     }
     rows.push([
+        Markup.button.callback("🔍 Search Again", "batch:search:prompt"),
         Markup.button.callback("📦 Get Combined File", "combine"),
-        Markup.button.callback("📊 System Stats", "stats"),
     ]);
     rows.push([
+        Markup.button.callback("📊 System Stats", "stats"),
         Markup.button.callback("🔙 Main Menu", "help"),
     ]);
     return createInlineKeyboard(rows);

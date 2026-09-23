@@ -308,6 +308,7 @@ function buttonMatchesDate(btn, targetDate) {
     const m = targetDate.getMonth() + 1;
     const mPad = String(m).padStart(2, "0");
     const y = targetDate.getFullYear();
+    const y2 = String(y).slice(-2);
 
     const variants = [
         `${dPad}.${mPad}.${y}`,
@@ -318,9 +319,16 @@ function buttonMatchesDate(btn, targetDate) {
         `${y}.${mPad}.${dPad}`,
         `${dPad}/${mPad}/${y}`,
         `${d}/${m}/${y}`,
+        `${dPad}.${mPad}.${y2}`,
+        `${d}.${m}.${y2}`,
+        `${dPad}/${mPad}/${y2}`,
+        `${d}/${m}/${y2}`,
+        `${dPad}-${mPad}-${y2}`,
+        `${d}-${m}-${y2}`,
         `${dPad}.${mPad}`,
         `${dPad}/${mPad}`,
         `${dPad}-${mPad}`,
+        `${d}.${m}`,
         `${dPad}_${mPad}_${y}`,
         `${y}_${mPad}_${dPad}`,
     ];
@@ -359,7 +367,10 @@ function isMenuMessage(m) {
                 textStr.includes("Next") ||
                 textStr.includes("➡️") ||
                 textStr.includes("▶️") ||
-                textStr.includes("»")
+                textStr.includes("»") ||
+                textStr.includes(">>") ||
+                textStr.includes("След") ||
+                textStr.includes("Далее")
             ) {
                 return true;
             }
@@ -392,10 +403,19 @@ function isHistButton(btn) {
         textStr.includes("history") ||
         textStr.includes("full") ||
         textStr.includes("dump") ||
+        textStr.includes("дамп") ||
         textStr.includes("скачать") ||
+        textStr.includes("выгрузить") ||
+        textStr.includes("получить") ||
         textStr.includes("download") ||
         textStr.includes("база") ||
-        textStr.includes("архив")
+        textStr.includes("архив") ||
+        textStr.includes("логи") ||
+        textStr.includes("комбо") ||
+        textStr.includes("файл") ||
+        textStr.includes("export") ||
+        textStr.includes("get file") ||
+        textStr.includes("get dump")
     ) {
         return true;
     }
@@ -1266,11 +1286,19 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
                     // Polling loop to get the menu message containing button rows
                     let menuMsg = null;
-                    for (let pollTry = 0; pollTry < 6; pollTry++) {
+                    for (let pollTry = 0; pollTry < 8; pollTry++) {
                         if (shouldStop()) return { status: "stopped", daysProcessed };
+                        if (pollTry >= 3) {
+                            onStatus({
+                                day: currentDate ? formatDateDmy(currentDate) : "init",
+                                attempt: dayIdx + 1,
+                                totalDays,
+                                step: `Waiting for menu from ${searchTarget} (try ${pollTry + 1}/8)…`,
+                            });
+                        }
                         try {
                             const recents = await withTimeout(
-                                client.getMessages(searchTarget, { limit: 6 }),
+                                client.getMessages(searchTarget, { limit: 8 }),
                                 timeoutMs,
                                 "userbot getMessages menu",
                             );
@@ -1403,6 +1431,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
                     if (!folderBtn || !menuMsg) {
                         log.log(`userbot could not find date folder for ${dateStr}`);
+                        onStatus({
+                            day: dateStr,
+                            attempt: dayIdx + 1,
+                            totalDays,
+                            step: `No dump folder for ${dateStr} — checking previous date…`,
+                        });
                         currentDate = previousDate(currentDate);
                         consecutiveMisses++;
                         if (consecutiveMisses >= 5) {
@@ -1585,6 +1619,19 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                                 foundAny = true;
                                                 if (isDoc) {
                                                     foundDoc = true;
+                                                    onStatus({
+                                                        day: dateStr,
+                                                        attempt: dayIdx + 1,
+                                                        totalDays,
+                                                        step: `Received dump file for ${dateStr} — auto-cleaning…`,
+                                                    });
+                                                } else {
+                                                    onStatus({
+                                                        day: dateStr,
+                                                        attempt: dayIdx + 1,
+                                                        totalDays,
+                                                        step: `Received credentials for ${dateStr} — auto-cleaning…`,
+                                                    });
                                                 }
                                                 if (options.onResult) {
                                                     try {

@@ -34,6 +34,9 @@ test("normalizeQuery cleans input and rejects junk", () => {
     assert.equal(searchbot.normalizeQuery("a"), null);
     assert.equal(searchbot.normalizeQuery("line\nbreak"), null);
     assert.equal(searchbot.normalizeQuery("x".repeat(121)), null);
+    assert.equal(searchbot.normalizeQuery("/ulp htzone.co.il"), "htzone.co.il");
+    assert.equal(searchbot.normalizeQuery("htzone.co.il:443"), "htzone.co.il");
+    assert.equal(searchbot.normalizeQuery("https://portal.htzone.co.il:8443/login?q=1"), "portal.htzone.co.il");
 });
 
 test("normalizeScope understands day|month|year and aliases", () => {

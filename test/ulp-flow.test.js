@@ -779,8 +779,16 @@ test("ULP flow: userbot date matching and batch date detection handle diverse fo
     assert.ok(buttonMatchesDate({ text: "2026-09-23", data: "folder:2026-09-23" }, target));
     // DD-MM-YYYY
     assert.ok(buttonMatchesDate({ text: "23-09-2026", data: "folder:23-09-2026" }, target));
-    // DD/MM/YYYY
-    assert.ok(buttonMatchesDate({ text: "23/09/2026", data: "folder:23/09/2026" }, target));
+    // Two-digit year (DD.MM.YY, DD/MM/YY)
+    assert.ok(buttonMatchesDate({ text: "📅 23.09.26", data: "folder:23.09.26" }, target));
+    assert.ok(buttonMatchesDate({ text: "23/09/26", data: "folder:23/09/26" }, target));
+    assert.ok(buttonMatchesDate({ text: "23-09-26", data: "folder:23-09-26" }, target));
+
+    const { isHistButton } = require("../src/userbot");
+    assert.ok(isHistButton({ text: "📥 Скачать дамп" }));
+    assert.ok(isHistButton({ text: "📁 Выгрузить логи" }));
+    assert.ok(isHistButton({ text: "📦 Export Dump" }));
+    assert.ok(isHistButton({ data: "hist:23.09.2026:0" }));
 
     // parseAnyDate
     const parsed1 = parseAnyDate("23.09.2026");
@@ -894,6 +902,87 @@ test("ULP flow: ignores query echoes, menus, and text status messages without cr
         assert.equal(ownerDeliveries.length, 0, "expected query echo to NOT be relayed to OWNER_CHAT");
 
         searchbot.resetRuns();
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+test("ULP flow: interactive domain prompt extracts days and launches clean query", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        let searchedOpts = null;
+        const peer = {
+            isReady: () => true,
+            searcherId: 8844520471,
+            async searchDayByDay(opts) {
+                searchedOpts = opts;
+                return { status: "done", daysProcessed: opts.daysCount || 5 };
+            },
+        };
+        const bot = makeBot(api.apiRoot, peer);
+
+        // 1. User clicks "Enter Custom Domain"
+        await bot.handleUpdate({
+            update_id: 501,
+            callback_query: {
+                id: "cb_prompt",
+                from: { id: OWNER_CHAT, is_bot: false, first_name: "Owner" },
+                message: { message_id: 110, chat: { id: OWNER_CHAT, type: "private" } },
+                data: "ulp:custom:prompt",
+            },
+        });
+
+        // 2. User types "https://www.netflix.com/login 7"
+        await bot.handleUpdate({
+            update_id: 502,
+            message: {
+                message_id: 111,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: OWNER_CHAT, type: "private" },
+                from: { id: OWNER_CHAT, is_bot: false, first_name: "Owner" },
+                text: "https://www.netflix.com/login 7",
+            },
+        });
+
+        assert.ok(searchedOpts, "expected searchDayByDay to be launched");
+        assert.equal(searchedOpts.query, "netflix.com", "expected URL to be cleanly stripped to domain");
+        assert.equal(searchedOpts.daysCount, 7, "expected days to be extracted from prompt input");
+
+        // Verify domain was added to store's custom domains
+        const { getCustomDomains } = require("../src/store");
+        const custom = getCustomDomains(OWNER_CHAT);
+        assert.ok(custom.includes("netflix.com"), "expected netflix.com saved to custom domains");
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+test("ULP flow: deliverCombinedAndResetBatch delivers post-search keyboard with 0 results", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        const bot = makeBot(api.apiRoot);
+        const { deliverCombinedAndResetBatch } = require("../src/bot");
+        const ctx = {
+            chat: { id: OWNER_CHAT },
+            telegram: bot.telegram,
+            reply: (text, extra) => bot.telegram.sendMessage(OWNER_CHAT, text, extra),
+        };
+
+        await deliverCombinedAndResetBatch(ctx);
+
+        // Check the sent message
+        const sent = api.calls.filter((c) => c.method === "sendMessage" && c.payload.chat_id === OWNER_CHAT);
+        assert.ok(sent.length > 0, "expected completion message to be sent");
+        const lastMsg = sent[sent.length - 1];
+        assert.ok(lastMsg.payload.text.includes("NO CREDENTIALS FOUND") || lastMsg.payload.text.includes("Batch automatically cleaned"));
+        const rawMarkup = lastMsg.payload.reply_markup;
+        const keyboard = typeof rawMarkup === "string" ? JSON.parse(rawMarkup) : rawMarkup;
+        const hasSearchAgain = keyboard.inline_keyboard.some((r) => r.some((b) => b.callback_data === "ulp:again" || b.callback_data === "ulp:menu"));
+        assert.ok(hasSearchAgain, "expected keyboard to contain Search Again or ULP Menu button");
     } finally {
         await api.close();
         searchbot.resetRuns();

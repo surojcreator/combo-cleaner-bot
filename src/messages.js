@@ -1273,6 +1273,31 @@ function ulpPromptCancelKeyboard() {
 }
 
 /**
+ * Keyboard rendered after ULP search completes or resets batch.
+ * @param {number} [selectedDays]
+ * @param {string[]} [customDomains]
+ */
+function ulpPostSearchKeyboard(selectedDays = 5, customDomains = []) {
+    const rawDays = typeof selectedDays === "symbol" ? 5 : Number(selectedDays) || 5;
+    const days = Math.max(1, Math.min(90, rawDays));
+    const rows = [
+        [
+            Markup.button.callback("🔁 Search Again", "ulp:again"),
+            Markup.button.callback("🌐 Enter New Domain", "ulp:custom:prompt"),
+        ],
+        [
+            Markup.button.callback(`📅 Change Days (${days}d)`, "ulp:custom:days_prompt"),
+            Markup.button.callback("🚀 ULP Menu", "ulp:menu"),
+        ],
+        [
+            Markup.button.callback("📂 Server Vault", "server_files"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ];
+    return createInlineKeyboard(rows);
+}
+
+/**
  * Text rendered for ULP search target menu.
  * @param {string} botUsername
  * @param {number} activeDays
@@ -2915,6 +2940,7 @@ module.exports = {
     ulpMenuKeyboard,
     ulpEditDomainsKeyboard,
     ulpPromptCancelKeyboard,
+    ulpPostSearchKeyboard,
     renderUlpMenuText,
     saveGuideKeyboard,
     searchPromptKeyboard,

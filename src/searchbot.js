@@ -71,6 +71,9 @@ const MAX_TRACKED_RUNS = 200;
 function normalizeQuery(raw) {
     let input = String(raw || "").trim();
     if (!input) return null;
+    // Strip leading slash command if user typed /ulp or /search
+    input = input.replace(/^\/(?:ulp|searchbot|search)\s+/i, "").replace(/^(?:ulp|searchbot|search)\s+/i, "");
+    if (!input) return null;
     // One step = one Telegram message, so no line breaks / tabs allowed.
     if (/[\r\n\t]/.test(input)) return null;
     input = input.replace(/^@+/, "").trim();
@@ -87,6 +90,8 @@ function normalizeQuery(raw) {
     } else if (input.includes("/") && !input.includes(" ")) {
         input = input.split(/[\/?#]/)[0];
     }
+    // Strip trailing port if present e.g. netflix.com:443 -> netflix.com
+    input = input.replace(/:\d+$/, "");
     input = input.replace(/^www\./i, "");
     const query = input.trim().replace(/\s+/g, " ");
     if (query.length < 2 || query.length > 120) return null;

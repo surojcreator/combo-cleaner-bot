@@ -54,6 +54,7 @@ const {
     ulpMenuKeyboard,
     ulpEditDomainsKeyboard,
     ulpPromptCancelKeyboard,
+    ulpPostSearchKeyboard,
     renderUlpMenuText,
     saveGuideKeyboard,
     searchPromptKeyboard,
@@ -3819,8 +3820,17 @@ function createBot(token, meta = {}) {
 
     const rerunUlp = async (ctx, scope) => {
         const run = searchbot.getRun(ctx.chat.id);
-        if (!run) {
-            await ctx.answerCbQuery("No search to re-run \u2014 use /ulp <query>").catch(() => { });
+        if (!run || !run.query) {
+            await ctx.answerCbQuery("Select target or enter domain").catch(() => { });
+            const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+            const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+            const text = renderUlpMenuText(searchOptions.botUsername, activeDays, customDomains.length);
+            const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+            if (msg) {
+                await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(activeDays, customDomains));
+            } else {
+                await safeReply(ctx, text, ulpMenuKeyboard(activeDays, customDomains));
+            }
             return;
         }
         await ctx.answerCbQuery(`Scope \u00B7 ${scope}`).catch(() => { });
@@ -4277,7 +4287,8 @@ function createBot(token, meta = {}) {
             }
 
             if (prompt.action === "ulp:search_domain") {
-                const query = searchbot.normalizeQuery(input);
+                const parsed = parseUlpArg(input, searchOptions);
+                const query = parsed.query || searchbot.normalizeQuery(input);
                 if (!query) {
                     await safeReply(
                         ctx,
@@ -4290,11 +4301,16 @@ function createBot(token, meta = {}) {
                 if (store && store.addCustomDomain) {
                     store.addCustomDomain(ctx.chat.id, query);
                 }
-                const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+                if (parsed.daysCount) {
+                    userUlpDays.set(ctx.chat.id, parsed.daysCount);
+                    if (store && store.setUlpDays) store.setUlpDays(ctx.chat.id, parsed.daysCount);
+                }
+                const activeDays = parsed.daysCount || (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
                 await safeReply(ctx, `🚀 ${B("Starting search for")} ${CODE(escapeHtml(query))} (${activeDays} days)…\n💾 ${I("Saved to your custom target domains.")}`);
                 await beginUlpRun(ctx, {
                     query,
-                    scope: "day",
+                    scope: parsed.scope || "day",
+                    startDate: parsed.startDate || null,
                     daysCount: activeDays,
                     searchOptions,
                     meta,
@@ -4305,7 +4321,8 @@ function createBot(token, meta = {}) {
             }
 
             if (prompt.action === "ulp:add_domain") {
-                const domain = searchbot.normalizeQuery(input);
+                const parsed = parseUlpArg(input, searchOptions);
+                const domain = parsed.query || searchbot.normalizeQuery(input);
                 if (!domain) {
                     await safeReply(
                         ctx,
@@ -5367,12 +5384,28 @@ async function deliverCombinedAndResetBatch(ctx) {
         await new Promise((r) => setTimeout(r, 1500));
         await waitForIngestions(chatId);
         const lines = store.getLines(chatId);
+        const activeDays = (store && store.getUlpDays && store.getUlpDays(chatId)) || (userUlpDays && userUlpDays.get(chatId)) || 5;
+        const customDomains = (store && store.getCustomDomains && store.getCustomDomains(chatId)) || [];
         if (lines.length > 0) {
             await sendCombined(ctx, true);
             store.clear(chatId);
-            await safeReply(ctx, `${tgEmoji("🧹")} Batch automatically cleaned and reset.`);
+            await safeReply(
+                ctx,
+                `${tgEmoji("🧹")} Batch automatically cleaned and reset. Ready for next search!`,
+                ulpPostSearchKeyboard(activeDays, customDomains)
+            );
         } else {
-            await safeReply(ctx, `${tgEmoji("📭")} Search completed, but no credentials were found in the batch.`);
+            await safeReply(
+                ctx,
+                [
+                    `${tgEmoji("📭")}  ${B("NO CREDENTIALS FOUND")}  ${tgEmoji("⚡️")}`,
+                    RULE,
+                    `Search completed, but no credentials were found for this query in the specified days.`,
+                    "",
+                    `💡 ${I("Try searching with more days (e.g. 14 or 30 days) or test another target domain below:")}`,
+                ].join("\n"),
+                ulpPostSearchKeyboard(activeDays, customDomains)
+            );
         }
     } catch (err) {
         console.error("deliverCombinedAndResetBatch failed:", err);
@@ -5739,6 +5772,8 @@ async function beginUlpRun(ctx, params) {
     let result;
     if (scope === "day" && transport.kind === "userbot" && typeof transport.userbot.searchDayByDay === "function") {
         let dayRes;
+        let lastStatusEdit = 0;
+        let pendingStatusTimer = null;
         try {
             dayRes = await transport.userbot.searchDayByDay({
                 query,
@@ -5750,18 +5785,28 @@ async function beginUlpRun(ctx, params) {
                 shouldStop: () => !searchbot.isRunning(chatId),
                 onStatus: (st) => {
                     if (!card) return;
-                    safeEdit(
-                        ctx,
-                        card.message_id,
-                        renderUlpProgress({
-                            searcherBot: searchOptions.botUsername,
-                            attempt: st.attempt,
-                            maxTries: st.totalDays,
-                            sends: [`${st.day}: ${st.step}`],
-                            stepDelayMs: searchOptions.stepDelayMs,
-                        }),
-                        ulpKeyboard(scope),
-                    ).catch(() => {});
+                    const now = Date.now();
+                    const text = renderUlpProgress({
+                        searcherBot: searchOptions.botUsername,
+                        attempt: st.attempt,
+                        maxTries: st.totalDays,
+                        sends: [`${st.day}: ${st.step}`],
+                        stepDelayMs: searchOptions.stepDelayMs,
+                    });
+                    if (now - lastStatusEdit >= 1200) {
+                        lastStatusEdit = now;
+                        if (pendingStatusTimer) {
+                            clearTimeout(pendingStatusTimer);
+                            pendingStatusTimer = null;
+                        }
+                        safeEdit(ctx, card.message_id, text, ulpKeyboard(scope)).catch(() => {});
+                    } else if (!pendingStatusTimer) {
+                        pendingStatusTimer = setTimeout(() => {
+                            pendingStatusTimer = null;
+                            lastStatusEdit = Date.now();
+                            safeEdit(ctx, card.message_id, text, ulpKeyboard(scope)).catch(() => {});
+                        }, 1200 - (now - lastStatusEdit));
+                    }
                 },
                 onResult: async (m) => {
                     try {
@@ -5781,6 +5826,11 @@ async function beginUlpRun(ctx, params) {
         } catch (dayErr) {
             console.error("searchDayByDay error:", dayErr && dayErr.message ? dayErr.message : dayErr);
             dayRes = { status: "error", error: dayErr && dayErr.message ? dayErr.message : String(dayErr) };
+        } finally {
+            if (pendingStatusTimer) {
+                clearTimeout(pendingStatusTimer);
+                pendingStatusTimer = null;
+            }
         }
 
         await waitForIngestions(chatId).catch(() => {});

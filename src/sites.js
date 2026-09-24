@@ -236,13 +236,19 @@ function scoreDomains(rawText) {
 
     let best = null;
     let bestScore = 0;
+    let bestNonFreemail = null;
+    let bestNonFreemailScore = 0;
     for (const [domain, score] of counts) {
         if (score > bestScore) {
             best = domain;
             bestScore = score;
         }
+        if (!isFreemail(domain) && score > bestNonFreemailScore) {
+            bestNonFreemail = domain;
+            bestNonFreemailScore = score;
+        }
     }
-    return { best, bestScore, counts };
+    return { best, bestScore, bestNonFreemail, bestNonFreemailScore, counts };
 }
 
 /**
@@ -265,10 +271,10 @@ function detectSite(rawText, sourceName) {
     const nameHint = nameDomain || siteFromFileName(sourceName || "");
     const nameScore = nameDomain ? WEIGHT_NAME_DOMAIN : nameHint ? WEIGHT_NAME_BRAND : 0;
 
-    const { best, bestScore } = scoreDomains(String(rawText || "").slice(0, 512 * 1024));
-    const contentBest = best && !isFreemail(best) ? best : null;
+    const { bestNonFreemail, bestNonFreemailScore } = scoreDomains(String(rawText || "").slice(0, 512 * 1024));
+    const contentBest = bestNonFreemail;
 
-    if (contentBest && bestScore >= nameScore) return contentBest;
+    if (contentBest && bestNonFreemailScore >= nameScore) return contentBest;
     if (nameHint) return nameHint;
     return contentBest;
 }

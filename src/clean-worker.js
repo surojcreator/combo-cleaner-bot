@@ -128,7 +128,8 @@ if (parentPort) {
                                     : readBuf.subarray(0, bytesRead);
 
                                 const lastNl = combined.lastIndexOf(0x0a);
-                                if (lastNl !== -1 && curFilePos + bytesRead < lineEndPos) {
+                                const isFinalChunk = curFilePos + bytesRead >= lineEndPos;
+                                if (lastNl !== -1 && !isFinalChunk) {
                                     const chunk = combined.subarray(0, lastNl + 1);
                                     remainder = Buffer.from(combined.subarray(lastNl + 1));
                                     const res = searchBufferCI(chunk, query, Math.max(0, maxMatches - matches.length));
@@ -136,13 +137,18 @@ if (parentPort) {
                                     for (const m of res.matches) {
                                         if (matches.length < maxMatches) matches.push(m);
                                     }
-                                } else {
+                                } else if (isFinalChunk) {
                                     remainder = Buffer.alloc(0);
                                     const res = searchBufferCI(combined, query, Math.max(0, maxMatches - matches.length));
                                     total += res.total;
                                     for (const m of res.matches) {
                                         if (matches.length < maxMatches) matches.push(m);
                                     }
+                                } else {
+                                    // No newline found yet and more data remains in this
+                                    // slice: keep accumulating instead of searching a
+                                    // truncated fragment of an oversized single line.
+                                    remainder = combined;
                                 }
                                 curFilePos += bytesRead;
                             }

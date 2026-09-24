@@ -138,18 +138,19 @@ class WorkerPool {
         this._ensureWorkers();
         return new Promise((resolve, reject) => {
             let timer = null;
+            let task = null;
             if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
                 timer = setTimeout(() => {
-                    const idx = this.queue.findIndex((t) => t.resolve === resolve);
+                    const idx = this.queue.indexOf(task);
                     if (idx !== -1) this.queue.splice(idx, 1);
-                    for (const [id, task] of this.pending.entries()) {
-                        if (task.resolve === resolve) {
+                    for (const [id, t] of this.pending.entries()) {
+                        if (t === task) {
                             this.pending.delete(id);
-                            if (task.worker) {
-                                task.worker.terminate().catch(() => {});
-                                const wIdx = this.workers.indexOf(task.worker);
+                            if (t.worker) {
+                                t.worker.terminate().catch(() => {});
+                                const wIdx = this.workers.indexOf(t.worker);
                                 if (wIdx !== -1) this.workers.splice(wIdx, 1);
-                                const fIdx = this.freeWorkers.indexOf(task.worker);
+                                const fIdx = this.freeWorkers.indexOf(t.worker);
                                 if (fIdx !== -1) this.freeWorkers.splice(fIdx, 1);
                                 if (!this.isClosed) this._spawnWorker();
                             }
@@ -168,7 +169,8 @@ class WorkerPool {
                 if (timer) clearTimeout(timer);
                 reject(err);
             };
-            this.queue.push({ payload, resolve: wrappedResolve, reject: wrappedReject });
+            task = { payload, resolve: wrappedResolve, reject: wrappedReject };
+            this.queue.push(task);
             this._drainQueue();
         });
     }

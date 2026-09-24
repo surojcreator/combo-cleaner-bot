@@ -725,7 +725,7 @@ function compact(n) {
     if (typeof n === "symbol") return "0";
     const v = Number(n || 0);
     if (v < 1000) return String(v);
-    if (v < 1_000_000) {
+    if (v < 999_500) {
         const k = v / 1000;
         return `${k >= 100 ? Math.round(k) : k.toFixed(1).replace(/\.0$/, "")}K`;
     }
@@ -1023,7 +1023,7 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
             if (page > 0) {
                 navRow.push(Markup.button.callback("◀️ Prev", `files:page:raw:${page - 1}`));
             }
-            navRow.push(Markup.button.callback(`📄 ${page + 1}/${totalPages}`, "files:tab:raw"));
+            navRow.push(Markup.button.callback(`📄 ${page + 1}/${totalPages}`, `files:page:raw:${page}`));
             if (page + 1 < totalPages) {
                 navRow.push(Markup.button.callback("Next ▶️", `files:page:raw:${page + 1}`));
             }
@@ -1079,7 +1079,7 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
             if (page > 0) {
                 navRow.push(Markup.button.callback("◀️ Prev", `files:page:proc:${page - 1}`));
             }
-            navRow.push(Markup.button.callback(`📄 ${page + 1}/${totalPages}`, "files:tab:proc"));
+            navRow.push(Markup.button.callback(`📄 ${page + 1}/${totalPages}`, `files:page:proc:${page}`));
             if (page + 1 < totalPages) {
                 navRow.push(Markup.button.callback("Next ▶️", `files:page:proc:${page + 1}`));
             }

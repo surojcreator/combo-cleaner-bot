@@ -1546,6 +1546,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     // =========================================================================
                     let folderView = null;
                     let histBtn = null;
+                    let foundAny = false;
 
                     for (let histScan = 0; histScan < 6; histScan++) {
                         if (shouldStop()) return { status: "stopped", daysProcessed };
@@ -1653,7 +1654,6 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         // STEP 5: Ingestion and result polling loop (catching documents and text)
                         // =========================================================================
                         let foundDoc = false;
-                        let foundAny = false;
                         const maxWaitAttempts = 8;
                         for (let waitAttempt = 0; waitAttempt < maxWaitAttempts; waitAttempt++) {
                             if (shouldStop()) return { status: "stopped", daysProcessed };

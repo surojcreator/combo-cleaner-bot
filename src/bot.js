@@ -1961,6 +1961,15 @@ function createBot(token, meta = {}) {
     bot.action(/^lsearch:biggest:run:(.+)$/, async (ctx) => {
         const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Searching biggest file for "${query}"…`);
+
+        if (activeVaultSearches.has(ctx.chat.id)) {
+            await safeReply(
+                ctx,
+                `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+            );
+            return;
+        }
+
         store.addCustomQuery(ctx.chat.id, query);
 
         const procFiles = scanDirFiles(localProcessedRoot());
@@ -2871,6 +2880,13 @@ function createBot(token, meta = {}) {
 
         // Helper to run search on a single target file
         const runSingleFileSearch = async (matchedFile, fileIdx, isProc) => {
+            if (activeVaultSearches.has(ctx.chat.id)) {
+                await safeReply(
+                    ctx,
+                    `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+                );
+                return;
+            }
             const abortController = new AbortController();
             activeVaultSearches.set(ctx.chat.id, {
                 query,
@@ -3130,23 +3146,7 @@ function createBot(token, meta = {}) {
 
         const isExplicitVaultSearch = cmdName === "vaultsearch" || cmdName === "vsearch" || (target && /^(all|vault)$/i.test(target));
 
-        // When invoking /lsearch, strictly search the biggest file on disk (cleaned file preferred, fallback to raw dump)
-        if (cmdName === "lsearch" && !isExplicitVaultSearch) {
-            if (procFiles.length > 0) {
-                return await runSingleFileSearch(procFiles[0], 0, true);
-            } else if (rawFiles.length > 0) {
-                return await runSingleFileSearch(rawFiles[0], 0, false);
-            } else {
-                await safeReply(
-                    ctx,
-                    `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
-                    mainKeyboard()
-                );
-                return;
-            }
-        }
-
-        // Default /lsearch <query> searches the biggest cleaned file directly on disk
+        // Default /lsearch <query> (no target, or an explicit "biggest" keyword) searches the biggest cleaned file directly on disk
         if (!isExplicitVaultSearch && (!target || /^(biggest|largest|big|max)$/i.test(target))) {
             if (procFiles.length > 0) {
                 return await runSingleFileSearch(procFiles[0], 0, true);
@@ -5305,6 +5305,15 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
                     return;
                 }
+
+                if (activeVaultSearches.has(ctx.chat.id)) {
+                    await safeReply(
+                        ctx,
+                        `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+                    );
+                    return;
+                }
+
                 store.addCustomQuery(ctx.chat.id, query);
 
                 const procFiles = scanDirFiles(localProcessedRoot());

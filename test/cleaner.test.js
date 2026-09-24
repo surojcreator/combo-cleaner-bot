@@ -361,4 +361,43 @@ test("searchBufferCI scans buffers via Boyer-Moore-Horspool with zero garbage co
     assert.equal(unicodeRes.matches[0], "секретный_логин:пароль123");
 });
 
+test("handles dotted usernames and passwords with dots without false domain detection", () => {
+    // Dotted usernames
+    assert.equal(cleanLine("john.smith:SecretPass123"), "john.smith:SecretPass123");
+    assert.equal(cleanLine("first.last:pass1234"), "first.last:pass1234");
+    assert.equal(cleanLine("alex.brown:Summer.2024"), "alex.brown:Summer.2024");
+    assert.equal(cleanLine("user.name:Password123"), "user.name:Password123");
+    assert.equal(cleanLine("first.name:Secret123"), "first.name:Secret123");
+
+    // Passwords containing dots
+    assert.equal(cleanLine("user123:Summer.time"), "user123:Summer.time");
+    assert.equal(cleanLine("user:Winter.snow"), "user:Winter.snow");
+    assert.equal(cleanLine("admin:Secret.code"), "admin:Secret.code");
+    assert.equal(cleanLine("testuser:Hello.World"), "testuser:Hello.World");
+
+    // Dotted usernames in 3-token / ULP lines
+    assert.equal(
+        cleanLine("rewards.example.co.il:john.smith:SecretPass123"),
+        "john.smith:SecretPass123",
+    );
+    assert.equal(
+        cleanLine("rewards.example.co.il:john.smith:SecretPass123", { keepUrl: true }),
+        "rewards.example.co.il:john.smith:SecretPass123",
+    );
+    assert.equal(
+        cleanLine("site.com:john.smith:pass"),
+        "john.smith:pass",
+    );
+
+    // Short usernames and usernames starting with numbers
+    assert.equal(cleanLine("bob:SecretPass123"), "bob:SecretPass123");
+    assert.equal(cleanLine("123john:SecretPass123"), "123john:SecretPass123");
+
+    // Actual domains / URLs must continue to be handled properly
+    assert.equal(cleanLine("https://example.com:443"), null);
+    assert.equal(cleanLine("example.com:password"), null);
+    assert.equal(cleanLine("www.example.com:8080"), null);
+    assert.equal(cleanLine("1.2.3.4:443"), null);
+});
+
 

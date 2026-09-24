@@ -450,7 +450,7 @@ function createBot(token, meta = {}) {
 
             try {
                 fs.mkdirSync(localProcessedRoot(), { recursive: true });
-                fs.writeFileSync(outputPath, buffer);
+                await fs.promises.writeFile(outputPath, buffer);
             } catch (err) {
                 console.error("Failed to write /link combined file:", err);
             }
@@ -725,7 +725,7 @@ function createBot(token, meta = {}) {
                 }, true);
                 zipItems.push({
                     name: f.name,
-                    buffer: fs.readFileSync(f.path),
+                    buffer: await fs.promises.readFile(f.path),
                 });
             }
 
@@ -748,7 +748,7 @@ function createBot(token, meta = {}) {
             const stamp = new Date().toISOString().replace(/[:.]/g, "-");
             const outName = `merged_vault_${chatId}_${stamp}.zip`;
             const outPath = path.join(root, outName);
-            fs.writeFileSync(outPath, mergeResult.buffer);
+            await fs.promises.writeFile(outPath, mergeResult.buffer);
             const stat = fs.statSync(outPath);
 
             await reportProgress({
@@ -853,7 +853,7 @@ function createBot(token, meta = {}) {
 
                 if (isZip) {
                     try {
-                        const buf = fs.readFileSync(f.path);
+                        const buf = await fs.promises.readFile(f.path);
                         if (isZipBuffer(buf)) {
                             const AdmZip = require("adm-zip");
                             const zip = new AdmZip(buf);
@@ -3842,7 +3842,7 @@ function createBot(token, meta = {}) {
                         const res = await fetch(link.href);
                         if (!res.ok) throw new Error(`HTTP ${res.status}`);
                         const buf = Buffer.from(await res.arrayBuffer());
-                        fs.writeFileSync(destPath, buf);
+                        await fs.promises.writeFile(destPath, buf);
                         downloaded = true;
                     } catch (dlErr) {
                         console.error("Bot API file download error:", dlErr && dlErr.message ? dlErr.message : dlErr);
@@ -4194,7 +4194,7 @@ function createBot(token, meta = {}) {
                             totalLinesAdded += fileAdded;
                             processedFiles.push({ name: currentName, lines: fileAdded, size: doc.size });
                         } else {
-                            const content = fs.readFileSync(fullPath, "utf8");
+                            const content = await fs.promises.readFile(fullPath, "utf8");
                             const res = await extractAndCleanTextAsync(content, { sourceName: currentName, keepUrl: false });
                             const site = sanitizeSiteSlug(res.site || "") || sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
                             const added = store.addLines(ctx.chat.id, res.lines, site);
@@ -4202,7 +4202,7 @@ function createBot(token, meta = {}) {
                             processedFiles.push({ name: currentName, lines: added.added, size: doc.size });
                         }
                     } else if (isZip) {
-                        const buffer = fs.readFileSync(fullPath);
+                        const buffer = await fs.promises.readFile(fullPath);
                         const res = await extractAndCleanZipAsync(buffer, { sourceName: currentName, keepUrl: false });
                         const site = sanitizeSiteSlug(res.site || "") || sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
                         const added = store.addLines(ctx.chat.id, res.lines, site);
@@ -4804,7 +4804,7 @@ function createBot(token, meta = {}) {
                                 root: localProcessRoot(),
                             });
                             if (dlRes && dlRes.path && fs.existsSync(dlRes.path)) {
-                                buffer = fs.readFileSync(dlRes.path);
+                                buffer = await fs.promises.readFile(dlRes.path);
                             }
                         } catch (ubErr) {
                             console.error(`Userbot fallback failed for ${item.name}:`, ubErr && ubErr.message ? ubErr.message : ubErr);
@@ -4847,7 +4847,7 @@ function createBot(token, meta = {}) {
 
             try {
                 fs.mkdirSync(localProcessedRoot(), { recursive: true });
-                fs.writeFileSync(outputPath, mergeResult.buffer);
+                await fs.promises.writeFile(outputPath, mergeResult.buffer);
             } catch (writeErr) {
                 console.error("Failed to write merged zip to disk:", writeErr);
             }
@@ -4943,7 +4943,7 @@ function createBot(token, meta = {}) {
             fs.mkdirSync(localProcessedRoot(), { recursive: true });
             const outputContent = buildOutput(finalLines);
             combinedBuffer = Buffer.from(outputContent, "utf8");
-            fs.writeFileSync(outputPath, combinedBuffer);
+            await fs.promises.writeFile(outputPath, combinedBuffer);
         } catch (writeErr) {
             console.error("Failed to write forwarded combined log to disk:", writeErr);
             if (!combinedBuffer) combinedBuffer = Buffer.from(buildOutput(finalLines), "utf8");
@@ -6395,7 +6395,7 @@ async function sendCombined(ctx, force = false) {
         // Stream / write combined content
         const combinedContent = buildOutput(lines);
         buffer = Buffer.from(combinedContent, "utf8");
-        fs.writeFileSync(outputPath, buffer);
+        await fs.promises.writeFile(outputPath, buffer);
     } catch (writeErr) {
         console.error("Failed to persist combined file to disk:", writeErr);
         if (!buffer) buffer = Buffer.from(buildOutput(lines), "utf8");
@@ -8198,7 +8198,7 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
         ].join("\n"),
     );
 
-    const buffer = fs.readFileSync(fullPath);
+    const buffer = await fs.promises.readFile(fullPath);
     const keepUrl = Boolean(options && options.keepUrl);
 
     // Stage 3: cleaning.
@@ -8220,7 +8220,7 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
     const added = store.addLines(ctx.chat.id, cleanLines, site);
     const chatStats = store.getStats(ctx.chat.id);
     const outputPath = processedOutputPath(name, ctx.chat.id);
-    fs.writeFileSync(outputPath, buildOutput(cleanLines), "utf8");
+    await fs.promises.writeFile(outputPath, buildOutput(cleanLines), "utf8");
 
     await safeEdit(
         ctx,

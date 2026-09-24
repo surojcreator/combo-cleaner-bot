@@ -489,7 +489,7 @@ test("ULP flow: searchDayByDay automatically cleans onResult messages and combin
     }
 });
 
-test("ULP flow: clean ulp files retain url:username/email/password structure and normalize query", async () => {
+test("ULP flow: clean ulp files remove url and normalize query to credentials only", async () => {
     searchbot.resetRuns();
     const api = await startFakeApi();
     const store = require("../src/store");
@@ -524,9 +524,9 @@ test("ULP flow: clean ulp files retain url:username/email/password structure and
         assert.ok(searchedOpts, "expected searchDayByDay to be called");
         assert.equal(searchedOpts.query, "example.com", "expected query to have URL and path removed");
         assert.deepEqual(capturedLines, [
-            "https://example.com/path:user@example.com:pass123",
-            "example.com:anotheruser:secret456",
-        ], "expected clean ULP files to preserve url:username/email/password structure");
+            "user@example.com:pass123",
+            "anotheruser:secret456",
+        ], "expected clean ULP files to remove url prefix and output pure credentials");
         searchbot.resetRuns();
     } finally {
         await api.close();
@@ -534,7 +534,7 @@ test("ULP flow: clean ulp files retain url:username/email/password structure and
     }
 });
 
-test("ULP flow: applies fallback query domain when ULP lines lack URL prefix", async () => {
+test("ULP flow: keeps credentials pure without url prefix", async () => {
     searchbot.resetRuns();
     const api = await startFakeApi();
     const store = require("../src/store");
@@ -565,9 +565,9 @@ test("ULP flow: applies fallback query domain when ULP lines lack URL prefix", a
         await bot.handleUpdate(commandUpdate("/ulp targetsite.com 20.09.2026"));
 
         assert.deepEqual(capturedLines, [
-            "targetsite.com:bareuser@example.com:secretPass",
-            "targetsite.com:plainuser:plainPass",
-        ], "expected fallback domain to give bare credentials url:username/email/password structure");
+            "bareuser@example.com:secretPass",
+            "plainuser:plainPass",
+        ], "expected credentials to remain pure user:pass without url prefix");
         searchbot.resetRuns();
     } finally {
         await api.close();

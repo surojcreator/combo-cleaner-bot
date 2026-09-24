@@ -322,7 +322,7 @@ test("/save downloads the replied document to disk and automatically processes i
     }
 });
 
-test("/process on a ULP file checks for duplicates and does not delete the URL", async () => {
+test("/process on a ULP file checks for duplicates and removes the URL", async () => {
     store.clear(OWNER_CHAT);
     const tmp = path.join(os.tmpdir(), `ulp-${Date.now()}.txt`);
     fs.writeFileSync(
@@ -349,24 +349,24 @@ test("/process on a ULP file checks for duplicates and does not delete the URL",
         // Verify duplicates were found and counted
         assert.match(report, /Duplicates\s+1/);
 
-        // Verify the store retained the full URL
-        const netflixMatch = store.searchLines(OWNER_CHAT, "https://netflix.com");
+        // Verify the store stripped the URL and kept pure user:pass
+        const netflixMatch = store.searchLines(OWNER_CHAT, "john_doe");
         assert.equal(netflixMatch.total, 1);
-        assert.equal(netflixMatch.matches[0], "https://netflix.com/login:john_doe:secret123");
+        assert.equal(netflixMatch.matches[0], "john_doe:secret123");
 
-        const spotifyMatch = store.searchLines(OWNER_CHAT, "spotify.com");
+        const spotifyMatch = store.searchLines(OWNER_CHAT, "musiclover@gmail.com");
         assert.equal(spotifyMatch.total, 1);
-        assert.equal(spotifyMatch.matches[0], "https://spotify.com/auth:musiclover@gmail.com:pass456");
+        assert.equal(spotifyMatch.matches[0], "musiclover@gmail.com:pass456");
 
-        // Verify disk output file also kept URLs and deduplicated
+        // Verify disk output file also stripped URLs and deduplicated
         const diskFileMatch = report.match(/<code>(.*?)<\/code>/);
         assert.ok(diskFileMatch, "expected disk output path in report");
         const diskFile = diskFileMatch[1];
         assert.equal(fs.existsSync(diskFile), true);
         const diskContent = fs.readFileSync(diskFile, "utf8").trim().split(/\r?\n/);
         assert.deepEqual(diskContent, [
-            "https://netflix.com/login:john_doe:secret123",
-            "https://spotify.com/auth:musiclover@gmail.com:pass456",
+            "john_doe:secret123",
+            "musiclover@gmail.com:pass456",
         ]);
         fs.rmSync(diskFile, { force: true });
     } finally {

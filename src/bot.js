@@ -158,7 +158,7 @@ function num(n) {
  */
 function buildOutput(lines) {
     if (!Array.isArray(lines)) return "";
-    return lines.join("\n") + (lines.length ? "\n" : "");
+    return lines.map((l) => cleanUserPassOnly(l) || l).join("\n") + (lines.length ? "\n" : "");
 }
 
 /** Convert MTProto /save failures into actionable, HTML-safe guidance. */
@@ -749,7 +749,9 @@ function createBot(token, meta = {}) {
         const writeLinesBatch = async (lines) => {
             if (!lines || lines.length === 0) return;
             for (let k = 0; k < lines.length; k++) {
-                const line = lines[k];
+                const rawLine = lines[k];
+                const line = cleanUserPassOnly(rawLine) || rawLine;
+                if (!line) continue;
                 if (seen.has(line)) {
                     totalDupes++;
                     continue;
@@ -800,7 +802,7 @@ function createBot(token, meta = {}) {
                                 const lower = entry.entryName.toLowerCase();
                                 if (lower.endsWith(".txt") || lower.endsWith(".log") || lower.endsWith(".csv") || lower.endsWith(".tsv")) {
                                     const text = entry.getData().toString("utf8");
-                                    const res = await extractAndCleanTextAsync(text, { keepUrl: true, dedupe: false });
+                                    const res = await extractAndCleanTextAsync(text, { keepUrl: false, dedupe: false });
                                     await writeLinesBatch(res.lines);
                                     totalDupes += res.stats.duplicates || 0;
                                     await reportProgress({
@@ -827,7 +829,7 @@ function createBot(token, meta = {}) {
                     for await (const line of rl) {
                         const trimmed = line.trim();
                         if (!trimmed) continue;
-                        chunk.push(trimmed);
+                        chunk.push(cleanUserPassOnly(trimmed) || trimmed);
                         if (chunk.length >= 25000) {
                             await writeLinesBatch(chunk);
                             chunk = [];
@@ -856,7 +858,7 @@ function createBot(token, meta = {}) {
                     for await (const line of rl) {
                         chunk.push(line);
                         if (chunk.length >= 25000) {
-                            const res = await getSharedPool().cleanLinesParallel(chunk, { keepUrl: true, dedupe: false });
+                            const res = await getSharedPool().cleanLinesParallel(chunk, { keepUrl: false, dedupe: false });
                             chunk = [];
                             await writeLinesBatch(res.lines);
                             totalDupes += res.stats.duplicates || 0;
@@ -872,7 +874,7 @@ function createBot(token, meta = {}) {
                         }
                     }
                     if (chunk.length > 0) {
-                        const res = await getSharedPool().cleanLinesParallel(chunk, { keepUrl: true, dedupe: false });
+                        const res = await getSharedPool().cleanLinesParallel(chunk, { keepUrl: false, dedupe: false });
                         chunk = [];
                         await writeLinesBatch(res.lines);
                         totalDupes += res.stats.duplicates || 0;
@@ -3710,7 +3712,7 @@ function createBot(token, meta = {}) {
                             for await (const line of rl) {
                                 batch.push(line);
                                 if (batch.length >= 25000) {
-                                    const res = await extractAndCleanTextAsync(batch.join("\n"), { keepUrl: true });
+                                    const res = await extractAndCleanTextAsync(batch.join("\n"), { keepUrl: false });
                                     const r = store.addLines(ctx.chat.id, res.lines, site, { countFile: !countedInFile });
                                     countedInFile = true;
                                     fileAdded += r.added;
@@ -3718,7 +3720,7 @@ function createBot(token, meta = {}) {
                                 }
                             }
                             if (batch.length > 0) {
-                                const res = await extractAndCleanTextAsync(batch.join("\n"), { keepUrl: true });
+                                const res = await extractAndCleanTextAsync(batch.join("\n"), { keepUrl: false });
                                 const r = store.addLines(ctx.chat.id, res.lines, site, { countFile: !countedInFile });
                                 countedInFile = true;
                                 fileAdded += r.added;
@@ -3727,7 +3729,7 @@ function createBot(token, meta = {}) {
                             processedFiles.push({ name: currentName, lines: fileAdded, size: doc.size });
                         } else {
                             const content = fs.readFileSync(fullPath, "utf8");
-                            const res = await extractAndCleanTextAsync(content, { sourceName: currentName, keepUrl: true });
+                            const res = await extractAndCleanTextAsync(content, { sourceName: currentName, keepUrl: false });
                             const site = sanitizeSiteSlug(res.site || "") || sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
                             const added = store.addLines(ctx.chat.id, res.lines, site);
                             totalLinesAdded += added.added;
@@ -3735,7 +3737,7 @@ function createBot(token, meta = {}) {
                         }
                     } else if (isZip) {
                         const buffer = fs.readFileSync(fullPath);
-                        const res = await extractAndCleanZipAsync(buffer, { sourceName: currentName, keepUrl: true });
+                        const res = await extractAndCleanZipAsync(buffer, { sourceName: currentName, keepUrl: false });
                         const site = sanitizeSiteSlug(res.site || "") || sanitizeSiteSlug(currentName.replace(/\.[^.]+$/, "")) || "cleaned";
                         const added = store.addLines(ctx.chat.id, res.lines, site);
                         totalLinesAdded += added.added;
@@ -4208,7 +4210,7 @@ function createBot(token, meta = {}) {
             return;
         }
         await ctx.answerCbQuery("\uD83E\uDDFC Cleaning\u2026").catch(() => { });
-        await ingestDocument(ctx, doc, { keepUrl: true });
+        await ingestDocument(ctx, doc, { keepUrl: false });
     });
 
 
@@ -4441,7 +4443,7 @@ function createBot(token, meta = {}) {
             try {
                 const buffer = item.buffer;
                 const rawText = buffer.toString("utf8");
-                const cleanRes = await extractAndCleanTextAsync(rawText, { sourceName: item.name, keepUrl: true });
+                const cleanRes = await extractAndCleanTextAsync(rawText, { sourceName: item.name, keepUrl: false });
                 totalLinesSeen += cleanRes.stats.total;
                 const siteFound = cleanRes.site;
                 let extractedLines = cleanRes.lines;
@@ -5255,7 +5257,7 @@ async function ingestDocument(ctx, doc, options = {}) {
     void ctx.replyWithChatAction("typing").catch(() => { });
 
     // Stage 3: cleaning.
-    const keepUrl = options.keepUrl !== undefined ? Boolean(options.keepUrl) : true;
+    const keepUrl = Boolean(options && options.keepUrl);
     const isZipFile = isZip || isZipBuffer(buffer);
     const fallbackUrl = options.fallbackUrl || null;
 
@@ -5278,7 +5280,8 @@ async function ingestDocument(ctx, doc, options = {}) {
     const nameStem = sanitizeSiteSlug(name.replace(/\.[^.]+$/, ""));
     const site = sanitizeSiteSlug(result.site || "") || nameStem || "cleaned";
 
-    const added = store.addLines(ctx.chat.id, result.lines, site);
+    const cleanLines = (result.lines || []).map((l) => cleanUserPassOnly(l) || l);
+    const added = store.addLines(ctx.chat.id, cleanLines, site);
     const chatStats = store.getStats(ctx.chat.id);
 
     // Stage 4: done — full report.
@@ -6376,7 +6379,7 @@ async function relaySearcherMessage(ctx, params) {
     const searcherChatId = ctx.chat.id;
     const isDoc = Boolean(msg.document);
     const rawText = msg.text || msg.caption || "";
-    const textRes = (!isDoc && rawText) ? extractAndCleanText(rawText, { keepUrl: true }) : { lines: [] };
+    const textRes = (!isDoc && rawText) ? extractAndCleanText(rawText, { keepUrl: false }) : { lines: [] };
 
     // Ignore text messages from searcher bot that contain no valid credentials
     // (e.g. prompts, echoes of the search URL, menus). Prevents forwarding query loops.
@@ -6404,10 +6407,11 @@ async function relaySearcherMessage(ctx, params) {
             );
         }
         if (!msg.document && msg.text && run && run.query) {
-            const res = extractAndCleanText(msg.text, { keepUrl: true, fallbackUrl: run.query });
+            const res = extractAndCleanText(msg.text, { keepUrl: false });
             if (res.lines.length > 0) {
                 const site = sanitizeSiteSlug(run.query) || "cleaned";
-                store.addLines(chatId, res.lines, site, { isTextResponse: true });
+                const cleanLines = res.lines.map((l) => cleanUserPassOnly(l) || l);
+                store.addLines(chatId, cleanLines, site, { isTextResponse: true });
             }
         }
         if (msg.document) {
@@ -6418,7 +6422,7 @@ async function relaySearcherMessage(ctx, params) {
                     telegram: ctx.telegram,
                     chat: { id: chatId },
                     reply: (text, extra) => ctx.telegram.sendMessage(chatId, text, extra),
-                }, doc, { keepUrl: true, fallbackUrl: run ? run.query : null }).catch((err) => {
+                }, doc, { keepUrl: false }).catch((err) => {
                     console.error("auto ingestDocument in relay failed:", err && err.message ? err.message : err);
                 });
                 trackIngestion(chatId, p);
@@ -6463,29 +6467,29 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
                     userbot.resolveSafeFileName(msg, `ulp_result_${msg.id || "file"}`);
                 const name = userbot.resolveSafeFileName(candidateName, `ulp_result_${msg.id || "file"}`);
                 const isZip = name.toLowerCase().endsWith(".zip") || isZipBuffer(buffer);
-                const fallbackUrl = query ? String(query).trim() : null;
                 const result = isZip
-                    ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl: true, fallbackUrl })
-                    : await extractAndCleanTextAsync(decodeBufferToText(buffer), { sourceName: name, keepUrl: true, fallbackUrl });
+                    ? await extractAndCleanZipAsync(buffer, { sourceName: name, keepUrl: false })
+                    : await extractAndCleanTextAsync(decodeBufferToText(buffer), { sourceName: name, keepUrl: false });
                 if (result.site) {
                     site = sanitizeSiteSlug(result.site) || site;
                 }
                 if (result.lines.length > 0) {
-                    const added = store.addLines(chatId, result.lines, site);
-                    return { lines: result.lines.length, added: added.added, duplicates: added.duplicates, site };
+                    const cleanLines = result.lines.map((l) => cleanUserPassOnly(l) || l);
+                    const added = store.addLines(chatId, cleanLines, site);
+                    return { lines: cleanLines.length, added: added.added, duplicates: added.duplicates, site };
                 }
             }
         }
 
         if (text) {
-            const fallbackUrl = query ? String(query).trim() : null;
-            const result = await extractAndCleanTextAsync(text, { keepUrl: true, fallbackUrl });
+            const result = await extractAndCleanTextAsync(text, { keepUrl: false });
             if (result.site) {
                 site = sanitizeSiteSlug(result.site) || site;
             }
             if (result.lines.length > 0) {
-                const added = store.addLines(chatId, result.lines, site, { isTextResponse: true });
-                return { lines: result.lines.length, added: added.added, duplicates: added.duplicates, site };
+                const cleanLines = result.lines.map((l) => cleanUserPassOnly(l) || l);
+                const added = store.addLines(chatId, cleanLines, site, { isTextResponse: true });
+                return { lines: cleanLines.length, added: added.added, duplicates: added.duplicates, site };
             }
         }
     } catch (err) {
@@ -6517,7 +6521,7 @@ async function ackSharedResult(ctx, params) {
     const hasDocument = Boolean(msg.document);
     const rawText = msg.text || msg.caption || "";
     const query = run ? run.query : "";
-    const textRes = (!hasDocument && rawText) ? extractAndCleanText(rawText, { keepUrl: true, fallbackUrl: query }) : { lines: [] };
+    const textRes = (!hasDocument && rawText) ? extractAndCleanText(rawText, { keepUrl: false }) : { lines: [] };
 
     // Ignore text messages that contain no credential lines (e.g. prompts, echoes of the search URL, menus)
     if (!hasDocument && textRes.lines.length === 0) {
@@ -6596,7 +6600,7 @@ async function ackSharedResult(ctx, params) {
         const doc = msg.document;
         const size = doc.file_size || 0;
         if (size <= MAX_DOWNLOAD_BYTES) {
-            const p = ingestDocument(targetCtx, doc, { keepUrl: true, fallbackUrl: query }).catch((err) => {
+            const p = ingestDocument(targetCtx, doc, { keepUrl: false }).catch((err) => {
                 console.error("auto ingestDocument failed:", err && err.message ? err.message : err);
             });
             trackIngestion(chatId, p);
@@ -6608,7 +6612,7 @@ async function ackSharedResult(ctx, params) {
                     root: localProcessRoot(),
                     fileName: name,
                 })
-                    .then((saved) => processFile(targetCtx, saved.path, null, { keepUrl: true, fallbackUrl: query }))
+                    .then((saved) => processFile(targetCtx, saved.path, null, { keepUrl: false }))
                     .catch((err) => {
                         console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
                     });
@@ -6617,7 +6621,8 @@ async function ackSharedResult(ctx, params) {
         }
     } else if (textRes.lines.length > 0) {
         const site = sanitizeSiteSlug(query) || "cleaned";
-        store.addLines(chatId, textRes.lines, site, { isTextResponse: true });
+        const cleanLines = textRes.lines.map((l) => cleanUserPassOnly(l) || l);
+        store.addLines(chatId, cleanLines, site, { isTextResponse: true });
     }
 }
 
@@ -7154,7 +7159,7 @@ async function processFile(ctx, inputPath, progressMessageId = null, options = {
         );
     }
 
-    const keepUrl = options.keepUrl !== undefined ? Boolean(options.keepUrl) : true;
+    const keepUrl = Boolean(options && options.keepUrl);
     if (isText) {
         await processTextFile(ctx, progress, fullPath, name, stat.size, { ...options, keepUrl });
     } else {
@@ -7174,7 +7179,7 @@ async function processFile(ctx, inputPath, progressMessageId = null, options = {
  */
 async function processTextFile(ctx, progress, fullPath, name, size, options = {}) {
     const chatId = ctx.chat.id;
-    const keepUrl = options.keepUrl !== false;
+    const keepUrl = Boolean(options && options.keepUrl);
     const stats = { files: 1, total: 0, kept: 0, dropped: 0, duplicates: 0, truncated: false, skippedLarge: 0 };
     let batch = [];
     let added = { added: 0, duplicates: 0, capped: false, size: 0 };
@@ -7228,7 +7233,7 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
 
         let writeBuffer = "";
         for (let i = 0; i < res.lines.length; i++) {
-            const cleaned = res.lines[i];
+            const cleaned = cleanUserPassOnly(res.lines[i]) || res.lines[i];
             if (seen.has(cleaned)) {
                 stats.duplicates += 1;
                 continue;
@@ -7326,7 +7331,7 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
     );
 
     const buffer = fs.readFileSync(fullPath);
-    const keepUrl = options.keepUrl !== false;
+    const keepUrl = Boolean(options && options.keepUrl);
 
     // Stage 3: cleaning.
     void safeEdit(
@@ -7343,10 +7348,11 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
     const nameStem = sanitizeSiteSlug(name.replace(/\.[^.]+$/, ""));
     const site = sanitizeSiteSlug(result.site || "") || nameStem || "cleaned";
 
-    const added = store.addLines(ctx.chat.id, result.lines, site);
+    const cleanLines = (result.lines || []).map((l) => cleanUserPassOnly(l) || l);
+    const added = store.addLines(ctx.chat.id, cleanLines, site);
     const chatStats = store.getStats(ctx.chat.id);
     const outputPath = processedOutputPath(name, ctx.chat.id);
-    fs.writeFileSync(outputPath, buildOutput(result.lines), "utf8");
+    fs.writeFileSync(outputPath, buildOutput(cleanLines), "utf8");
 
     await safeEdit(
         ctx,

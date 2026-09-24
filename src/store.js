@@ -2,7 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { createSearchMatcher } = require("./cleaner");
+const { createSearchMatcher, cleanUserPassOnly } = require("./cleaner");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const CUSTOM_DOMAINS_FILE = process.env.CUSTOM_DOMAINS_FILE || path.join(DATA_DIR, "custom-domains.json");
@@ -89,8 +89,10 @@ function addLines(chatId, lines, site, options = {}) {
     const maxLines = getMaxLinesPerChat();
     const safeLines = Array.isArray(lines) ? lines : (lines ? [lines] : []);
 
-    for (const line of safeLines) {
-        if (!line || typeof line !== "string") continue;
+    for (const rawLine of safeLines) {
+        if (!rawLine || typeof rawLine !== "string") continue;
+        const line = cleanUserPassOnly(rawLine) || rawLine.trim();
+        if (!line) continue;
         if (chat.lines.size >= maxLines) {
             capped = true;
             break;

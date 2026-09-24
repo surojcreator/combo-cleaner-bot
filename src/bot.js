@@ -7123,69 +7123,57 @@ async function searchAllVaultFiles(query, options = {}) {
     const fileResults = [];
     const startTime = Date.now();
 
-    // Concurrently process vault files in batches scaled to available CPU cores (4 to 8)
+    // Concurrently process vault files with a dynamic worker queue scaled to CPU cores
     const os = require("os");
     const CONCURRENCY = Math.min(8, Math.max(4, (os.cpus() || []).length || 4));
-    for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
-        if (signal && signal.aborted) {
-            const err = new Error("SEARCH_ABORTED");
-            err.name = "AbortError";
-            throw err;
-        }
-        if (Date.now() - startTime > timeoutMs) {
-            console.warn(`searchAllVaultFiles reached timeout of ${timeoutMs}ms; returning partial results`);
-            break;
-        }
+    let nextFileIdx = 0;
+    let completedFiles = 0;
 
-        const batch = allFiles.slice(i, i + CONCURRENCY);
-        const batchResults = await Promise.all(batch.map(async (f) => {
-            if (signal && signal.aborted) return null;
-            if (Date.now() - startTime > timeoutMs) return null;
+    const workerTasks = new Array(Math.min(CONCURRENCY, allFiles.length)).fill(0).map(async () => {
+        while (nextFileIdx < allFiles.length) {
+            if (signal && signal.aborted) break;
+            if (Date.now() - startTime > timeoutMs) break;
+
+            const fIdx = nextFileIdx++;
+            const f = allFiles[fIdx];
             try {
                 const res = await searchTextFile(f.path, q, limit, { signal });
-                return { f, res };
+                if (res && res.total > 0) {
+                    grandTotal += res.total;
+                    fileResults.push({
+                        name: f.name,
+                        path: f.path,
+                        type: f.type,
+                        size: f.size,
+                        total: res.total,
+                        matches: res.matches,
+                    });
+                    for (const m of res.matches) {
+                        if (combinedMatches.length < limit) {
+                            combinedMatches.push(m);
+                        }
+                    }
+                }
             } catch (err) {
                 if (err.name === "AbortError" || (signal && signal.aborted)) throw err;
                 console.error("Error searching vault file:", f.name, err);
-                return null;
             }
-        }));
 
-        for (const item of batchResults) {
-            if (!item || !item.res) continue;
-            const { f, res } = item;
-            if (res.total > 0) {
-                grandTotal += res.total;
-                fileResults.push({
-                    name: f.name,
-                    path: f.path,
-                    type: f.type,
-                    size: f.size,
-                    total: res.total,
-                    matches: res.matches,
-                });
-                for (const m of res.matches) {
-                    if (combinedMatches.length < limit) {
-                        combinedMatches.push(m);
-                    }
-                }
+            completedFiles++;
+            if (typeof options.onProgress === "function") {
+                try {
+                    options.onProgress({
+                        current: completedFiles,
+                        total: allFiles.length,
+                        currentFile: f.name,
+                        matchesFound: grandTotal,
+                    });
+                } catch {}
             }
         }
+    });
 
-        if (typeof options.onProgress === "function") {
-            try {
-                options.onProgress({
-                    current: Math.min(allFiles.length, i + batch.length),
-                    total: allFiles.length,
-                    currentFile: batch[batch.length - 1] ? batch[batch.length - 1].name : "",
-                    matchesFound: grandTotal,
-                });
-            } catch {}
-        }
-
-        // Yield to event loop between file batches so the bot stays completely responsive!
-        await new Promise((r) => setImmediate(r));
-    }
+    await Promise.all(workerTasks);
 
     fileResults.sort((a, b) => b.total - a.total);
 

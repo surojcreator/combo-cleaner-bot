@@ -1632,6 +1632,75 @@ function searchBufferCI(buf, query, limit = 20) {
             }
         }
 
+        const qUpper = q.toUpperCase();
+        const qUpperBytes = Buffer.from(qUpper);
+        const qTitle = q.length > 1 ? q[0].toUpperCase() + q.slice(1).toLowerCase() : qUpper;
+        const qTitleBytes = Buffer.from(qTitle);
+
+        const needles = [qBytes];
+        if (qUpper !== qLower) needles.push(qUpperBytes);
+        if (qTitle !== qLower && qTitle !== qUpper) needles.push(qTitleBytes);
+
+        // Fast native SIMD pass across common casing targets
+        const hits = [];
+        for (let n = 0; n < needles.length; n++) {
+            const needle = needles[n];
+            let pos = 0;
+            while ((pos = buf.indexOf(needle, pos)) !== -1) {
+                hits.push(pos);
+                pos += needle.length;
+            }
+        }
+
+        if (hits.length > 0) {
+            if (needles.length > 1) hits.sort((a, b) => a - b);
+            let lastLineStart = -1;
+            for (let j = 0; j < hits.length; j++) {
+                const hit = hits[j];
+                let lineStart = buf.lastIndexOf(0x0a, hit);
+                lineStart = lineStart === -1 ? 0 : lineStart + 1;
+                if (lineStart === lastLineStart) continue;
+                lastLineStart = lineStart;
+                total++;
+                if (matches.length < maxMatches) {
+                    let lineEnd = buf.indexOf(0x0a, hit);
+                    if (lineEnd === -1) lineEnd = len;
+                    let line = buf.subarray(lineStart, lineEnd).toString("utf8");
+                    if (line.endsWith("\r")) line = line.slice(0, -1);
+                    if (line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+
+                    let matchResult = line;
+                    const trimmedLine = line.trim();
+                    if (STEALER_LABEL_RE && STEALER_LABEL_RE.test(trimmedLine)) {
+                        let winStart = Math.max(0, lineStart - 1000);
+                        if (winStart > 0) {
+                            const nl = buf.indexOf(0x0a, winStart);
+                            if (nl !== -1 && nl < lineStart) winStart = nl + 1;
+                        }
+                        let winEnd = Math.min(len, lineEnd + 1000);
+                        if (winEnd < len) {
+                            const nl = buf.indexOf(0x0a, winEnd);
+                            if (nl !== -1) winEnd = nl;
+                        }
+                        let targetIdx = 0;
+                        for (let p = winStart; p < lineStart; p++) {
+                            if (buf[p] === 0x0a) targetIdx++;
+                        }
+                        const winText = buf.subarray(winStart, winEnd).toString("utf8");
+                        const winLines = winText.split(/\r?\n/);
+                        if (targetIdx >= 0 && targetIdx < winLines.length) {
+                            const stealerRec = resolveStealerRecordFromLines(winLines, targetIdx);
+                            if (stealerRec) matchResult = stealerRec;
+                        }
+                    }
+                    if (matches.length === 0 || matches[matches.length - 1] !== matchResult) {
+                        matches.push(matchResult);
+                    }
+                }
+            }
+            return { total, matches };
+        }
+
         const table = new Uint8Array(256);
         table.fill(m);
         for (let i = 0; i < m - 1; i++) {

@@ -440,6 +440,35 @@ test("15. Concurrency guard prevents duplicate simultaneous vault searches", asy
     await fake.close();
 });
 
+test("16. /lsearch <query> biggest searches the biggest cleaned file and /csearch searches cleaned vault", async () => {
+    const smallProc = path.join(PROC_DIR, "small_cleaned.txt");
+    const bigProc = path.join(PROC_DIR, "big_cleaned.txt");
+    fs.writeFileSync(smallProc, "user1@targetclean.com:p1\n", "utf8");
+    fs.writeFileSync(bigProc, "user2@targetclean.com:p2\nuser3@targetclean.com:p3\nuser4@targetclean.com:p4\n", "utf8");
+
+    const fake = await startFakeApi();
+    const bot = makeBot(fake.apiRoot);
+    const chatId = 8886;
+
+    // Call /lsearch targetclean.com biggest
+    await bot.handleUpdate(commandUpdate("/lsearch targetclean.com biggest", chatId));
+
+    const foundBiggestResult = await waitFor(() =>
+        fake.calls.some((c) => c.payload.text && (c.payload.text.includes("SEARCH RESULTS") || c.payload.text.includes("big_cleaned.txt")))
+    );
+    assert.ok(foundBiggestResult, "Should search biggest cleaned file");
+
+    // Call /csearch targetclean.com
+    await bot.handleUpdate(commandUpdate("/csearch targetclean.com", chatId));
+
+    const foundCleanResult = await waitFor(() =>
+        fake.calls.some((c) => c.payload.text && (c.payload.text.includes("CLEANED VAULT SEARCH RESULTS") || c.payload.text.includes("SEARCH RESULTS")))
+    );
+    assert.ok(foundCleanResult, "Should search cleaned files via /csearch");
+
+    await fake.close();
+});
+
 test.after(() => {
     try {
         fs.rmSync(TEST_DIR, { recursive: true, force: true });

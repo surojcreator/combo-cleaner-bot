@@ -1946,6 +1946,151 @@ function createBot(token, meta = {}) {
         await ctx.answerCbQuery(`🔎 Search in progress ${q}…`).catch(() => {});
     });
 
+    bot.action("lsearch:prompt:clean", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => {});
+        const procFiles = scanDirFiles(localProcessedRoot());
+        if (procFiles.length === 0) {
+            await safeReply(
+                ctx,
+                `⚠️ No cleaned files found in server vault (${CODE(localProcessedRoot())}).\nUpload or clean some dumps first!`,
+                mainKeyboard()
+            );
+            return;
+        }
+        userPromptState.set(ctx.chat.id, {
+            action: "lsearch:query:clean",
+            createdAt: Date.now(),
+        });
+        await safeReply(
+            ctx,
+            [
+                `${tgEmoji("💎")}  ${B("SEARCH CLEANED VAULT FILES")}`,
+                RULE,
+                `Fast searching across ${B(num(procFiles.length))} cleaned output files.`,
+                "",
+                `💬  ${I("Send the keyword or domain to search across all cleaned files:")}`,
+            ].join("\n"),
+            createInlineKeyboard([[Markup.button.callback("❌ Cancel", "search:cancel")]])
+        );
+    });
+
+    bot.action(/^lsearch:proc:run:(.+)$/, async (ctx) => {
+        const query = resolveCallbackPayload(ctx.match[1]);
+        await safeAnswerCbQuery(ctx, `Searching cleaned vault for "${query}"…`);
+        store.addCustomQuery(ctx.chat.id, query);
+
+        const procFiles = scanDirFiles(localProcessedRoot());
+        if (procFiles.length === 0) {
+            await safeReply(
+                ctx,
+                `⚠️ No cleaned files found in server vault (${CODE(localProcessedRoot())}).\nUpload or clean some dumps first!`,
+                mainKeyboard()
+            );
+            return;
+        }
+
+        if (activeVaultSearches.has(ctx.chat.id)) {
+            await safeReply(
+                ctx,
+                `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+            );
+            return;
+        }
+
+        const abortController = new AbortController();
+        activeVaultSearches.set(ctx.chat.id, {
+            query,
+            startedAt: Date.now(),
+            controller: abortController,
+        });
+
+        const status = await safeReply(
+            ctx,
+            renderFileSearchProgress({
+                query,
+                fileName: "Cleaned Vault Files",
+                current: 0,
+                total: procFiles.length,
+                matchesCount: 0,
+                isAll: true,
+            }),
+            fileSearchProgressKeyboard({ current: 0, total: procFiles.length })
+        );
+
+        let lastEdit = Date.now();
+        const onProgress = async (prog) => {
+            const now = Date.now();
+            if (now - lastEdit < 1000 && prog.current < prog.total) return;
+            lastEdit = now;
+            if (status && status.message_id) {
+                await safeEdit(
+                    ctx,
+                    status.message_id,
+                    renderFileSearchProgress({
+                        query,
+                        fileName: prog.currentFile || "Cleaned Files",
+                        current: prog.current,
+                        total: prog.total,
+                        matchesCount: prog.matchesFound,
+                        isAll: true,
+                    }),
+                    fileSearchProgressKeyboard({ current: prog.current, total: prog.total })
+                ).catch(() => {});
+            }
+        };
+
+        const t0 = Date.now();
+        try {
+            const result = await searchAllVaultFiles(query, {
+                limit: 20,
+                rawRoot: null,
+                procRoot: localProcessedRoot(),
+                signal: abortController.signal,
+                onProgress,
+            });
+            const durationMs = Date.now() - t0;
+            result.fileResults = result.fileResults.filter((f) => f.type === "proc");
+            result.total = result.fileResults.reduce((acc, f) => acc + f.total, 0);
+            result.totalFiles = procFiles.length;
+            result.searchedFiles = result.fileResults.length;
+            const card = renderLocalSearch({
+                query,
+                total: result.total,
+                matches: result.matches,
+                fileResults: result.fileResults,
+                totalFiles: result.totalFiles,
+                searchedFiles: result.searchedFiles,
+                isAll: true,
+                durationMs,
+            });
+            const kb = localSearchResultKeyboard({
+                query,
+                total: result.total,
+                isAll: true,
+            });
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, card, kb);
+            } else {
+                await safeReply(ctx, card, kb);
+            }
+        } catch (err) {
+            if (abortController.signal.aborted) {
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, "🚫 Cleaned vault search cancelled.", mainKeyboard());
+                }
+                return;
+            }
+            const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+            } else {
+                await safeReply(ctx, errMsg, mainKeyboard());
+            }
+        } finally {
+            activeVaultSearches.delete(ctx.chat.id);
+        }
+    });
+
     bot.action(/^lsearch:all:run:(.+)$/, async (ctx) => {
         const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Searching vault for "${query}"…`);
@@ -2071,6 +2216,11 @@ function createBot(token, meta = {}) {
             query = parts.slice(1).join(":");
             label = "all_vault";
             const res = await searchAllVaultFiles(query, { limit: Infinity, timeoutMs: 300000 });
+            matches = res.matches;
+        } else if (parts[0] === "clean" || parts[0] === "proc_all") {
+            query = parts.slice(1).join(":");
+            label = "cleaned_vault";
+            const res = await searchAllVaultFiles(query, { limit: Infinity, rawRoot: null, procRoot: localProcessedRoot(), timeoutMs: 300000 });
             matches = res.matches;
         } else {
             const type = parts[0];
@@ -2518,8 +2668,9 @@ function createBot(token, meta = {}) {
         }
     });
 
-    bot.command(["lsearch", "vaultsearch", "vsearch", "filesearch", "fsearch"], async (ctx) => {
+    bot.command(["lsearch", "vaultsearch", "vsearch", "filesearch", "fsearch", "csearch", "cleansearch"], async (ctx) => {
         const raw = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
+        const cmdName = (ctx.message?.text || "").trim().split(/\s+/)[0].replace(/^\//, "").toLowerCase();
         const rawFiles = scanDirFiles(localProcessRoot());
         const procFiles = scanDirFiles(localProcessedRoot());
 
@@ -2547,8 +2698,73 @@ function createBot(token, meta = {}) {
 
         store.addCustomQuery(ctx.chat.id, query);
 
+        // Helper to run search on a single target file
+        const runSingleFileSearch = async (matchedFile, fileIdx, isProc) => {
+            const abortController = new AbortController();
+            activeVaultSearches.set(ctx.chat.id, {
+                query,
+                startedAt: Date.now(),
+                controller: abortController,
+            });
+            const status = await safeReply(
+                ctx,
+                renderFileSearchProgress({
+                    query,
+                    fileName: matchedFile.name,
+                    fileSize: matchedFile.size,
+                    current: 0,
+                    total: 1,
+                    matchesCount: 0,
+                    isAll: false,
+                }),
+                fileSearchProgressKeyboard({ current: 0, total: 1 })
+            );
+            const t0 = Date.now();
+            try {
+                const res = await searchTextFile(matchedFile.path, query, 20, { signal: abortController.signal });
+                const durationMs = Date.now() - t0;
+                const card = renderLocalSearch({
+                    query,
+                    total: res.total,
+                    matches: res.matches,
+                    fileName: matchedFile.name,
+                    fileSize: matchedFile.size,
+                    isProc,
+                    fileIdx,
+                    durationMs,
+                });
+                const kb = localSearchResultKeyboard({
+                    query,
+                    total: res.total,
+                    fileIdx,
+                    isProc,
+                    isAll: false,
+                });
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, card, kb);
+                } else {
+                    await safeReply(ctx, card, kb);
+                }
+            } catch (err) {
+                if (abortController.signal.aborted) {
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, "🚫 File search cancelled.", mainKeyboard());
+                    }
+                    return;
+                }
+                const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+                } else {
+                    await safeReply(ctx, errMsg, mainKeyboard());
+                }
+            } finally {
+                activeVaultSearches.delete(ctx.chat.id);
+            }
+        };
+
         // Cleaned vault only search
-        if (target.toLowerCase() === "clean" || target.toLowerCase() === "cleaned" || target.toLowerCase() === "proc") {
+        if (target.toLowerCase() === "clean" || target.toLowerCase() === "cleaned" || target.toLowerCase() === "proc" || cmdName === "csearch" || cmdName === "cleansearch") {
             const abortController = new AbortController();
             activeVaultSearches.set(ctx.chat.id, {
                 query,
@@ -2741,8 +2957,17 @@ function createBot(token, meta = {}) {
             return;
         }
 
-        // Specific file target
-        if (target) {
+        // Explicit biggest file request (/lsearch <query> biggest)
+        if (target && /^(biggest|largest|big|max)$/i.test(target)) {
+            if (procFiles.length > 0) {
+                return await runSingleFileSearch(procFiles[0], 0, true);
+            } else if (rawFiles.length > 0) {
+                return await runSingleFileSearch(rawFiles[0], 0, false);
+            }
+        }
+
+        // Specific file target by index or name
+        if (target && !/^(all|vault)$/i.test(target)) {
             let matchedFile = null;
             let fileIdx = null;
             let isProc = false;
@@ -2777,72 +3002,11 @@ function createBot(token, meta = {}) {
             }
 
             if (matchedFile) {
-                const abortController = new AbortController();
-                activeVaultSearches.set(ctx.chat.id, {
-                    query,
-                    startedAt: Date.now(),
-                    controller: abortController,
-                });
-                const status = await safeReply(
-                    ctx,
-                    renderFileSearchProgress({
-                        query,
-                        fileName: matchedFile.name,
-                        fileSize: matchedFile.size,
-                        current: 0,
-                        total: 1,
-                        matchesCount: 0,
-                        isAll: false,
-                    }),
-                    fileSearchProgressKeyboard({ current: 0, total: 1 })
-                );
-                const t0 = Date.now();
-                try {
-                    const res = await searchTextFile(matchedFile.path, query, 20, { signal: abortController.signal });
-                    const durationMs = Date.now() - t0;
-                    const card = renderLocalSearch({
-                        query,
-                        total: res.total,
-                        matches: res.matches,
-                        fileName: matchedFile.name,
-                        fileSize: matchedFile.size,
-                        isProc,
-                        fileIdx,
-                        durationMs,
-                    });
-                    const kb = localSearchResultKeyboard({
-                        query,
-                        total: res.total,
-                        fileIdx,
-                        isProc,
-                        isAll: false,
-                    });
-                    if (status && status.message_id) {
-                        await safeEdit(ctx, status.message_id, card, kb);
-                    } else {
-                        await safeReply(ctx, card, kb);
-                    }
-                } catch (err) {
-                    if (abortController.signal.aborted) {
-                        if (status && status.message_id) {
-                            await safeEdit(ctx, status.message_id, "🚫 File search cancelled.", mainKeyboard());
-                        }
-                        return;
-                    }
-                    const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
-                    if (status && status.message_id) {
-                        await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
-                    } else {
-                        await safeReply(ctx, errMsg, mainKeyboard());
-                    }
-                } finally {
-                    activeVaultSearches.delete(ctx.chat.id);
-                }
-                return;
+                return await runSingleFileSearch(matchedFile, fileIdx, isProc);
             }
         }
 
-        // Vault-wide search across ALL raw and cleaned files
+        // Vault-wide search across ALL raw and cleaned files (procFiles with biggest cleaned file scanned first)
         const totalVaultFiles = rawFiles.length + procFiles.length;
         if (totalVaultFiles === 0) {
             await safeReply(
@@ -4815,6 +4979,122 @@ function createBot(token, meta = {}) {
                 return;
             }
 
+            if (prompt.action === "lsearch:query:clean") {
+                userPromptState.delete(ctx.chat.id);
+                const query = input.trim();
+                if (!query) {
+                    await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
+                    return;
+                }
+                store.addCustomQuery(ctx.chat.id, query);
+                const procFiles = scanDirFiles(localProcessedRoot());
+                if (procFiles.length === 0) {
+                    await safeReply(
+                        ctx,
+                        `⚠️ No cleaned files found in server vault (${CODE(localProcessedRoot())}).\nUpload or clean some dumps first!`,
+                        mainKeyboard()
+                    );
+                    return;
+                }
+                if (activeVaultSearches.has(ctx.chat.id)) {
+                    await safeReply(
+                        ctx,
+                        `⏳ A vault search is already running. Please wait for it to complete or send ${CODE("cancel")}.`
+                    );
+                    return;
+                }
+                const abortController = new AbortController();
+                activeVaultSearches.set(ctx.chat.id, {
+                    query,
+                    startedAt: Date.now(),
+                    controller: abortController,
+                });
+                const status = await safeReply(
+                    ctx,
+                    renderFileSearchProgress({
+                        query,
+                        fileName: "Cleaned Vault Files",
+                        current: 0,
+                        total: procFiles.length,
+                        matchesCount: 0,
+                        isAll: true,
+                    }),
+                    fileSearchProgressKeyboard({ current: 0, total: procFiles.length })
+                );
+                let lastEdit = Date.now();
+                const onProgress = async (prog) => {
+                    const now = Date.now();
+                    if (now - lastEdit < 1000 && prog.current < prog.total) return;
+                    lastEdit = now;
+                    if (status && status.message_id) {
+                        await safeEdit(
+                            ctx,
+                            status.message_id,
+                            renderFileSearchProgress({
+                                query,
+                                fileName: prog.currentFile || "Cleaned Files",
+                                current: prog.current,
+                                total: prog.total,
+                                matchesCount: prog.matchesFound,
+                                isAll: true,
+                            }),
+                            fileSearchProgressKeyboard({ current: prog.current, total: prog.total })
+                        ).catch(() => {});
+                    }
+                };
+                const t0 = Date.now();
+                try {
+                    const result = await searchAllVaultFiles(query, {
+                        limit: 20,
+                        rawRoot: null,
+                        procRoot: localProcessedRoot(),
+                        signal: abortController.signal,
+                        onProgress,
+                    });
+                    const durationMs = Date.now() - t0;
+                    result.fileResults = result.fileResults.filter((f) => f.type === "proc");
+                    result.total = result.fileResults.reduce((acc, f) => acc + f.total, 0);
+                    result.totalFiles = procFiles.length;
+                    result.searchedFiles = result.fileResults.length;
+                    const card = renderLocalSearch({
+                        query,
+                        total: result.total,
+                        matches: result.matches,
+                        fileResults: result.fileResults,
+                        totalFiles: result.totalFiles,
+                        searchedFiles: result.searchedFiles,
+                        isAll: true,
+                        durationMs,
+                    });
+                    const kb = localSearchResultKeyboard({
+                        query,
+                        total: result.total,
+                        isAll: true,
+                    });
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, card, kb);
+                    } else {
+                        await safeReply(ctx, card, kb);
+                    }
+                } catch (err) {
+                    if (abortController.signal.aborted) {
+                        if (status && status.message_id) {
+                            await safeEdit(ctx, status.message_id, "🚫 Cleaned vault search cancelled.", mainKeyboard());
+                        }
+                        return;
+                    }
+                    const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+                    } else {
+                        await safeReply(ctx, errMsg, mainKeyboard());
+                    }
+                } finally {
+                    activeVaultSearches.delete(ctx.chat.id);
+                }
+                return;
+            }
+
             if (prompt.action === "lsearch:query") {
                 userPromptState.delete(ctx.chat.id);
                 const query = input.trim();
@@ -5369,6 +5649,9 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
         });
     } catch (err) {
         const msg = String((err && err.message) || err || "");
+        if (/not modified/i.test(msg)) {
+            return;
+        }
         const hasEmoji = (editText && editText.includes("<tg-emoji")) || (extra && extra.reply_markup);
         if (/custom_emoji|entity|button|icon|markup|document_invalid|bad request/i.test(msg) || hasEmoji) {
             botApiCustomEmojiRejected = true;

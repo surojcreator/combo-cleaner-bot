@@ -21,3 +21,11 @@ assert.ok(t4.includes('emoji-id="5371077759080598848"'), 'Expected stopwatch con
 assert.ok(t4.includes('emoji-id="5371077759080598856"'), 'Expected keycap 1 converted in t4');
 assert.ok(t4.includes('emoji-id="5371077759080598874"'), 'Expected next arrow converted in t4');
 
+const t5 = ensureAnimatedEmojis('<code>[▰▰▰▰▱▱▱▱▱▱] 40%</code>\n├── [████░░░░] 50%\n└── ◀ Back ▶ Next ↩ Return');
+console.log('Test 5 (gauges, trees, arrows):', t5);
+assert.ok(t5.includes('[▰▰▰▰▱▱▱▱▱▱]'), 'Expected progress bar [▰▰▰▰▱▱▱▱▱▱] preserved');
+assert.ok(t5.includes('├── [████░░░░]'), 'Expected tree characters and block gauge preserved');
+assert.ok(t5.includes('└──'), 'Expected corner tree character preserved');
+assert.ok(t5.includes('emoji-id="5371077759080598874"'), 'Expected arrow converted');
+
+

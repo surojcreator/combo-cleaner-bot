@@ -301,14 +301,18 @@ const DEFAULT_CUSTOM_ANIMATED_EMOJIS = {
     "🎨": "5371077759080598872",
     "art": "5371077759080598872",
     "◀️": "5371077759080598873",
+    "◀": "5371077759080598873",
     "prev": "5371077759080598873",
     "▶️": "5371077759080598874",
+    "▶": "5371077759080598874",
     "next": "5371077759080598874",
     "🔀": "5371077759080598875",
     "merge": "5371077759080598875",
     "↩️": "5371077759080598876",
+    "↩": "5371077759080598876",
     "return": "5371077759080598876",
     "⬇️": "5371077759080598877",
+    "⬇": "5371077759080598877",
     "down": "5371077759080598877",
     "🕳": "5371077759080598878",
     "hole": "5371077759080598878",
@@ -662,6 +666,10 @@ function ensureAnimatedEmojis(html) {
         if (!emoji) return match;
         const sym = emoji.trim();
         if (!sym) return "";
+        // Never remove progress gauges, box-drawing characters, arrows, or block elements
+        if (/^[▰▱█░▒▓├└─│┌┐┘┴┬┼→←↑↓↳◄►▲▼\u2500-\u259F]+$/.test(sym)) {
+            return match;
+        }
         let id =
             customAnimatedEmojis.get(sym) ||
             (EMOJI_KEY_MAP[sym] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[sym]) : null) ||
@@ -678,7 +686,11 @@ function ensureAnimatedEmojis(html) {
         if (id) {
             return `${LT}tg-emoji emoji-id="${escapeHtml(id)}"${GT}${sym}${LT}/tg-emoji${GT}`;
         }
-        return "";
+        // If an Extended_Pictographic emoji is unsupported, remove it so no unanimated emoji appears
+        if (/\p{Extended_Pictographic}/u.test(sym)) {
+            return "";
+        }
+        return match;
     });
 }
 
@@ -2303,7 +2315,7 @@ function renderLocalSearch(params = {}) {
 
     const lines = [];
     lines.push(
-        `${tgEmoji("🔎")}  ${B(isAll ? "VAULT SEARCH RESULTS" : "LOCAL FILE SEARCH")}  ${tgEmoji("⚡️")}`,
+        `${tgEmoji("🔎")}  ${B(isAll ? "VAULT SEARCH RESULTS" : "VAULT SEARCH RESULTS (LOCAL FILE SEARCH)")}  ${tgEmoji("⚡️")}`,
         RULE,
     );
 
@@ -2394,6 +2406,9 @@ function localSearchResultKeyboard(params = {}) {
     const actionRow = [];
     if (!isAll && fileIdx !== null) {
         actionRow.push(Markup.button.callback("🔍 Search File Again", `file:search:${isProc ? "proc:" : ""}${fileIdx}`));
+        if (isProc) {
+            actionRow.push(Markup.button.callback("💎 Cleaned Vault", query ? registerCallbackPayload("lsearch:proc:run:", query) : "lsearch:prompt:clean"));
+        }
         actionRow.push(Markup.button.callback("🌐 Search All Vault", query ? registerCallbackPayload("lsearch:all:run:", query) : "lsearch:prompt"));
     } else {
         actionRow.push(Markup.button.callback("🔍 New Vault Search", "lsearch:prompt"));
@@ -2426,9 +2441,10 @@ function renderLocalSearchHub(rawFiles = [], procFiles = []) {
         `  ${tgEmoji("💎")}  Cleaned Vault: ${B(num(pf.length))} files`,
         RULE,
         `💡  ${B("How to Search:")}`,
-        `  • ${CODE("/lsearch <query>")} — Search across ${B("ALL")} vault files`,
-        `  • ${CODE("/lsearch <query> <# or filename>")} — Search a ${B("specific")} file`,
+        `  • ${CODE("/lsearch <query>")} — Search ${B("biggest cleaned file")} (or all vault files)`,
         `  • ${CODE("/lsearch <query> clean")} — Search only ${B("cleaned")} vault files`,
+        `  • ${CODE("/lsearch <query> all")} — Search across ${B("ALL")} vault files`,
+        `  • ${CODE("/lsearch <query> <# or filename>")} — Search a ${B("specific")} file`,
         `  • ${CODE("/lsearch <query> raw")} — Search only ${B("raw")} dumps`,
         "",
         `💬 ${I("Or tap a quick search button below, or tap 'Enter Search Query':")}`,

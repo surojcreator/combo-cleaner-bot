@@ -798,15 +798,17 @@ const RULE = "─".repeat(28); // ───────────────�
 /**
  * Reusable inline keyboards with modern cyber-dashboard grid.
  */
-function mainKeyboard() {
+function mainKeyboard(batch = null) {
+    const batchSize = batch ? Number(batch.size || 0) : 0;
+    const combineLabel = batchSize > 0 ? `📦 Get Combined File (${compact(batchSize)})` : "📦 Get Combined File";
     return createInlineKeyboard([
         [
             Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
-            Markup.button.callback("📦 Get Combined File", "combine"),
+            Markup.button.callback(combineLabel, "combine"),
         ],
         [
             Markup.button.callback("📥 Save Large Files", "save:start"),
-            Markup.button.callback("📂 Server Vault (Tabs)", "server_files"),
+            Markup.button.callback("📂 Server Vault", "server_files"),
         ],
         [
             Markup.button.callback("🔎 Search Batch", "batch:search:prompt"),
@@ -1708,7 +1710,7 @@ function emptyBatchKeyboard() {
             Markup.button.callback("📥 Save Large Files", "save:start"),
         ],
         [
-            Markup.button.callback("📂 Server Vault (Tabs)", "server_files"),
+            Markup.button.callback("📂 Server Vault", "server_files"),
             Markup.button.callback("📊 Batch Analytics", "stats"),
         ],
         [
@@ -1777,6 +1779,9 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
         RULE,
         "",
         `${tgEmoji("✨")}  ${B("INTERACTIVE ACTION DASHBOARD")}`,
+        batchSize > 0
+            ? `➡️ ${B("Next step:")} ${I(`your batch has ${compact(batchSize)} clean lines ready — tap Get Combined File, or type any term to search it.`)}`
+            : `➡️ ${B("Next step:")} ${I("send or forward a .zip / .txt dump (or tap Save Large Files for big ones) and I'll clean it instantly.")}`,
         `👇 ${I("Tap any button below to execute instantly without typing commands:")}`,
         "",
         `${tgEmoji("🛡️")} ${mention} · Ultimate Pro Edition`,
@@ -2131,7 +2136,7 @@ function statsKeyboard(hasData = true) {
                 Markup.button.callback("📥 Save Large Files", "save:start"),
             ],
             [
-                Markup.button.callback("📂 Server Vault (Tabs)", "server_files"),
+                Markup.button.callback("📂 Server Vault", "server_files"),
                 Markup.button.callback("❓ Fast /save Guide", "help:save"),
             ],
             [

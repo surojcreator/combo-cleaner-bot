@@ -75,6 +75,7 @@ if (ALLOWED_USER_ID) {
 async function registerCommands() {
     try {
         await bot.telegram.setMyCommands([
+            { command: "menu", description: "\uD83C\uDFE0 Open the main dashboard" },
             { command: "combine", description: "\uD83D\uDCE6 Download the combined file" },
             { command: "link", description: "🔗 Direct download link for batch" },
             { command: "mergezip", description: "📦 Merge zip files into one with direct download link" },
@@ -95,6 +96,8 @@ async function registerCommands() {
             { command: "process", description: "\uD83D\uDCC2 Clean a local file on the server" },
             { command: "clean", description: "🧹 Clean logs or download clean combo" },
             { command: "clear", description: "\uD83E\uDDF9 Start a fresh batch" },
+            { command: "cancel", description: "\uD83D\uDEAB Cancel whatever's in progress" },
+            { command: "emojis", description: "\u2728 Sync animated emoji packs from your account" },
             { command: "ping", description: "\uD83C\uDFD3 Latency & uptime" },
             { command: "help", description: "\u2753 How to use the bot" },
         ]);

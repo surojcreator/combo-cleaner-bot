@@ -337,7 +337,7 @@ function createBot(token, meta = {}) {
     const handleStartHelp = async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const batch = store.getStats(ctx.chat.id);
-        await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard());
+        await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard(batch));
     };
 
     bot.start(handleStartHelp);

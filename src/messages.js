@@ -901,6 +901,7 @@ function forwardedZipKeyboard(downloadUrl = "", token = null) {
     }
     const row2 = [];
     if (token) {
+        row2.push(Markup.button.callback("⚡️ Extract ULP (.txt)", `ulp:merge_from_zip:${token}`));
         row2.push(Markup.button.callback("📦 Send in Telegram", `send_telegram:${token}`));
     }
     row2.push(Markup.button.callback("📊 Batch Analytics", "stats"));
@@ -986,9 +987,11 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         rows.push([
             Markup.button.callback(`💎 Select Clean (${procCount})`, "vault:sel:proc"),
             Markup.button.callback(`📥 Select Raw (${rawCount})`, "vault:sel:raw"),
+            Markup.button.callback("⚡️ Select ULP", "vault:sel:ulp"),
         ]);
         rows.push([
             Markup.button.callback(`🔀 Merge Selected (${count} file${count === 1 ? "" : "s"})`, "vault:sel:merge"),
+            Markup.button.callback("⚡️ Merge as ULP (.txt)", "vault:sel:merge:ulp"),
         ]);
         rows.push([
             Markup.button.callback("🏠 Back to Vault", "files:tab:overview"),
@@ -1108,6 +1111,7 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         ]);
     } else if (tab === "tools") {
         rows.push([
+            Markup.button.callback("⚡️ Merge All ULP Files", "files:merge:ulp:all"),
             Markup.button.callback("📥 Save Large Files (/save)", "save:start"),
         ]);
         rows.push([
@@ -1125,6 +1129,7 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         // Streamlined, clean, and elegant overview keyboard
         rows.push([
             Markup.button.callback("🔀 Multi-Select & Merge Files", "files:tab:select"),
+            Markup.button.callback("⚡️ Merge All ULP Files", "files:merge:ulp:all"),
         ]);
         rows.push([
             Markup.button.callback(`📥 Raw Dumps (${rawCount})`, "files:tab:raw"),
@@ -1659,7 +1664,7 @@ function renderMergeProgress(progress = {}) {
 
 /**
  * Summary rendered after merging files on server disk without returning to Telegram.
- * @param {{ outName: string, outPath: string, totalFiles: number, keptLines?: number, duplicatesStripped?: number, fileSize: number, isZip?: boolean }} stats
+ * @param {{ outName: string, outPath: string, totalFiles: number, keptLines?: number, duplicatesStripped?: number, fileSize: number, isZip?: boolean, downloadUrl?: string }} stats
  */
 function renderMergeComplete(stats = {}) {
     stats = stats || {};
@@ -1678,6 +1683,15 @@ function renderMergeComplete(stats = {}) {
         lines.push(`🧹  ${B("Duplicates Stripped:")} ${B(num(stats.duplicatesStripped || 0))}`);
     }
     lines.push(`💾  ${B("Final Size:")} ${B(humanSize(stats.fileSize || 0))}`);
+    if (stats.downloadUrl) {
+        lines.push(
+            RULE,
+            `${tgEmoji("🔗")}  ${B("Direct Download Link:")}`,
+            `${stats.downloadUrl}`,
+            "",
+            `${tgEmoji("💡")}  ${I("Zero download required! Tap the direct link below to download the merged file:")}`
+        );
+    }
     lines.push(RULE);
     lines.push(`🔒  ${I("The clean merged file is saved on server disk in your vault. As requested, it was NOT sent back to Telegram.")}`);
     return lines.filter(Boolean).join("\n");
@@ -1686,18 +1700,92 @@ function renderMergeComplete(stats = {}) {
 /**
  * Keyboard rendered after server-side file merge.
  * @param {string} [outName]
+ * @param {string} [downloadUrl]
  */
-function mergeCompleteKeyboard(outName = "") {
-    return createInlineKeyboard([
-        [
-            Markup.button.callback("📂 Open Server Vault", "server_files"),
-            Markup.button.callback("🔀 Merge More Files", "files:tab:select"),
-        ],
-        [
-            Markup.button.callback("📊 System Stats", "stats"),
-            Markup.button.callback("🔙 Main Menu", "help"),
-        ],
+function mergeCompleteKeyboard(outName = "", downloadUrl = null) {
+    const rows = [];
+    if (downloadUrl && typeof downloadUrl === "string" && downloadUrl.startsWith("http")) {
+        rows.push([Markup.button.url("📥 Direct Download Merged File", downloadUrl)]);
+    }
+    rows.push([
+        Markup.button.callback("📂 Open Server Vault", "server_files"),
+        Markup.button.callback("🔀 Merge More Files", "files:tab:select"),
     ]);
+    rows.push([
+        Markup.button.callback("📊 System Stats", "stats"),
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+    return createInlineKeyboard(rows);
+}
+
+/**
+ * Summary rendered after merging ULP files into a clean deduplicated combolist.
+ */
+function renderUlpMergeComplete(stats = {}) {
+    stats = stats || {};
+    const lines = [
+        `⚡️  ${B("ULP CREDENTIALS MERGED")}  ${tgEmoji("💎")}`,
+        RULE,
+        `Merged ${B(stats.totalFiles || 0)} ULP file(s) into one master deduplicated combolist:`,
+        "",
+        `📄  ${B("Output File:")} ${B(escapeHtml(stats.outName || "ulp_combined.txt"))}`,
+        `🔑  ${B("Unique Credentials:")} ${B(num(stats.keptLines || 0))}`,
+        `🧹  ${B("Duplicates Stripped:")} ${B(num(stats.duplicatesStripped || 0))}`,
+        `💾  ${B("File Size:")} ${B(humanSize(stats.fileSize || 0))}`,
+    ];
+    if (stats.downloadUrl) {
+        lines.push(
+            RULE,
+            `${tgEmoji("🔗")}  ${B("Direct Download Link:")}`,
+            `${stats.downloadUrl}`,
+            "",
+            `${tgEmoji("💡")}  ${I("Zero download required! Tap the direct link below to download your merged ULP combolist:")}`,
+        );
+    }
+    return lines.join("\n");
+}
+
+/**
+ * Usage guide for /mergeulp.
+ */
+function renderUlpMergeUsage() {
+    return [
+        `⚡️  ${B("ULP / COMBO MERGE PIPELINE")}`,
+        RULE,
+        `Extract, clean, and merge ULP credential combolists (.txt, .log, and .zip archives) into one master file!`,
+        "",
+        `💡 ${B("How to use:")}`,
+        `  1. ${B("Forward")} 2 or more .txt, .log, or .zip files to this chat.`,
+        `  2. Or run: ${CODE("/mergeulp <url1> <url2>")}`,
+        `  3. Or reply to any document with ${CODE("/mergeulp")}`,
+        `  4. Or run ${CODE("/mergeulp")} to merge all ULP files currently in your server vault!`,
+        "",
+        `All passwords, stealer dumps, and credentials are deduplicated with multi-core acceleration into a clean ULP list.`,
+    ].join("\n");
+}
+
+/**
+ * Keyboard for ULP merge complete.
+ */
+function ulpMergeCompleteKeyboard(downloadUrl = "", token = null) {
+    const rows = [];
+    if (downloadUrl && typeof downloadUrl === "string" && downloadUrl.startsWith("http")) {
+        rows.push([Markup.button.url("📥 Direct Download Merged ULP", downloadUrl)]);
+    }
+    const row2 = [];
+    if (token) {
+        row2.push(Markup.button.callback("📦 Send in Telegram", `send_telegram:${token}`));
+    }
+    row2.push(Markup.button.callback("📂 Server Vault", "server_files"));
+    rows.push(row2);
+    rows.push([
+        Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
+        Markup.button.callback("🔀 Merge More Files", "files:tab:select"),
+    ]);
+    rows.push([
+        Markup.button.callback("🔙 Main Menu", "help"),
+    ]);
+    return createInlineKeyboard(rows);
 }
 
 /**
@@ -3487,6 +3575,9 @@ module.exports = {
     domainActionKeyboard,
     queryActionKeyboard,
     processPromptKeyboard,
+    renderUlpMergeComplete,
+    renderUlpMergeUsage,
+    ulpMergeCompleteKeyboard,
 };
 
 

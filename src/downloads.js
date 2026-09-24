@@ -165,7 +165,25 @@ function registerDownload(params = {}) {
         token,
         filename: params.filename || "combined_logs.txt",
         filePath: params.filePath || null,
-        buffer: params.buffer || null,
+        _buffer: (params.filePath && fs.existsSync(params.filePath) && size > 512 * 1024)
+            ? null
+            : (params.buffer || null),
+        get buffer() {
+            if (this._buffer) return this._buffer;
+            if (this.filePath) {
+                try {
+                    if (fs.existsSync(this.filePath)) {
+                        return fs.readFileSync(this.filePath);
+                    }
+                } catch {
+                    return null;
+                }
+            }
+            return null;
+        },
+        set buffer(val) {
+            this._buffer = val;
+        },
         size,
         mimeType,
         createdAt: Date.now(),

@@ -244,7 +244,15 @@ const lastCombinedCache = new Map(); // chatId -> { buffer, filename, linesCount
 
 function setLastCombined(chatId, data) {
     if (!chatId || !data) return;
-    lastCombinedCache.set(chatId, { ...data, timestamp: Date.now() });
+    const entry = { ...data, timestamp: Date.now() };
+    if (entry.filePath && entry.buffer && (entry.buffer.length > 512 * 1024)) {
+        try {
+            if (fs.existsSync(entry.filePath)) {
+                delete entry.buffer;
+            }
+        } catch (_) {}
+    }
+    lastCombinedCache.set(chatId, entry);
     if (lastCombinedCache.size > 200) {
         const oldest = lastCombinedCache.keys().next().value;
         lastCombinedCache.delete(oldest);

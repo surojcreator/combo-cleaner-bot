@@ -281,8 +281,8 @@ class WorkerPool {
         const matcher = createSearchMatcher(query);
         if (!matcher) return { total: 0, matches: [] };
 
-        // Fast path for batches up to 150k lines without worker thread IPC overhead
-        if (lines.length < 150000) {
+        // Fast path for batches up to 500k lines without worker thread IPC overhead
+        if (lines.length < 500000) {
             let total = 0;
             const matches = [];
             for (let i = 0; i < lines.length; i++) {
@@ -295,7 +295,7 @@ class WorkerPool {
             return { total, matches };
         }
 
-        const size = Math.max(5000, Math.min(actualChunkSize, Math.ceil(lines.length / this.numWorkers)));
+        const size = Math.max(10000, Math.min(actualChunkSize, Math.ceil(lines.length / this.numWorkers)));
         const tasks = [];
 
         for (let i = 0; i < lines.length; i += size) {
@@ -346,10 +346,10 @@ class WorkerPool {
         // For files under 16MB, avoid worker dispatch overhead and do lightning-fast buffer scan
         if (fileSize < 16 * 1024 * 1024) {
             try {
-                const buf = fs.readFileSync(filePath);
+                const buf = await fs.promises.readFile(filePath);
                 return searchBufferCI(buf, q, limit);
             } catch (_) {
-                // fall through to multi-core slice search if readFileSync fails
+                // fall through to multi-core slice search if readFile fails
             }
         }
 

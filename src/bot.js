@@ -568,13 +568,7 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, "⚠️ Query too short — give me at least 2 characters.", mainKeyboard());
             return;
         }
-        const chatStats = store.getStats(ctx.chat.id);
-        let result;
-        if (chatStats && chatStats.size > 150000) {
-            result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
-        } else {
-            result = store.searchLines(ctx.chat.id, query, 20);
-        }
+        const result = store.searchLines(ctx.chat.id, query, 20);
 
         if (result && Array.isArray(result.matches)) {
             result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
@@ -2365,13 +2359,7 @@ function createBot(token, meta = {}) {
     bot.action(/^batch:quicksearch:(.+)$/, async (ctx) => {
         const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
-        const chatStats = store.getStats(ctx.chat.id);
-        let result;
-        if (chatStats && chatStats.size > 150000) {
-            result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
-        } else {
-            result = store.searchLines(ctx.chat.id, query, 20);
-        }
+        const result = store.searchLines(ctx.chat.id, query, 20);
         if (result && Array.isArray(result.matches)) {
             result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
         }
@@ -2382,14 +2370,8 @@ function createBot(token, meta = {}) {
         const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Preparing "${query}" export…`);
         let matches = [];
-        const chatStats = store.getStats(ctx.chat.id);
-        if (chatStats && chatStats.size > 150000) {
-            const res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 100000);
-            matches = res.matches;
-        } else {
-            const res = store.searchLines(ctx.chat.id, query, 100000);
-            matches = res.matches;
-        }
+        const res = store.searchLines(ctx.chat.id, query, 100000);
+        matches = res.matches;
 
         if (matches.length === 0) {
             await safeReply(ctx, `⚠️ No matches found in batch for ${CODE(escapeHtml(query))}.`, mainKeyboard());
@@ -4031,13 +4013,7 @@ function createBot(token, meta = {}) {
     // Inline button: site:view:<site>
     bot.action(/^site:view:(.+)$/, async (ctx) => {
         const domain = resolveCallbackPayload(ctx.match[1]);
-        const chatStats = store.getStats(ctx.chat.id);
-        let res;
-        if (chatStats && chatStats.size > 150000) {
-            res = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), domain, 20);
-        } else {
-            res = store.searchLines(ctx.chat.id, domain, 20);
-        }
+        const res = store.searchLines(ctx.chat.id, domain, 20);
         if (res && Array.isArray(res.matches)) {
             res.matches = res.matches.map((m) => cleanUserPassOnly(m) || m);
         }
@@ -4634,13 +4610,7 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, "⚠️ Query too short — give me at least 2 characters.", mainKeyboard());
                     return;
                 }
-                const chatStats = store.getStats(ctx.chat.id);
-                let result;
-                if (chatStats && chatStats.size > 150000) {
-                    result = await getSharedPool().searchLinesParallel(store.getLines(ctx.chat.id), query, 20);
-                } else {
-                    result = store.searchLines(ctx.chat.id, query, 20);
-                }
+                const result = store.searchLines(ctx.chat.id, query, 20);
 
                 if (result && Array.isArray(result.matches)) {
                     result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
@@ -7017,7 +6987,7 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
                         err.name = "AbortError";
                         throw err;
                     }
-                    if (entry.isDirectory) continue;
+                    if (entry.isDirectory || (entry.header && entry.header.size === 0)) continue;
                     const lowerName = entry.entryName.toLowerCase();
                     if (lowerName.startsWith("__macosx/") || lowerName.endsWith(".ds_store")) continue;
 
@@ -7064,7 +7034,7 @@ async function searchTextFile(filePath, query, limit = 20, options = {}) {
 
         // Fast in-memory buffer path for files under 64 MB
         if (stat.size < 64 * 1024 * 1024) {
-            const buf = fs.readFileSync(filePath);
+            const buf = await fs.promises.readFile(filePath);
             const res = searchBufferCI(buf, q, limit);
             return { total: res.total, matches: res.matches, isZip: false };
         }
@@ -7142,7 +7112,7 @@ async function searchAllVaultFiles(query, options = {}) {
     const procRoot = options.procRoot === null ? null : (options.procRoot ? path.resolve(options.procRoot) : localProcessedRoot());
     const rawFiles = rawRoot ? scanDirFiles(rawRoot).map((f) => ({ ...f, type: "raw" })) : [];
     const procFiles = procRoot ? scanDirFiles(procRoot).map((f) => ({ ...f, type: "proc" })) : [];
-    const allFiles = [...rawFiles, ...procFiles];
+    const allFiles = [...procFiles, ...rawFiles];
 
     if (allFiles.length === 0) {
         return { total: 0, matches: [], fileResults: [], totalFiles: 0, searchedFiles: 0 };

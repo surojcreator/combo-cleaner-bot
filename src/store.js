@@ -197,15 +197,16 @@ function getRawChat(chatId) {
 function searchLines(chatId, query, limit = 20) {
     const chat = chats.get(chatId);
     const matcher = createSearchMatcher(query);
-    if (!chat || !matcher) return { total: 0, matches: [] };
+    if (!chat || !matcher || !chat.lines || chat.lines.size === 0) return { total: 0, matches: [] };
     const matches = [];
     let total = 0;
-    chat.lines.forEach((line) => {
+    const maxMatches = typeof limit === "number" && limit > 0 ? limit : 20;
+    for (const line of chat.lines) {
         if (matcher(line)) {
             total += 1;
-            if (matches.length < limit) matches.push(line);
+            if (matches.length < maxMatches) matches.push(line);
         }
-    });
+    }
     return { total, matches };
 }
 

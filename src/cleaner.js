@@ -1462,6 +1462,33 @@ function resolveStealerRecordFromLines(lines, matchIdx) {
  * @param {string} query
  * @returns {((line: string) => boolean)|null}
  */
+const LETTER_FREQ = "zqxjkvbpywfmcudhrlgnetioas";
+
+function findRareChar(str) {
+    if (!str || typeof str !== "string") return null;
+    let best = null;
+    let bestScore = -1;
+    for (let i = 0; i < str.length; i++) {
+        const ch = str[i];
+        if (!/[a-zA-Z0-9]/.test(ch)) return ch;
+        const lower = ch.toLowerCase();
+        const score = LETTER_FREQ.indexOf(lower);
+        if (score !== -1 && (bestScore === -1 || score < bestScore)) {
+            best = ch;
+            bestScore = score;
+        }
+    }
+    return best || str[0] || null;
+}
+
+/**
+ * Fast case-insensitive string matcher without per-line string allocations.
+ * Precompiles a case-insensitive RegExp from an escaped query string.
+ * Supports matching both literal query and normalized domain/host (e.g. "https://site.com" -> "site.com").
+ *
+ * @param {string} query
+ * @returns {((line: string) => boolean)|null}
+ */
 function createSearchMatcher(query) {
     const q = String(query || "").trim();
     if (!q) return null;
@@ -1474,6 +1501,10 @@ function createSearchMatcher(query) {
     const hasCaseDiff = qLower !== qUpper;
     const hasTitleDiff = qTitle !== qLower && qTitle !== qUpper;
 
+    const rare = findRareChar(q);
+    const rareLower = rare ? rare.toLowerCase() : null;
+    const rareUpper = rare ? rare.toUpperCase() : null;
+
     const domain = extractSearchDomain(q);
     if (domain && domain.toLowerCase() !== qLower) {
         const domainEscaped = domain.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1484,6 +1515,10 @@ function createSearchMatcher(query) {
         const dHasCaseDiff = dLower !== dUpper;
         const dHasTitleDiff = dTitle !== dLower && dTitle !== dUpper;
 
+        const dRare = findRareChar(domain);
+        const dRareLower = dRare ? dRare.toLowerCase() : null;
+        const dRareUpper = dRare ? dRare.toUpperCase() : null;
+
         return (line) => {
             if (typeof line !== "string") return false;
             // Lightning fast native C++ substring checks
@@ -1493,6 +1528,14 @@ function createSearchMatcher(query) {
             if (line.includes(dLower)) return true;
             if (dHasTitleDiff && line.includes(dTitle)) return true;
             if (dHasCaseDiff && line.includes(dUpper)) return true;
+
+            // Fast SIMD rejection before running heavy RegExp engines
+            if (rareLower && !line.includes(rareLower) && (rareUpper === rareLower || !line.includes(rareUpper))) {
+                if (!dRareLower || (!line.includes(dRareLower) && (dRareUpper === dRareLower || !line.includes(dRareUpper)))) {
+                    return false;
+                }
+            }
+
             // Case-insensitive regex fallback for mixed-case variations
             return regex.test(line) || domainRegex.test(line);
         };
@@ -1504,6 +1547,12 @@ function createSearchMatcher(query) {
         if (line.includes(qLower)) return true;
         if (hasTitleDiff && line.includes(qTitle)) return true;
         if (hasCaseDiff && line.includes(qUpper)) return true;
+
+        // Fast SIMD rejection before running heavy RegExp engine
+        if (rareLower && !line.includes(rareLower) && (rareUpper === rareLower || !line.includes(rareUpper))) {
+            return false;
+        }
+
         // Case-insensitive regex fallback for mixed-case variations
         return regex.test(line);
     };
@@ -1568,10 +1617,25 @@ function searchBufferCI(buf, query, limit = 20) {
     if (isAscii && q.length <= 256) {
         const m = q.length;
         const qLower = q.toLowerCase();
+        const qBytes = Buffer.from(qLower);
+
+        // Fast SIMD rejector: if the buffer does not even contain a rare character of the query,
+        // it cannot possibly contain the query in any casing!
+        if (len >= 64) {
+            const rareCh = findRareChar(q);
+            if (rareCh) {
+                const rareLowerByte = rareCh.toLowerCase().charCodeAt(0);
+                const rareUpperByte = rareCh.toUpperCase().charCodeAt(0);
+                if (buf.indexOf(rareLowerByte) === -1 && (rareUpperByte === rareLowerByte || buf.indexOf(rareUpperByte) === -1)) {
+                    return { total: 0, matches: [] };
+                }
+            }
+        }
+
         const table = new Uint8Array(256);
         table.fill(m);
         for (let i = 0; i < m - 1; i++) {
-            const c = qLower.charCodeAt(i);
+            const c = qBytes[i];
             table[c] = m - 1 - i;
             if (c >= 97 && c <= 122) table[c - 32] = m - 1 - i;
         }
@@ -1582,7 +1646,7 @@ function searchBufferCI(buf, query, limit = 20) {
             while (k < m) {
                 let b = buf[i - k];
                 if (b >= 65 && b <= 90) b += 32;
-                if (b !== qLower.charCodeAt(m - 1 - k)) break;
+                if (b !== qBytes[m - 1 - k]) break;
                 k++;
             }
             if (k === m) {

@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const store = require("../src/store");
-const { renderSearch } = require("../src/messages");
+const { renderSearch, renderFileSearchProgress, fileSearchProgressKeyboard, renderLocalSearch } = require("../src/messages");
 
 test("searchLines finds case-insensitive substring matches", () => {
     store.clear(111);
@@ -78,4 +78,55 @@ test("search export cleans and deduplicates credentials into user:password forma
         "plain_user:simplepass",
     ]);
 });
+
+test("renderFileSearchProgress formats dynamic visual progress bar and file metrics", () => {
+    const singleCard = renderFileSearchProgress({
+        query: "gmail.com",
+        fileName: "combo.txt",
+        fileSize: 1048576,
+        current: 0,
+        total: 1,
+        matchesCount: 15,
+        isAll: false,
+    });
+    assert.match(singleCard, /FILE SEARCH IN PROGRESS/);
+    assert.match(singleCard, /Query:.*gmail\.com/);
+    assert.match(singleCard, /Target:.*combo\.txt/);
+    assert.match(singleCard, /Search Progress:/);
+    assert.match(singleCard, /\[.*\]/);
+    assert.match(singleCard, /Matches Found:.*15.*hit/);
+
+    const vaultCard = renderFileSearchProgress({
+        query: "root@domain.com",
+        fileName: "db_dump.sql",
+        current: 5,
+        total: 10,
+        matchesCount: 42,
+        isAll: true,
+    });
+    assert.match(vaultCard, /SEARCHING ALL VAULT FILES/);
+    assert.match(vaultCard, /50%/);
+    assert.match(vaultCard, /5\/10 files/);
+    assert.match(vaultCard, /42.*hit/);
+});
+
+test("fileSearchProgressKeyboard creates dynamic progress status button and cancel button", () => {
+    const singleKb = fileSearchProgressKeyboard({ current: 0, total: 1 });
+    const singleBtns = singleKb.reply_markup.inline_keyboard.flat();
+    assert.ok(singleBtns.some((b) => b.text.includes("Searching…") && b.callback_data === "search:status_bar"));
+    assert.ok(singleBtns.some((b) => b.text.includes("Cancel Search") && b.callback_data === "search:cancel"));
+
+    const multiKb = fileSearchProgressKeyboard({ current: 3, total: 10 });
+    const multiBtns = multiKb.reply_markup.inline_keyboard.flat();
+    assert.ok(multiBtns.some((b) => b.text.includes("File 3/10") && b.text.includes("30%")));
+});
+
+test("renderSearch and renderLocalSearch include 100% completed search progress bar", () => {
+    const searchRes = renderSearch("test", { total: 2, matches: ["a:b", "c:d"] });
+    assert.match(searchRes, /Search Progress:.*100% Scanned/);
+
+    const localRes = renderLocalSearch({ query: "test", total: 1, matches: ["a:b"], fileName: "test.txt" });
+    assert.match(localRes, /Search Progress:.*100% Scanned/);
+});
+
 

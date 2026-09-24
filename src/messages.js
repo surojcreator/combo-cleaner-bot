@@ -2039,16 +2039,21 @@ function renderSearch(query = "", result = {}) {
     const matches = Array.isArray(result.matches) ? result.matches : [];
     const total = Number(result.total) || matches.length;
     const shown = matches.length;
+    const { gauge: doneGauge } = renderGauge(1, 1, 12);
     if (total === 0 || matches.length === 0) {
         return [
             `${tgEmoji("🔎")}  ${B("SEARCH RESULTS")}  ${tgEmoji("⚡️")}`,
             RULE,
+            `📊  ${B("Search Progress:")} ${CODE(`[${doneGauge}]`)} ${B("100% Scanned")} ${tgEmoji("✅")}`,
+            "",
             "No matches for " + CODE(escapeHtml(query)) + ` \u2014 try another term ${tgEmoji("🔍")}`,
         ].join("\n");
     }
     const out = [
         `${tgEmoji("🔎")}  ${B("SEARCH RESULTS")} \u00B7 ${B(num(total))} hit${total === 1 ? "" : "s"} for ${CODE(escapeHtml(query))}`,
         RULE,
+        `📊  ${B("Search Progress:")} ${CODE(`[${doneGauge}]`)} ${B("100% Scanned")} ${tgEmoji("✅")}`,
+        "",
     ];
     for (const line of matches) {
         const clean = cleanUserPassOnly(line) || line;
@@ -2096,6 +2101,72 @@ function searchResultKeyboard(query, total = 0) {
 }
 
 /**
+ * Render visual progress card while searching files or vault.
+ * @param {{
+ *   query?: string,
+ *   fileName?: string,
+ *   fileSize?: number,
+ *   current?: number,
+ *   total?: number,
+ *   matchesCount?: number,
+ *   phase?: string,
+ *   isAll?: boolean
+ * }} info
+ */
+function renderFileSearchProgress(info = {}) {
+    const p = (info && typeof info === "object" && typeof info !== "symbol") ? info : {};
+    const query = typeof p.query === "string" ? p.query : (p.query && typeof p.query !== "symbol" ? String(p.query) : "");
+    const fileName = typeof p.fileName === "string" ? p.fileName : (p.isAll ? "All Vault Files" : "Target File");
+    const current = Math.max(0, typeof p.current === "number" && !isNaN(p.current) ? p.current : 0);
+    const total = Math.max(1, typeof p.total === "number" && !isNaN(p.total) ? p.total : 1);
+    const { pct, gauge } = renderGauge(current, total, 12);
+    const matchesCount = typeof p.matchesCount === "number" && !isNaN(p.matchesCount) ? p.matchesCount : 0;
+    const phase = typeof p.phase === "string" ? p.phase : (p.isAll ? "Scanning vault files across disk…" : "Scanning file with multi-core engine…");
+
+    const lines = [
+        `${tgEmoji("🔎")}  ${B(p.isAll ? "SEARCHING ALL VAULT FILES" : "FILE SEARCH IN PROGRESS")}  ${tgEmoji("⚡️")}`,
+        RULE,
+    ];
+
+    if (query) {
+        lines.push(`  • 🎯 ${B("Query:")}       ${CODE(escapeHtml(query))}`);
+    }
+    lines.push(`  • 📂 ${B("Target:")}      ${CODE(escapeHtml(fileName))}${p.fileSize > 0 ? ` (${humanSize(p.fileSize)})` : ""}`);
+    lines.push(
+        "",
+        `📊 ${B("Search Progress:")} ${B(`${pct}%`)} ${total > 1 ? I(`(${current}/${total} files)`) : ""}`,
+        `   ${CODE(`[${gauge}]`)} ${B(`${pct}%`)}`,
+        "",
+        `  • 💎 ${B("Matches Found:")} ${B(num(matchesCount))} hit${matchesCount === 1 ? "" : "s"}`,
+        `  • ⚡️ ${B("Status:")}        ${I(phase)}`,
+        RULE,
+        `💡 ${I("Searching across disk with high-speed multi-core streaming…")}`,
+    );
+
+    return lines.join("\n");
+}
+
+/**
+ * Inline keyboard shown while a file/vault search is active.
+ * @param {object} [params]
+ */
+function fileSearchProgressKeyboard(params = {}) {
+    const p = (params && typeof params === "object" && typeof params !== "symbol") ? params : {};
+    const current = Math.max(0, typeof p.current === "number" && !isNaN(p.current) ? p.current : 0);
+    const total = Math.max(1, typeof p.total === "number" && !isNaN(p.total) ? p.total : 1);
+    const { pct, gauge } = renderGauge(current, total, 8);
+    const label = total > 1
+        ? `📊 [${gauge}] ${pct}% · File ${current}/${total}`
+        : `📊 [${gauge}] ${pct}% · Searching…`;
+
+    const rows = [
+        [Markup.button.callback(label, "search:status_bar")],
+        [Markup.button.callback("🛑 Cancel Search", "search:cancel")],
+    ];
+    return createInlineKeyboard(rows);
+}
+
+/**
  * Render local search result message.
  */
 function renderLocalSearch(params = {}) {
@@ -2123,6 +2194,8 @@ function renderLocalSearch(params = {}) {
     }
     lines.push(`🎯  ${B("Query:")} ${CODE(escapeHtml(query))}`);
     lines.push(`💎  ${B("Total Matches:")} ${B(num(total))} hit${total === 1 ? "" : "s"}`);
+    const { gauge: doneGauge } = renderGauge(1, 1, 12);
+    lines.push(`📊  ${B("Search Progress:")} ${CODE(`[${doneGauge}]`)} ${B("100% Scanned")} ${tgEmoji("✅")}`);
     lines.push(RULE);
 
     if (total === 0 || matches.length === 0) {
@@ -3196,6 +3269,8 @@ module.exports = {
     renderLocalSearchHub,
     localSearchHubKeyboard,
     localFileSearchKeyboard,
+    renderFileSearchProgress,
+    fileSearchProgressKeyboard,
     previewKeyboard,
     statsKeyboard,
     fileReportKeyboard,

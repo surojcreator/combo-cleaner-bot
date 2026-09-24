@@ -145,6 +145,8 @@ const EMOJI_KEY_MAP = {
     "👀": "eyes",
     "📋": "clipboard",
     "📎": "paperclip",
+    "🏷️": "tag",
+    "🏷": "tag",
 };
 
 const REVERSE_EMOJI_KEY_MAP = Object.fromEntries(
@@ -386,6 +388,9 @@ const DEFAULT_CUSTOM_ANIMATED_EMOJIS = {
     "clipboard": "5371077759080598837",
     "📎": "5371077759080598842",
     "paperclip": "5371077759080598842",
+    "🏷": "5371077759080598858",
+    "🏷️": "5371077759080598858",
+    "tag": "5371077759080598858",
 };
 
 /**
@@ -984,14 +989,17 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         const rawSlice = Array.isArray(rawFiles) ? rawFiles.slice(rawStart, rawStart + pageSize) : [];
         const totalPages = Math.ceil(rawCount / pageSize) || 1;
 
-        // Individual file actions
+        // Individual file actions (clean & delete, without embedded search clutter)
         for (let i = 0; i < rawSlice.length; i++) {
             const actualIdx = rawStart + i;
-            rows.push([
+            const row = [
                 Markup.button.callback(`🧼 Clean Raw #${actualIdx + 1}`, `file:clean:${actualIdx}`),
-                Markup.button.callback(`🔎 Search Raw #${actualIdx + 1}`, `file:search:${actualIdx}`),
-                Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:raw:ask:${actualIdx}`),
-            ]);
+            ];
+            if (options && options.includeSearch) {
+                row.push(Markup.button.callback(`🔎 Search Raw #${actualIdx + 1}`, `file:search:${actualIdx}`));
+            }
+            row.push(Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:raw:ask:${actualIdx}`));
+            rows.push(row);
         }
 
         // Pagination
@@ -1037,14 +1045,17 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         const procSlice = Array.isArray(processedFiles) ? processedFiles.slice(procStart, procStart + pageSize) : [];
         const totalPages = Math.ceil(procCount / pageSize) || 1;
 
-        // Individual file actions
+        // Individual file actions (download & delete, without embedded search clutter)
         for (let i = 0; i < procSlice.length; i++) {
             const actualIdx = procStart + i;
-            rows.push([
+            const row = [
                 Markup.button.callback(`📥 Download Output #${actualIdx + 1}`, `file:dl:proc:${actualIdx}`),
-                Markup.button.callback(`🔎 Search Output #${actualIdx + 1}`, `file:search:proc:${actualIdx}`),
-                Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:proc:ask:${actualIdx}`),
-            ]);
+            ];
+            if (options && options.includeSearch) {
+                row.push(Markup.button.callback(`🔎 Search Output #${actualIdx + 1}`, `file:search:proc:${actualIdx}`));
+            }
+            row.push(Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:proc:ask:${actualIdx}`));
+            rows.push(row);
         }
 
         // Pagination
@@ -1126,11 +1137,14 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         if (rawSlice.length > 0) {
             for (let i = 0; i < rawSlice.length; i++) {
                 const actualIdx = rawStart + i;
-                rows.push([
+                const row = [
                     Markup.button.callback(`🧼 Clean Raw #${actualIdx + 1}`, `file:clean:${actualIdx}`),
-                    Markup.button.callback(`🔎 Search Raw #${actualIdx + 1}`, `file:search:${actualIdx}`),
-                    Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:raw:ask:${actualIdx}`),
-                ]);
+                ];
+                if (options && options.includeSearch) {
+                    row.push(Markup.button.callback(`🔎 Search Raw #${actualIdx + 1}`, `file:search:${actualIdx}`));
+                }
+                row.push(Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:raw:ask:${actualIdx}`));
+                rows.push(row);
             }
         }
 
@@ -1138,11 +1152,14 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         if (procSlice.length > 0) {
             for (let i = 0; i < procSlice.length; i++) {
                 const actualIdx = procStart + i;
-                rows.push([
+                const row = [
                     Markup.button.callback(`📥 Download Output #${actualIdx + 1}`, `file:dl:proc:${actualIdx}`),
-                    Markup.button.callback(`🔎 Search Output #${actualIdx + 1}`, `file:search:proc:${actualIdx}`),
-                    Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:proc:ask:${actualIdx}`),
-                ]);
+                ];
+                if (options && options.includeSearch) {
+                    row.push(Markup.button.callback(`🔎 Search Output #${actualIdx + 1}`, `file:search:proc:${actualIdx}`));
+                }
+                row.push(Markup.button.callback(`🗑 Del #${actualIdx + 1}`, `file:del:proc:ask:${actualIdx}`));
+                rows.push(row);
             }
         }
 
@@ -1352,25 +1369,44 @@ function saveGuideKeyboard() {
 
 /**
  * Keyboard for quick batch search.
+ * @param {string[]} [customQueries]
  */
-function searchPromptKeyboard() {
-    return createInlineKeyboard([
-        [
-            Markup.button.callback("📧 @gmail.com", "batch:quicksearch:gmail.com"),
-            Markup.button.callback("📧 @hotmail.com", "batch:quicksearch:hotmail.com"),
-        ],
-        [
-            Markup.button.callback("📧 @yahoo.com", "batch:quicksearch:yahoo.com"),
-            Markup.button.callback("📧 @aol.com", "batch:quicksearch:aol.com"),
-        ],
-        [
-            Markup.button.callback("📧 @proton.me", "batch:quicksearch:proton"),
-            Markup.button.callback("🌐 .com", "batch:quicksearch:.com"),
-        ],
-        [
-            Markup.button.callback("🚫 Cancel Search", "help"),
-        ],
+function searchPromptKeyboard(customQueries = []) {
+    const rows = [];
+    const valid = Array.isArray(customQueries)
+        ? customQueries.map((q) => String(q || "").trim()).filter(Boolean)
+        : [];
+    if (valid.length > 0) {
+        const recents = valid.slice(0, 6);
+        for (let i = 0; i < recents.length; i += 2) {
+            const row = [];
+            const q1 = recents[i];
+            const label1 = q1.length > 18 ? q1.slice(0, 15) + "…" : q1;
+            row.push(Markup.button.callback(`🏷 ${label1}`, registerCallbackPayload("batch:quicksearch:", q1)));
+            if (recents[i + 1]) {
+                const q2 = recents[i + 1];
+                const label2 = q2.length > 18 ? q2.slice(0, 15) + "…" : q2;
+                row.push(Markup.button.callback(`🏷 ${label2}`, registerCallbackPayload("batch:quicksearch:", q2)));
+            }
+            rows.push(row);
+        }
+    }
+    rows.push([
+        Markup.button.callback("📧 @gmail.com", "batch:quicksearch:gmail.com"),
+        Markup.button.callback("📧 @hotmail.com", "batch:quicksearch:hotmail.com"),
     ]);
+    rows.push([
+        Markup.button.callback("📧 @yahoo.com", "batch:quicksearch:yahoo.com"),
+        Markup.button.callback("📧 @aol.com", "batch:quicksearch:aol.com"),
+    ]);
+    rows.push([
+        Markup.button.callback("📧 @proton.me", "batch:quicksearch:proton"),
+        Markup.button.callback("🌐 .com", "batch:quicksearch:.com"),
+    ]);
+    rows.push([
+        Markup.button.callback("🚫 Cancel Search", "help"),
+    ]);
+    return createInlineKeyboard(rows);
 }
 
 /**
@@ -2117,11 +2153,19 @@ function renderSearch(query = "", result = {}) {
     const total = Number(result.total) || matches.length;
     const shown = matches.length;
     const { gauge: doneGauge } = renderGauge(1, 1, 12);
+    const durationMs = result.durationMs !== undefined
+        ? Number(result.durationMs)
+        : (result.timeMs !== undefined ? Number(result.timeMs) : null);
+    const timeStr = durationMs !== null && !isNaN(durationMs)
+        ? (durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(2)}s`)
+        : null;
+
     if (total === 0 || matches.length === 0) {
         return [
             `${tgEmoji("🔎")}  ${B("SEARCH RESULTS")}  ${tgEmoji("⚡️")}`,
             RULE,
             `📊  ${B("Search Progress:")} ${CODE(`[${doneGauge}]`)} ${B("100% Scanned")} ${tgEmoji("✅")}`,
+            ...(timeStr ? [`⏱️  ${B("Search Time:")} ${CODE(timeStr)}`] : []),
             "",
             "No matches for " + CODE(escapeHtml(query)) + ` \u2014 try another term ${tgEmoji("🔍")}`,
         ].join("\n");
@@ -2130,6 +2174,7 @@ function renderSearch(query = "", result = {}) {
         `${tgEmoji("🔎")}  ${B("SEARCH RESULTS")} \u00B7 ${B(num(total))} hit${total === 1 ? "" : "s"} for ${CODE(escapeHtml(query))}`,
         RULE,
         `📊  ${B("Search Progress:")} ${CODE(`[${doneGauge}]`)} ${B("100% Scanned")} ${tgEmoji("✅")}`,
+        ...(timeStr ? [`⏱️  ${B("Search Time:")} ${CODE(timeStr)}`] : []),
         "",
     ];
     for (const line of matches) {
@@ -2273,6 +2318,13 @@ function renderLocalSearch(params = {}) {
     lines.push(`💎  ${B("Total Matches:")} ${B(num(total))} hit${total === 1 ? "" : "s"}`);
     const { gauge: doneGauge } = renderGauge(1, 1, 12);
     lines.push(`📊  ${B("Search Progress:")} ${CODE(`[${doneGauge}]`)} ${B("100% Scanned")} ${tgEmoji("✅")}`);
+    const durationMs = p.durationMs !== undefined
+        ? Number(p.durationMs)
+        : (p.timeMs !== undefined ? Number(p.timeMs) : null);
+    if (durationMs !== null && !isNaN(durationMs)) {
+        const timeStr = durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(2)}s`;
+        lines.push(`⏱️  ${B("Search Time:")} ${CODE(timeStr)}`);
+    }
     lines.push(RULE);
 
     if (total === 0 || matches.length === 0) {
@@ -2386,12 +2438,33 @@ function renderLocalSearchHub(rawFiles = [], procFiles = []) {
 
 /**
  * Keyboard for /lsearch hub.
+ * @param {Array} [rawFiles]
+ * @param {Array} [procFiles]
+ * @param {string[]} [customQueries]
  */
-function localSearchHubKeyboard(rawFiles = [], procFiles = []) {
+function localSearchHubKeyboard(rawFiles = [], procFiles = [], customQueries = []) {
     const rows = [];
     rows.push([
         Markup.button.callback("✏️ Enter Search Query", "lsearch:prompt"),
     ]);
+    const valid = Array.isArray(customQueries)
+        ? customQueries.map((q) => String(q || "").trim()).filter(Boolean)
+        : [];
+    if (valid.length > 0) {
+        const recents = valid.slice(0, 4);
+        for (let i = 0; i < recents.length; i += 2) {
+            const row = [];
+            const q1 = recents[i];
+            const label1 = q1.length > 18 ? q1.slice(0, 15) + "…" : q1;
+            row.push(Markup.button.callback(`🏷 ${label1}`, registerCallbackPayload("lsearch:all:run:", q1)));
+            if (recents[i + 1]) {
+                const q2 = recents[i + 1];
+                const label2 = q2.length > 18 ? q2.slice(0, 15) + "…" : q2;
+                row.push(Markup.button.callback(`🏷 ${label2}`, registerCallbackPayload("lsearch:all:run:", q2)));
+            }
+            rows.push(row);
+        }
+    }
     rows.push([
         Markup.button.callback("📧 Search Gmail", registerCallbackPayload("lsearch:all:run:", "gmail.com")),
         Markup.button.callback("📧 Search Hotmail", registerCallbackPayload("lsearch:all:run:", "hotmail.com")),
@@ -2409,14 +2482,35 @@ function localSearchHubKeyboard(rawFiles = [], procFiles = []) {
 
 /**
  * Keyboard for single-file search prompt.
+ * @param {number|string} [fileIdx]
+ * @param {boolean} [isProc]
+ * @param {string[]} [customQueries]
  */
-function localFileSearchKeyboard(fileIdx = 0, isProc = false) {
+function localFileSearchKeyboard(fileIdx = 0, isProc = false, customQueries = []) {
     const safeIdx = (typeof fileIdx === "number" || typeof fileIdx === "string") ? fileIdx : 0;
     const rows = [];
     const prefix = isProc ? "file:dosearch:proc:" : "file:dosearch:";
     rows.push([
         Markup.button.callback("✏️ Type Custom Query", `file:search:custom:${isProc ? "proc:" : ""}${safeIdx}`),
     ]);
+    const valid = Array.isArray(customQueries)
+        ? customQueries.map((q) => String(q || "").trim()).filter(Boolean)
+        : [];
+    if (valid.length > 0) {
+        const recents = valid.slice(0, 4);
+        for (let i = 0; i < recents.length; i += 2) {
+            const row = [];
+            const q1 = recents[i];
+            const label1 = q1.length > 18 ? q1.slice(0, 15) + "…" : q1;
+            row.push(Markup.button.callback(`🏷 ${label1}`, registerCallbackPayload(`${prefix}${safeIdx}:`, q1)));
+            if (recents[i + 1]) {
+                const q2 = recents[i + 1];
+                const label2 = q2.length > 18 ? q2.slice(0, 15) + "…" : q2;
+                row.push(Markup.button.callback(`🏷 ${label2}`, registerCallbackPayload(`${prefix}${safeIdx}:`, q2)));
+            }
+            rows.push(row);
+        }
+    }
     rows.push([
         Markup.button.callback("📧 Gmail", `${prefix}${safeIdx}:gmail.com`),
         Markup.button.callback("📧 Hotmail", `${prefix}${safeIdx}:hotmail.com`),
@@ -2685,12 +2779,20 @@ function renderUlpEmpty(info = {}) {
 function renderUlpDone(info = {}) {
     info = info || {};
     const doneGauge = "▰".repeat(12);
+    const durationMs = info.durationMs !== undefined
+        ? Number(info.durationMs)
+        : (info.timeMs !== undefined ? Number(info.timeMs) : null);
+    const timeStr = durationMs !== null && !isNaN(durationMs)
+        ? (durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(2)}s`)
+        : null;
+
     return [
         `${tgEmoji("✨")}  ${B("ULP SEARCH COMPLETED")}  ${tgEmoji("🚀")}`,
         RULE,
         `  • ${tgEmoji("🎯")}  Target:      ${B(escapeHtml(info.query || "unknown"))}`,
         `  • ${tgEmoji("📊")}  Progress:    ${CODE(`[${doneGauge}]`)} ${B("100% Complete")} ${tgEmoji("✅")}`,
         `  • ${tgEmoji("📥")}  Relayed:     ${B(num(info.count || 0))} message${(info.count || 0) === 1 ? "" : "s"}`,
+        ...(timeStr ? [`  • ⏱️  Search Time: ${CODE(timeStr)}`] : []),
         `  • ${tgEmoji("📦")}  Status:      ${B("Combined file generated & batch reset")} ${tgEmoji("💎")}`,
         RULE,
         `${I(`Start another search anytime with /ulp ${tgEmoji("⚡️")}`)}`,

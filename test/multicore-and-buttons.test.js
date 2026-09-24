@@ -477,12 +477,12 @@ test("serverFilesKeyboard generates organized buttons for both raw files and pro
     const kb = serverFilesKeyboard(raw, proc);
     const btns = kb.reply_markup.inline_keyboard.flat();
     assert.ok(btns.some((b) => b.text.includes("Clean Raw #1")));
-    assert.ok(btns.some((b) => b.text.includes("Search Raw #1")));
+    assert.ok(!btns.some((b) => b.text.includes("Search Raw #1")));
     assert.ok(btns.some((b) => b.text.includes("Del #1") && b.callback_data === "file:del:raw:ask:0"));
     assert.ok(btns.some((b) => b.text.includes("Clean All Raw (2)")));
     assert.ok(btns.some((b) => b.text.includes("Wipe All Raw")));
     assert.ok(btns.some((b) => b.text.includes("Download Output #1") && b.callback_data === "file:dl:proc:0"));
-    assert.ok(btns.some((b) => b.text.includes("Search Output #1") && b.callback_data === "file:search:proc:0"));
+    assert.ok(!btns.some((b) => b.text.includes("Search Output #1") && b.callback_data === "file:search:proc:0"));
     assert.ok(btns.some((b) => b.text.includes("Del #1") && b.callback_data === "file:del:proc:ask:0"));
     assert.ok(btns.some((b) => b.text.includes("Wipe All Outputs")));
     assert.ok(btns.some((b) => b.text.includes("Purge All") && b.callback_data === "files:wipe:all:ask"));

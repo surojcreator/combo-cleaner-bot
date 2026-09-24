@@ -6,6 +6,7 @@ const { createSearchMatcher, cleanUserPassOnly } = require("./cleaner");
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const CUSTOM_DOMAINS_FILE = process.env.CUSTOM_DOMAINS_FILE || path.join(DATA_DIR, "custom-domains.json");
+const CUSTOM_QUERIES_FILE = process.env.CUSTOM_QUERIES_FILE || path.join(DATA_DIR, "custom-queries.json");
 
 /**
  * In-memory, per-chat store of cleaned credentials.
@@ -50,6 +51,7 @@ function getChat(chatId) {
             sites: new Map(),
             customName: null,
             customDomains: new Set(),
+            customQueries: new Set(),
             ulpDays: 5,
             updatedAt: Date.now(),
         };
@@ -405,6 +407,133 @@ function clearCustomDomains(chatId) {
     return true;
 }
 
+let persistedQueriesLoaded = false;
+function loadPersistedQueries() {
+    if (persistedQueriesLoaded) return;
+    persistedQueriesLoaded = true;
+    try {
+        if (fs.existsSync(CUSTOM_QUERIES_FILE)) {
+            const raw = fs.readFileSync(CUSTOM_QUERIES_FILE, "utf8");
+            const data = JSON.parse(raw);
+            if (data && typeof data === "object") {
+                for (const [chatIdStr, queries] of Object.entries(data)) {
+                    const cid = Number(chatIdStr);
+                    if (cid && Array.isArray(queries)) {
+                        const chat = getChat(cid);
+                        if (!chat.customQueries) chat.customQueries = new Set();
+                        for (const q of queries) {
+                            if (typeof q === "string" && q.trim()) {
+                                chat.customQueries.add(q.trim());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } catch {
+        // ignore load errors
+    }
+}
+
+function persistCustomQueries() {
+    try {
+        const dir = path.dirname(CUSTOM_QUERIES_FILE);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        let out = {};
+        try {
+            if (fs.existsSync(CUSTOM_QUERIES_FILE)) {
+                const raw = fs.readFileSync(CUSTOM_QUERIES_FILE, "utf8");
+                out = JSON.parse(raw) || {};
+            }
+        } catch {
+            out = {};
+        }
+        for (const [chatId, chat] of chats.entries()) {
+            if (chat.customQueries && chat.customQueries.size > 0) {
+                out[chatId] = Array.from(chat.customQueries);
+            } else if (chat.customQueries && chat.customQueries.size === 0) {
+                delete out[chatId];
+            }
+        }
+        fs.writeFileSync(CUSTOM_QUERIES_FILE, JSON.stringify(out, null, 2), "utf8");
+    } catch {
+        // ignore write errors
+    }
+}
+
+/**
+ * Get saved custom search queries for a chat (newest first).
+ * @param {number} chatId
+ * @returns {string[]}
+ */
+function getCustomQueries(chatId) {
+    if (!chatId) return [];
+    loadPersistedQueries();
+    const chat = getChat(chatId);
+    return Array.from(chat.customQueries || []).reverse();
+}
+
+/**
+ * Add a custom search query for a chat.
+ * @param {number} chatId
+ * @param {string} query
+ * @returns {boolean}
+ */
+function addCustomQuery(chatId, query) {
+    if (!chatId || !query) return false;
+    loadPersistedQueries();
+    const clean = String(query).trim();
+    if (!clean || clean.length < 2) return false;
+    const chat = getChat(chatId);
+    if (!chat.customQueries) chat.customQueries = new Set();
+    chat.customQueries.delete(clean);
+    chat.customQueries.add(clean);
+    if (chat.customQueries.size > 20) {
+        const first = chat.customQueries.values().next().value;
+        chat.customQueries.delete(first);
+    }
+    chat.updatedAt = Date.now();
+    persistCustomQueries();
+    return true;
+}
+
+/**
+ * Remove a custom search query for a chat.
+ * @param {number} chatId
+ * @param {string} query
+ * @returns {boolean}
+ */
+function removeCustomQuery(chatId, query) {
+    if (!chatId || !query) return false;
+    loadPersistedQueries();
+    const clean = String(query).trim();
+    const chat = getChat(chatId);
+    if (!chat.customQueries) return false;
+    const deleted = chat.customQueries.delete(clean);
+    chat.updatedAt = Date.now();
+    persistCustomQueries();
+    return deleted;
+}
+
+/**
+ * Clear all custom search queries for a chat.
+ * @param {number} chatId
+ * @returns {boolean}
+ */
+function clearCustomQueries(chatId) {
+    if (!chatId) return false;
+    loadPersistedQueries();
+    const chat = getChat(chatId);
+    if (chat.customQueries) {
+        chat.customQueries.clear();
+        chat.updatedAt = Date.now();
+        persistCustomQueries();
+    }
+    return true;
+}
+
 /**
  * Get active ULP search days for a chat.
  * @param {number} chatId
@@ -484,6 +613,10 @@ module.exports = {
     addCustomDomain,
     removeCustomDomain,
     clearCustomDomains,
+    getCustomQueries,
+    addCustomQuery,
+    removeCustomQuery,
+    clearCustomQueries,
     getUlpDays,
     setUlpDays,
     get MAX_LINES_PER_CHAT() {

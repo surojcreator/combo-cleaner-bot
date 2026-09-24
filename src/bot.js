@@ -551,6 +551,7 @@ function createBot(token, meta = {}) {
         const query = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         if (!query) {
             userPromptState.set(ctx.chat.id, { action: "batch:search:query", createdAt: Date.now() });
+            const customQueries = store.getCustomQueries(ctx.chat.id);
             await safeReply(
                 ctx,
                 [
@@ -560,7 +561,7 @@ function createBot(token, meta = {}) {
                     "",
                     `👇 ${I("Type any search query directly (e.g. gmail.com) or tap a filter below:")}`,
                 ].join("\n"),
-                searchPromptKeyboard(),
+                searchPromptKeyboard(customQueries),
             );
             return;
         }
@@ -568,7 +569,10 @@ function createBot(token, meta = {}) {
             await safeReply(ctx, "⚠️ Query too short — give me at least 2 characters.", mainKeyboard());
             return;
         }
+        store.addCustomQuery(ctx.chat.id, query);
+        const t0 = Date.now();
         const result = store.searchLines(ctx.chat.id, query, 20);
+        result.durationMs = Date.now() - t0;
 
         if (result && Array.isArray(result.matches)) {
             result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
@@ -1577,7 +1581,7 @@ function createBot(token, meta = {}) {
                 "",
                 `${I("Tap a quick filter, enter a custom query, or search the entire vault:")}`,
             ].join("\n"),
-            localFileSearchKeyboard(idx, false),
+            localFileSearchKeyboard(idx, false, store.getCustomQueries(ctx.chat.id)),
         );
     });
 
@@ -1585,6 +1589,7 @@ function createBot(token, meta = {}) {
         const idx = parseInt(ctx.match[1], 10);
         const query = resolveCallbackPayload(ctx.match[2]);
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
+        store.addCustomQuery(ctx.chat.id, query);
         const rawFiles = scanDirFiles(localProcessRoot());
         const file = rawFiles[idx];
         if (!file) {
@@ -1611,8 +1616,10 @@ function createBot(token, meta = {}) {
             }),
             fileSearchProgressKeyboard({ current: 0, total: 1 })
         );
+        const t0 = Date.now();
         try {
             const result = await searchTextFile(file.path, query, 20, { signal: abortController.signal });
+            const durationMs = Date.now() - t0;
             const card = renderLocalSearch({
                 query,
                 total: result.total,
@@ -1621,6 +1628,7 @@ function createBot(token, meta = {}) {
                 fileSize: file.size,
                 isProc: false,
                 fileIdx: idx,
+                durationMs,
             });
             const kb = localSearchResultKeyboard({
                 query,
@@ -1740,7 +1748,7 @@ function createBot(token, meta = {}) {
                 "",
                 `${I("Tap a quick filter, enter a custom query, or search the entire vault:")}`,
             ].join("\n"),
-            localFileSearchKeyboard(idx, true),
+            localFileSearchKeyboard(idx, true, store.getCustomQueries(ctx.chat.id)),
         );
     });
 
@@ -1748,6 +1756,7 @@ function createBot(token, meta = {}) {
         const idx = parseInt(ctx.match[1], 10);
         const query = resolveCallbackPayload(ctx.match[2]);
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
+        store.addCustomQuery(ctx.chat.id, query);
         const processedFiles = scanDirFiles(localProcessedRoot());
         const file = processedFiles[idx];
         if (!file) {
@@ -1774,8 +1783,10 @@ function createBot(token, meta = {}) {
             }),
             fileSearchProgressKeyboard({ current: 0, total: 1 })
         );
+        const t0 = Date.now();
         try {
             const result = await searchTextFile(file.path, query, 20, { signal: abortController.signal });
+            const durationMs = Date.now() - t0;
             const card = renderLocalSearch({
                 query,
                 total: result.total,
@@ -1784,6 +1795,7 @@ function createBot(token, meta = {}) {
                 fileSize: file.size,
                 isProc: true,
                 fileIdx: idx,
+                durationMs,
             });
             const kb = localSearchResultKeyboard({
                 query,
@@ -1833,6 +1845,26 @@ function createBot(token, meta = {}) {
             filePath: file.path,
             createdAt: Date.now(),
         });
+        const customQ = store.getCustomQueries(ctx.chat.id);
+        const rowsCustom = [];
+        const prefix = isProc ? "file:dosearch:proc:" : "file:dosearch:";
+        if (customQ.length > 0) {
+            const recents = customQ.slice(0, 4);
+            for (let i = 0; i < recents.length; i += 2) {
+                const row = [];
+                const q1 = recents[i];
+                const label1 = q1.length > 18 ? q1.slice(0, 15) + "…" : q1;
+                row.push(Markup.button.callback(`🏷 ${label1}`, registerCallbackPayload(`${prefix}${idx}:`, q1)));
+                if (recents[i + 1]) {
+                    const q2 = recents[i + 1];
+                    const label2 = q2.length > 18 ? q2.slice(0, 15) + "…" : q2;
+                    row.push(Markup.button.callback(`🏷 ${label2}`, registerCallbackPayload(`${prefix}${idx}:`, q2)));
+                }
+                rowsCustom.push(row);
+            }
+        }
+        rowsCustom.push([Markup.button.callback("🔙 Back to File", `file:search:${isProc ? "proc:" : ""}${idx}`)]);
+        rowsCustom.push([Markup.button.callback("❌ Cancel", "search:cancel")]);
         await safeReply(
             ctx,
             [
@@ -1843,10 +1875,7 @@ function createBot(token, meta = {}) {
                 "",
                 `💬  ${I("Send the domain, email, username, or text to search:")}`,
             ].join("\n"),
-            createInlineKeyboard([
-                [Markup.button.callback("🔙 Back to File", `file:search:${isProc ? "proc:" : ""}${idx}`)],
-                [Markup.button.callback("❌ Cancel", "search:cancel")],
-            ]),
+            createInlineKeyboard(rowsCustom),
         );
     });
 
@@ -1868,6 +1897,24 @@ function createBot(token, meta = {}) {
             action: "lsearch:query",
             createdAt: Date.now(),
         });
+        const customQ = store.getCustomQueries(ctx.chat.id);
+        const rowsPrompt = [];
+        if (customQ.length > 0) {
+            const recents = customQ.slice(0, 4);
+            for (let i = 0; i < recents.length; i += 2) {
+                const row = [];
+                const q1 = recents[i];
+                const label1 = q1.length > 18 ? q1.slice(0, 15) + "…" : q1;
+                row.push(Markup.button.callback(`🏷 ${label1}`, registerCallbackPayload("lsearch:all:run:", q1)));
+                if (recents[i + 1]) {
+                    const q2 = recents[i + 1];
+                    const label2 = q2.length > 18 ? q2.slice(0, 15) + "…" : q2;
+                    row.push(Markup.button.callback(`🏷 ${label2}`, registerCallbackPayload("lsearch:all:run:", q2)));
+                }
+                rowsPrompt.push(row);
+            }
+        }
+        rowsPrompt.push([Markup.button.callback("❌ Cancel", "search:cancel")]);
         await safeReply(
             ctx,
             [
@@ -1878,9 +1925,7 @@ function createBot(token, meta = {}) {
                 `💬  ${I("Send the word, email, domain, or keyword to search across all vault files:")}`,
                 `💡  ${I("Send cancel or tap below at any time to exit.")}`,
             ].join("\n"),
-            createInlineKeyboard([
-                [Markup.button.callback("❌ Cancel", "search:cancel")],
-            ]),
+            createInlineKeyboard(rowsPrompt),
         );
     });
 
@@ -1904,6 +1949,7 @@ function createBot(token, meta = {}) {
     bot.action(/^lsearch:all:run:(.+)$/, async (ctx) => {
         const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Searching vault for "${query}"…`);
+        store.addCustomQuery(ctx.chat.id, query);
 
         const rawFiles = scanDirFiles(localProcessRoot());
         const procFiles = scanDirFiles(localProcessedRoot());
@@ -1967,12 +2013,14 @@ function createBot(token, meta = {}) {
             }
         };
 
+        const t0 = Date.now();
         try {
             const result = await searchAllVaultFiles(query, {
                 limit: 20,
                 signal: abortController.signal,
                 onProgress,
             });
+            const durationMs = Date.now() - t0;
             const card = renderLocalSearch({
                 query,
                 total: result.total,
@@ -1981,6 +2029,7 @@ function createBot(token, meta = {}) {
                 totalFiles: result.totalFiles,
                 searchedFiles: result.searchedFiles,
                 isAll: true,
+                durationMs,
             });
             const kb = localSearchResultKeyboard({
                 query,
@@ -2348,18 +2397,22 @@ function createBot(token, meta = {}) {
             "",
             `👇 ${I("Type any search query directly (e.g. gmail.com) or tap a filter below:")}`,
         ].join("\n");
+        const customQueries = store.getCustomQueries(ctx.chat.id);
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         if (msg) {
-            await safeEdit(ctx, msg.message_id, text, searchPromptKeyboard());
+            await safeEdit(ctx, msg.message_id, text, searchPromptKeyboard(customQueries));
         } else {
-            await safeReply(ctx, text, searchPromptKeyboard());
+            await safeReply(ctx, text, searchPromptKeyboard(customQueries));
         }
     });
 
     bot.action(/^batch:quicksearch:(.+)$/, async (ctx) => {
         const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
+        store.addCustomQuery(ctx.chat.id, query);
+        const t0 = Date.now();
         const result = store.searchLines(ctx.chat.id, query, 20);
+        result.durationMs = Date.now() - t0;
         if (result && Array.isArray(result.matches)) {
             result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
         }
@@ -2474,7 +2527,7 @@ function createBot(token, meta = {}) {
             await safeReply(
                 ctx,
                 renderLocalSearchHub(rawFiles, procFiles),
-                localSearchHubKeyboard(rawFiles, procFiles)
+                localSearchHubKeyboard(rawFiles, procFiles, store.getCustomQueries(ctx.chat.id))
             );
             return;
         }
@@ -2487,10 +2540,12 @@ function createBot(token, meta = {}) {
             await safeReply(
                 ctx,
                 renderLocalSearchHub(rawFiles, procFiles),
-                localSearchHubKeyboard(rawFiles, procFiles)
+                localSearchHubKeyboard(rawFiles, procFiles, store.getCustomQueries(ctx.chat.id))
             );
             return;
         }
+
+        store.addCustomQuery(ctx.chat.id, query);
 
         // Cleaned vault only search
         if (target.toLowerCase() === "clean" || target.toLowerCase() === "cleaned" || target.toLowerCase() === "proc") {
@@ -2536,6 +2591,7 @@ function createBot(token, meta = {}) {
                 }
             };
 
+            const t0 = Date.now();
             try {
                 const result = await searchAllVaultFiles(query, {
                     limit: 20,
@@ -2544,6 +2600,7 @@ function createBot(token, meta = {}) {
                     signal: abortController.signal,
                     onProgress,
                 });
+                const durationMs = Date.now() - t0;
                 result.fileResults = result.fileResults.filter((f) => f.type === "proc");
                 result.total = result.fileResults.reduce((acc, f) => acc + f.total, 0);
                 result.totalFiles = procFiles.length;
@@ -2556,6 +2613,7 @@ function createBot(token, meta = {}) {
                     totalFiles: result.totalFiles,
                     searchedFiles: result.searchedFiles,
                     isAll: true,
+                    durationMs,
                 });
                 const kb = localSearchResultKeyboard({
                     query,
@@ -2630,6 +2688,7 @@ function createBot(token, meta = {}) {
                 }
             };
 
+            const t0 = Date.now();
             try {
                 const result = await searchAllVaultFiles(query, {
                     limit: 20,
@@ -2638,6 +2697,7 @@ function createBot(token, meta = {}) {
                     signal: abortController.signal,
                     onProgress,
                 });
+                const durationMs = Date.now() - t0;
                 result.fileResults = result.fileResults.filter((f) => f.type === "raw");
                 result.total = result.fileResults.reduce((acc, f) => acc + f.total, 0);
                 result.totalFiles = rawFiles.length;
@@ -2650,6 +2710,7 @@ function createBot(token, meta = {}) {
                     totalFiles: result.totalFiles,
                     searchedFiles: result.searchedFiles,
                     isAll: true,
+                    durationMs,
                 });
                 const kb = localSearchResultKeyboard({
                     query,
@@ -2735,8 +2796,10 @@ function createBot(token, meta = {}) {
                     }),
                     fileSearchProgressKeyboard({ current: 0, total: 1 })
                 );
+                const t0 = Date.now();
                 try {
                     const res = await searchTextFile(matchedFile.path, query, 20, { signal: abortController.signal });
+                    const durationMs = Date.now() - t0;
                     const card = renderLocalSearch({
                         query,
                         total: res.total,
@@ -2745,6 +2808,7 @@ function createBot(token, meta = {}) {
                         fileSize: matchedFile.size,
                         isProc,
                         fileIdx,
+                        durationMs,
                     });
                     const kb = localSearchResultKeyboard({
                         query,
@@ -2839,12 +2903,14 @@ function createBot(token, meta = {}) {
             }
         };
 
+        const t0 = Date.now();
         try {
             const result = await searchAllVaultFiles(query, {
                 limit: 20,
                 signal: abortController.signal,
                 onProgress,
             });
+            const durationMs = Date.now() - t0;
             const card = renderLocalSearch({
                 query,
                 total: result.total,
@@ -2853,6 +2919,7 @@ function createBot(token, meta = {}) {
                 totalFiles: result.totalFiles,
                 searchedFiles: result.searchedFiles,
                 isAll: true,
+                durationMs,
             });
             const kb = localSearchResultKeyboard({
                 query,
@@ -4013,7 +4080,10 @@ function createBot(token, meta = {}) {
     // Inline button: site:view:<site>
     bot.action(/^site:view:(.+)$/, async (ctx) => {
         const domain = resolveCallbackPayload(ctx.match[1]);
+        store.addCustomQuery(ctx.chat.id, domain);
+        const t0 = Date.now();
         const res = store.searchLines(ctx.chat.id, domain, 20);
+        res.durationMs = Date.now() - t0;
         if (res && Array.isArray(res.matches)) {
             res.matches = res.matches.map((m) => cleanUserPassOnly(m) || m);
         }
@@ -4610,7 +4680,10 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, "⚠️ Query too short — give me at least 2 characters.", mainKeyboard());
                     return;
                 }
+                store.addCustomQuery(ctx.chat.id, query);
+                const t0 = Date.now();
                 const result = store.searchLines(ctx.chat.id, query, 20);
+                result.durationMs = Date.now() - t0;
 
                 if (result && Array.isArray(result.matches)) {
                     result.matches = result.matches.map((m) => cleanUserPassOnly(m) || m);
@@ -4749,6 +4822,7 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
                     return;
                 }
+                store.addCustomQuery(ctx.chat.id, query);
 
                 const rawFiles = scanDirFiles(localProcessRoot());
                 const procFiles = scanDirFiles(localProcessedRoot());
@@ -4812,12 +4886,14 @@ function createBot(token, meta = {}) {
                     }
                 };
 
+                const t0 = Date.now();
                 try {
                     const result = await searchAllVaultFiles(query, {
                         limit: 20,
                         signal: abortController.signal,
                         onProgress,
                     });
+                    const durationMs = Date.now() - t0;
                     const card = renderLocalSearch({
                         query,
                         total: result.total,
@@ -4826,6 +4902,7 @@ function createBot(token, meta = {}) {
                         totalFiles: result.totalFiles,
                         searchedFiles: result.searchedFiles,
                         isAll: true,
+                        durationMs,
                     });
                     const kb = localSearchResultKeyboard({
                         query,
@@ -4863,6 +4940,7 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
                     return;
                 }
+                store.addCustomQuery(ctx.chat.id, query);
 
                 if (activeVaultSearches.has(ctx.chat.id)) {
                     await safeReply(
@@ -4896,10 +4974,12 @@ function createBot(token, meta = {}) {
                     }),
                     fileSearchProgressKeyboard({ current: 0, total: 1 })
                 );
+                const t0 = Date.now();
                 try {
                     const res = await searchTextFile(prompt.filePath, query, 20, {
                         signal: abortController.signal,
                     });
+                    const durationMs = Date.now() - t0;
                     const card = renderLocalSearch({
                         query,
                         total: res.total,
@@ -4907,6 +4987,7 @@ function createBot(token, meta = {}) {
                         fileName: prompt.fileName,
                         isProc: prompt.isProc,
                         fileIdx: prompt.fileIdx,
+                        durationMs,
                     });
                     const kb = localSearchResultKeyboard({
                         query,

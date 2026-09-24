@@ -129,4 +129,75 @@ test("renderSearch and renderLocalSearch include 100% completed search progress 
     assert.match(localRes, /Search Progress:.*100% Scanned/);
 });
 
+test("renderSearch and renderLocalSearch render elapsed search time in ms and seconds", () => {
+    // Fast search in ms (< 1000ms)
+    const cardMs = renderSearch("gmail.com", { total: 1, matches: ["user:pass"], durationMs: 18 });
+    assert.match(cardMs, /Search Time:.*18ms/);
+
+    // Empty search with duration
+    const emptyMs = renderSearch("nonexistent", { total: 0, matches: [], durationMs: 4 });
+    assert.match(emptyMs, /Search Time:.*4ms/);
+
+    // Longer search in seconds (>= 1000ms)
+    const cardSec = renderSearch("gmail.com", { total: 5, matches: ["user:pass"], durationMs: 2340 });
+    assert.match(cardSec, /Search Time:.*2\.34s/);
+
+    // Local search card in ms
+    const localMs = renderLocalSearch({ query: "keyword", total: 10, matches: ["a:b"], fileName: "dump.txt", durationMs: 45 });
+    assert.match(localMs, /Search Time:.*45ms/);
+
+    // Local search card in seconds
+    const localSec = renderLocalSearch({ query: "keyword", total: 10, matches: ["a:b"], fileName: "dump.txt", durationMs: 1450 });
+    assert.match(localSec, /Search Time:.*1\.45s/);
+});
+
+test("custom queries: store supports add, get, deduplicate, limit, remove, and clear", () => {
+    const testChat = 998877;
+    store.clearCustomQueries(testChat);
+    assert.deepEqual(store.getCustomQueries(testChat), []);
+
+    store.addCustomQuery(testChat, "yahoo.com");
+    store.addCustomQuery(testChat, "crypto");
+    store.addCustomQuery(testChat, "paypal.com");
+    // Most recent first:
+    assert.deepEqual(store.getCustomQueries(testChat), ["paypal.com", "crypto", "yahoo.com"]);
+
+    // Re-adding moves to most recent
+    store.addCustomQuery(testChat, "crypto");
+    assert.deepEqual(store.getCustomQueries(testChat), ["crypto", "paypal.com", "yahoo.com"]);
+
+    // Remove single query
+    store.removeCustomQuery(testChat, "paypal.com");
+    assert.deepEqual(store.getCustomQueries(testChat), ["crypto", "yahoo.com"]);
+
+    // Clear all
+    store.clearCustomQueries(testChat);
+    assert.deepEqual(store.getCustomQueries(testChat), []);
+});
+
+test("search keyboards render quick-tap buttons for saved custom queries", () => {
+    const { searchPromptKeyboard, localSearchHubKeyboard, localFileSearchKeyboard } = require("../src/messages");
+
+    const customQueries = ["coinbase", "netflix.com"];
+
+    // searchPromptKeyboard
+    const spKb = searchPromptKeyboard(customQueries);
+    const spBtns = spKb.reply_markup.inline_keyboard.flat();
+    assert.ok(spBtns.some((b) => b.text.includes("coinbase")));
+    assert.ok(spBtns.some((b) => b.text.includes("netflix.com")));
+
+    // localSearchHubKeyboard
+    const hubKb = localSearchHubKeyboard([], [], customQueries);
+    const hubBtns = hubKb.reply_markup.inline_keyboard.flat();
+    assert.ok(hubBtns.some((b) => b.text.includes("coinbase")));
+    assert.ok(hubBtns.some((b) => b.text.includes("netflix.com")));
+
+    // localFileSearchKeyboard
+    const fileKb = localFileSearchKeyboard(0, false, customQueries);
+    const fileBtns = fileKb.reply_markup.inline_keyboard.flat();
+    assert.ok(fileBtns.some((b) => b.text.includes("coinbase")));
+    assert.ok(fileBtns.some((b) => b.text.includes("netflix.com")));
+});
+
+
 

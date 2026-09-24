@@ -307,9 +307,12 @@ describe("User Requested Features & Optimizations", () => {
         const rawKb = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "raw" });
         const rawBtns = rawKb.reply_markup.inline_keyboard.flat();
         assert.ok(rawBtns.some((b) => b.callback_data === "file:clean:0"));
-        assert.ok(rawBtns.some((b) => b.callback_data === "file:search:0"));
+        assert.ok(!rawBtns.some((b) => b.callback_data === "file:search:0"));
         assert.ok(rawBtns.some((b) => b.callback_data === "file:del:raw:ask:0"));
         assert.ok(rawBtns.some((b) => b.callback_data === "files:wipe:raw:ask"));
+
+        const rawKbWithSearch = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "raw", includeSearch: true });
+        assert.ok(rawKbWithSearch.reply_markup.inline_keyboard.flat().some((b) => b.callback_data === "file:search:0"));
 
         // Proc tab
         const procText = messages.renderServerFiles({
@@ -325,9 +328,12 @@ describe("User Requested Features & Optimizations", () => {
         const procKb = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "proc" });
         const procBtns = procKb.reply_markup.inline_keyboard.flat();
         assert.ok(procBtns.some((b) => b.callback_data === "file:dl:proc:0"));
-        assert.ok(procBtns.some((b) => b.callback_data === "file:search:proc:0"));
+        assert.ok(!procBtns.some((b) => b.callback_data === "file:search:proc:0"));
         assert.ok(procBtns.some((b) => b.callback_data === "file:del:proc:ask:0"));
         assert.ok(procBtns.some((b) => b.callback_data === "files:wipe:proc:ask"));
+
+        const procKbWithSearch = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "proc", includeSearch: true });
+        assert.ok(procKbWithSearch.reply_markup.inline_keyboard.flat().some((b) => b.callback_data === "file:search:proc:0"));
 
         // Tools tab
         const toolsText = messages.renderServerFiles({

@@ -199,5 +199,63 @@ test("search keyboards render quick-tap buttons for saved custom queries", () =>
     assert.ok(fileBtns.some((b) => b.text.includes("netflix.com")));
 });
 
+test("searchBufferCI returns ALL results including mixed-case, CamelCase, and uppercase without dropping any", () => {
+    const { searchBufferCI } = require("../src/cleaner");
+    const content = [
+        "u1:John@Gmail.Com:pass1",
+        "u2:jane@gmail.com:pass2",
+        "u3:bob@GMAIL.COM:pass3",
+        "u4:sam@gMaIl.CoM:pass4",
+        "u5:admin@gmaIL.cOm:pass5",
+        "u6:david@othermail.com:pass6",
+    ].join("\n") + "\n";
+
+    const buf = Buffer.from(content, "utf8");
+    const res = searchBufferCI(buf, "gmail.com", 20);
+
+    assert.equal(res.total, 5);
+    assert.equal(res.matches.length, 5);
+    assert.deepEqual(res.matches, [
+        "u1:John@Gmail.Com:pass1",
+        "u2:jane@gmail.com:pass2",
+        "u3:bob@GMAIL.COM:pass3",
+        "u4:sam@gMaIl.CoM:pass4",
+        "u5:admin@gmaIL.cOm:pass5",
+    ]);
+});
+
+test("searchBufferCI handles limit = 0 and returns total without gathering matches", () => {
+    const { searchBufferCI } = require("../src/cleaner");
+    const content = "u1:target.com:1\nu2:target.com:2\nu3:other.org:3\n";
+    const buf = Buffer.from(content, "utf8");
+    const res = searchBufferCI(buf, "target.com", 0);
+    assert.equal(res.total, 2);
+    assert.equal(res.matches.length, 0);
+});
+
+test("searchBufferCI handles patterns up to 256 chars without Uint8Array overflow", () => {
+    const { searchBufferCI } = require("../src/cleaner");
+    const query = "a".repeat(256);
+    const content = `prefix:${query}:suffix\n`;
+    const buf = Buffer.from(content, "utf8");
+    const res = searchBufferCI(buf, query, 10);
+    assert.equal(res.total, 1);
+    assert.equal(res.matches.length, 1);
+});
+
+test("store.searchLines returns all matches when limit is Infinity", () => {
+    const testChat = 887766;
+    store.clear(testChat);
+    const lines = [];
+    for (let i = 0; i < 50; i++) {
+        lines.push(`user${i}@Service.Com:pass${i}`);
+    }
+    store.addLines(testChat, lines);
+    const res = store.searchLines(testChat, "service.com", Infinity);
+    assert.equal(res.total, 50);
+    assert.equal(res.matches.length, 50);
+    store.clear(testChat);
+});
+
 
 

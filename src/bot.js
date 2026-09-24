@@ -2070,7 +2070,7 @@ function createBot(token, meta = {}) {
         if (parts[0] === "all") {
             query = parts.slice(1).join(":");
             label = "all_vault";
-            const res = await searchAllVaultFiles(query, { limit: 250000 });
+            const res = await searchAllVaultFiles(query, { limit: Infinity, timeoutMs: 300000 });
             matches = res.matches;
         } else {
             const type = parts[0];
@@ -2084,7 +2084,7 @@ function createBot(token, meta = {}) {
                 return;
             }
             label = sanitizeSiteSlug(path.basename(file.name, path.extname(file.name)));
-            const res = await searchTextFile(file.path, query, 250000);
+            const res = await searchTextFile(file.path, query, Infinity);
             matches = res.matches;
         }
 
@@ -2423,7 +2423,7 @@ function createBot(token, meta = {}) {
         const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Preparing "${query}" export…`);
         let matches = [];
-        const res = store.searchLines(ctx.chat.id, query, 100000);
+        const res = store.searchLines(ctx.chat.id, query, Infinity);
         matches = res.matches;
 
         if (matches.length === 0) {
@@ -7187,7 +7187,7 @@ async function searchAllVaultFiles(query, options = {}) {
     const q = String(query || "").trim();
     if (!q) return { total: 0, matches: [], fileResults: [], totalFiles: 0, searchedFiles: 0 };
     const signal = options && options.signal ? options.signal : null;
-    const timeoutMs = typeof options.timeoutMs === "number" ? options.timeoutMs : 25000;
+    const timeoutMs = typeof options.timeoutMs === "number" ? options.timeoutMs : 60000;
 
     const rawRoot = options.rawRoot === null ? null : (options.rawRoot ? path.resolve(options.rawRoot) : localProcessRoot());
     const procRoot = options.procRoot === null ? null : (options.procRoot ? path.resolve(options.procRoot) : localProcessedRoot());

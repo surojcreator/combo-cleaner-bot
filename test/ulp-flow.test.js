@@ -989,6 +989,73 @@ test("ULP flow: deliverCombinedAndResetBatch delivers post-search keyboard with 
     }
 });
 
+test("ULP flow: suppresses duplicate update deliveries and duplicate searcher result messages without looping", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi();
+    try {
+        const USERBOT_ID = 55512345;
+        const bot = makeBot(api.apiRoot);
+        searchbot.startRun(OWNER_CHAT, { query: "target.com", scope: "day" });
+
+        const updatePayload = {
+            update_id: 8881,
+            message: {
+                message_id: 501,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: USERBOT_ID, type: "private" },
+                from: { id: USERBOT_ID, is_bot: false, first_name: "MyUserbot" },
+                document: {
+                    file_id: "doc-loop-test",
+                    file_name: "target_dump.txt",
+                    file_size: 1024,
+                },
+                caption: "#ulp target_dump.txt",
+            },
+        };
+
+        // 1. First delivery
+        await bot.handleUpdate(updatePayload);
+        const firstDeliveries = api.calls.filter(
+            (c) => (c.method === "forwardMessage" || c.method === "sendDocument") && c.payload.chat_id === OWNER_CHAT
+        );
+        assert.equal(firstDeliveries.length, 1, "expected exactly 1 delivery on first update");
+
+        // 2. Duplicate update delivery from Telegram (same update_id) - must be suppressed by update deduplication
+        await bot.handleUpdate(updatePayload);
+        const secondDeliveries = api.calls.filter(
+            (c) => (c.method === "forwardMessage" || c.method === "sendDocument") && c.payload.chat_id === OWNER_CHAT
+        );
+        assert.equal(secondDeliveries.length, 1, "expected duplicate update_id to be completely ignored");
+
+        // 3. New update with duplicate message_id / doc - must be suppressed by ack deduplication
+        await bot.handleUpdate({
+            ...updatePayload,
+            update_id: 8882,
+        });
+        const thirdDeliveries = api.calls.filter(
+            (c) => (c.method === "forwardMessage" || c.method === "sendDocument") && c.payload.chat_id === OWNER_CHAT
+        );
+        assert.equal(thirdDeliveries.length, 1, "expected duplicate message content to be ignored by ack deduplication");
+
+        // 4. Update from bot itself (self-trigger) - must be dropped
+        const callsBeforeSelf = api.calls.length;
+        await bot.handleUpdate({
+            update_id: 8883,
+            message: {
+                message_id: 502,
+                date: Math.floor(Date.now() / 1000),
+                chat: { id: OWNER_CHAT, type: "private" },
+                from: { id: 8912553102, is_bot: true, username: "ulpsorter69bot" },
+                text: "/help",
+            },
+        });
+        assert.equal(api.calls.length, callsBeforeSelf, "expected messages from bot itself to be dropped");
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
 test.after(() => {
     const { getSharedPool } = require("../src/worker-pool");
     getSharedPool().close();

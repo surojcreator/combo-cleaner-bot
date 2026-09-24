@@ -672,6 +672,18 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
     const peerCache = new Map();
     const forwardedMsgKeys = new Set();
+    const handledResultIds = new Set();
+
+    function markHandledResultId(id) {
+        if (!id) return false;
+        if (handledResultIds.has(id)) return true;
+        handledResultIds.add(id);
+        if (handledResultIds.size > 5000) {
+            const first = handledResultIds.values().next().value;
+            handledResultIds.delete(first);
+        }
+        return false;
+    }
 
     function setPeerCache(key, value) {
         if (!key) return;
@@ -734,7 +746,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             return "skipped";
         }
 
-        const fwdKey = `${toChatId}:${msg.id}`;
+        const fwdKey = `${String(toChatId)}:${msg.id}`;
         if (forwardedMsgKeys.has(fwdKey)) {
             return "already_forwarded";
         }
@@ -891,6 +903,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 if (!resultSink) return;
                 const sender = Number(msg.senderId || (msg.peerId && msg.peerId.userId) || 0);
                 if (searcherId && sender && sender !== searcherId) return;
+                if (markHandledResultId(msg.id)) return;
                 try {
                     await resultSink(msg);
                 } catch (err) {
@@ -1557,9 +1570,13 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                         const hasCombos = rawText && containsComboCredentials(rawText);
                                         if (!m.out && !seenResultIds.has(m.id) && (isDoc || hasCombos)) {
                                             seenResultIds.add(m.id);
+                                            markHandledResultId(m.id);
                                             foundAny = true;
-                                            if (options.onResult) await options.onResult(m).catch(() => {});
-                                            if (resultSink) await resultSink(m).catch(() => {});
+                                            if (options.onResult) {
+                                                await options.onResult(m).catch(() => {});
+                                            } else if (resultSink) {
+                                                await resultSink(m).catch(() => {});
+                                            }
                                             if (chatId && typeof forwardResult === "function") {
                                                 await forwardResult(chatId, m, {
                                                     botUsername: options.botUsername || botUsername || cfg.botUsername,
@@ -1681,8 +1698,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                                     } catch (resErr) {
                                                         log.error("userbot onResult error:", resErr && resErr.message ? resErr.message : resErr);
                                                     }
-                                                }
-                                                if (resultSink) {
+                                                } else if (resultSink) {
                                                     try {
                                                         await resultSink(m);
                                                     } catch (sinkErr) {
@@ -1723,9 +1739,13 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                             const hasCombos = rawText && containsComboCredentials(rawText);
                                             if (!m.out && !seenResultIds.has(m.id) && (isDoc || hasCombos)) {
                                                 seenResultIds.add(m.id);
+                                                markHandledResultId(m.id);
                                                 foundAny = true;
-                                                if (options.onResult) await options.onResult(m).catch(() => {});
-                                                if (resultSink) await resultSink(m).catch(() => {});
+                                                if (options.onResult) {
+                                                    await options.onResult(m).catch(() => {});
+                                                } else if (resultSink) {
+                                                    await resultSink(m).catch(() => {});
+                                                }
                                                 if (chatId && typeof forwardResult === "function") {
                                                     await forwardResult(chatId, m, {
                                                         botUsername: options.botUsername || botUsername || cfg.botUsername,

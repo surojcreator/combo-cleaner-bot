@@ -226,11 +226,22 @@ function createBot(token, meta = {}) {
         ...(meta.telegram || {}),
     });
 
-    // Adapter for Telegram channels: Telegram delivers channel posts under channel_post,
-    // which Telegraf by default ignores for bot.command() and bot.on("document").
-    // Normalize channel_post to update.message so all commands, documents, and forwarded
-    // files work seamlessly in channels as well as groups and private chats.
-    bot.use((ctx, next) => {
+    const seenUpdateIds = new Set();
+    bot.use(async (ctx, next) => {
+        const updateId = ctx.update && ctx.update.update_id;
+        if (updateId != null) {
+            if (seenUpdateIds.has(updateId)) return;
+            seenUpdateIds.add(updateId);
+            if (seenUpdateIds.size > 5000) {
+                const first = seenUpdateIds.values().next().value;
+                seenUpdateIds.delete(first);
+            }
+        }
+        // Drop any updates originating from the bot itself (prevents echo / self-trigger loops)
+        const myBotId = (ctx.botInfo && ctx.botInfo.id) || (bot.botInfo && bot.botInfo.id);
+        if (ctx.from && myBotId && Number(ctx.from.id) === Number(myBotId)) {
+            return;
+        }
         if (!ctx.update.message && ctx.update.channel_post) {
             ctx.update.message = ctx.update.channel_post;
         }
@@ -6291,6 +6302,7 @@ async function waitForIngestions(chatId) {
 }
 
 const deliveringCombined = new Set();
+
 async function deliverCombinedAndResetBatch(ctx) {
     const chatId = ctx.chat && ctx.chat.id;
     if (!chatId || deliveringCombined.has(chatId)) return;
@@ -6534,6 +6546,8 @@ function isForwardedDocument(ctx) {
 function isSearcherForward(ctx, meta, searchOptions, marker = "#ulp") {
     const msg = (ctx && (ctx.message || ctx.channelPost)) || null;
     if (!msg || (ctx.from && ctx.from.is_bot)) return false;
+    const myBotId = (ctx.botInfo && ctx.botInfo.id) || (meta && meta.botId);
+    if (ctx.from && myBotId && Number(ctx.from.id) === Number(myBotId)) return false;
     const expected = String((searchOptions && searchOptions.botUsername) || "").replace(/^@+/, "").toLowerCase();
 
     const origin =
@@ -6902,6 +6916,8 @@ async function beginUlpRun(ctx, params) {
  * @param {import('telegraf').Context} ctx
  * @param {{ searchOptions: ReturnType<typeof searchbot.loadOptions> }} params
  */
+const seenRelayMessageKeys = new Set();
+
 async function relaySearcherMessage(ctx, params) {
     const { searchOptions } = params;
     const msg = (ctx && (ctx.message || ctx.channelPost)) || {};
@@ -6914,6 +6930,14 @@ async function relaySearcherMessage(ctx, params) {
     // (e.g. prompts, echoes of the search URL, menus). Prevents forwarding query loops.
     if (!isDoc && textRes.lines.length === 0) {
         return;
+    }
+
+    const relayKey = `${searcherChatId}:${msg.message_id}`;
+    if (seenRelayMessageKeys.has(relayKey)) return;
+    seenRelayMessageKeys.add(relayKey);
+    if (seenRelayMessageKeys.size > 2000) {
+        const first = seenRelayMessageKeys.values().next().value;
+        seenRelayMessageKeys.delete(first);
     }
 
     const kind = isDoc ? "document" : msg.photo ? "photo" : msg.video ? "video" : "text";
@@ -7027,6 +7051,8 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
     return null;
 }
 
+const seenAckKeys = new Set();
+
 /**
  * Acknowledge a result the account bypass already shared into this chat:
  * it is *here*, so only tools are added (header once per run + clean button).
@@ -7055,6 +7081,18 @@ async function ackSharedResult(ctx, params) {
     // Ignore text messages that contain no credential lines (e.g. prompts, echoes of the search URL, menus)
     if (!hasDocument && textRes.lines.length === 0) {
         return;
+    }
+
+    const ackMsgId = msg.message_id || msg.id;
+    const ackDocId = (msg.document && (msg.document.file_unique_id || msg.document.file_id)) || "";
+    const ackKey = `${chatId}:${ackMsgId || ""}:${ackDocId}`;
+    if (seenAckKeys.has(ackKey)) {
+        return;
+    }
+    seenAckKeys.add(ackKey);
+    if (seenAckKeys.size > 2000) {
+        const first = seenAckKeys.values().next().value;
+        seenAckKeys.delete(first);
     }
 
     const scope = run ? run.scope : "day";
@@ -7125,33 +7163,38 @@ async function ackSharedResult(ctx, params) {
     }
 
     // Auto-clean the document immediately into the batch!
+    // If relayed from userbot, the userbot already ingested the credentials via ingestUserbotMessage.
     if (hasDocument) {
-        const doc = msg.document;
-        const size = doc.file_size || 0;
-        if (size <= MAX_DOWNLOAD_BYTES) {
-            const p = ingestDocument(targetCtx, doc, { keepUrl: false }).catch((err) => {
-                console.error("auto ingestDocument failed:", err && err.message ? err.message : err);
-            });
-            trackIngestion(chatId, p);
-        } else {
-            const peer = meta && meta.userbot;
-            if (peer && typeof peer.isReady === "function" && peer.isReady()) {
-                const name = userbot.resolveSafeFileName(doc, `result_${msg.message_id || Date.now()}`);
-                const p = peer.downloadMessageToDisk(chatId, msg.message_id, {
-                    root: localProcessRoot(),
-                    fileName: name,
-                })
-                    .then((saved) => processFile(targetCtx, saved.path, null, { keepUrl: false }))
-                    .catch((err) => {
-                        console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
-                    });
+        if (!isRelayedFromUserbot) {
+            const doc = msg.document;
+            const size = doc.file_size || 0;
+            if (size <= MAX_DOWNLOAD_BYTES) {
+                const p = ingestDocument(targetCtx, doc, { keepUrl: false }).catch((err) => {
+                    console.error("auto ingestDocument failed:", err && err.message ? err.message : err);
+                });
                 trackIngestion(chatId, p);
+            } else {
+                const peer = meta && meta.userbot;
+                if (peer && typeof peer.isReady === "function" && peer.isReady()) {
+                    const name = userbot.resolveSafeFileName(doc, `result_${msg.message_id || Date.now()}`);
+                    const p = peer.downloadMessageToDisk(chatId, msg.message_id, {
+                        root: localProcessRoot(),
+                        fileName: name,
+                    })
+                        .then((saved) => processFile(targetCtx, saved.path, null, { keepUrl: false }))
+                        .catch((err) => {
+                            console.error("auto-process via userbot failed:", err && err.message ? err.message : err);
+                        });
+                    trackIngestion(chatId, p);
+                }
             }
         }
     } else if (textRes.lines.length > 0) {
-        const site = sanitizeSiteSlug(query) || "cleaned";
-        const cleanLines = textRes.lines.map((l) => cleanUserPassOnly(l) || l);
-        store.addLines(chatId, cleanLines, site, { isTextResponse: true });
+        if (!isRelayedFromUserbot) {
+            const site = sanitizeSiteSlug(query) || "cleaned";
+            const cleanLines = textRes.lines.map((l) => cleanUserPassOnly(l) || l);
+            store.addLines(chatId, cleanLines, site, { isTextResponse: true });
+        }
     }
 }
 

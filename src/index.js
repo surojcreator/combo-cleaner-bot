@@ -174,6 +174,8 @@ async function connectUserbot() {
     }
 }
 
+const relayedUserbotMsgKeys = new Set();
+
 /**
  * Totally optional knock-on: when the account gets an answer from the searcher
  * bot, decide who is waiting and share it with them.
@@ -189,8 +191,16 @@ async function relayUserbotResult(peer, msg) {
     if (!isDoc && !hasCombos) {
         return; // Ignore query echoes, menus, and status messages
     }
-    const searcherChatId = peer.searcherId || SEARCHER_FALLBACK_ID;
     const messageId = Number(msg && msg.id) || null;
+    if (messageId != null) {
+        if (relayedUserbotMsgKeys.has(messageId)) return;
+        relayedUserbotMsgKeys.add(messageId);
+        if (relayedUserbotMsgKeys.size > 2000) {
+            const first = relayedUserbotMsgKeys.values().next().value;
+            relayedUserbotMsgKeys.delete(first);
+        }
+    }
+    const searcherChatId = peer.searcherId || SEARCHER_FALLBACK_ID;
     const kind = isDoc ? "document" : "text";
     const targets = searchbot.noteResult(searcherChatId, { messageId, kind });
     if (!Array.isArray(targets) || targets.length === 0) return; // nobody asked — leave the user's dialog alone

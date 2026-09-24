@@ -440,13 +440,26 @@ function noteResult(searcherChatId, opts = {}) {
             }
         } else {
             const owner = lastOwner(searcherChatId, now);
-            if (owner != null) targets.push(owner);
+            if (owner != null) {
+                if (messageId == null || !seenLateMessageIds.has(messageId)) {
+                    if (messageId != null) {
+                        seenLateMessageIds.add(messageId);
+                        if (seenLateMessageIds.size > 2000) {
+                            const first = seenLateMessageIds.values().next().value;
+                            seenLateMessageIds.delete(first);
+                        }
+                    }
+                    targets.push(owner);
+                }
+            }
         }
     } else if (targets.length > 0) {
         rememberOwner(searcherChatId, targets[0], now);
     }
     return targets;
 }
+
+const seenLateMessageIds = new Set();
 
 /**
  * The most recently updated run, if it is fresh enough to receive late answers.
@@ -467,6 +480,7 @@ function mostRecentRun(now = Date.now()) {
 function resetRuns() {
     runs.clear();
     lastOwnerBySearcher.clear();
+    seenLateMessageIds.clear();
 }
 
 module.exports = {

@@ -177,6 +177,7 @@ test("/process cleans a zip file from disk (nested text extracted)", async () =>
 });
 
 test("/lsearch searches the newest persistent cleaned output", async () => {
+    fs.rmSync(PROCESSED_ROOT, { recursive: true, force: true });
     fs.mkdirSync(PROCESSED_ROOT, { recursive: true });
     const output = path.join(PROCESSED_ROOT, `search-${Date.now()}.txt`);
     fs.writeFileSync(output, "alpha@example.com:one\nbeta@example.net:two\n", "utf8");

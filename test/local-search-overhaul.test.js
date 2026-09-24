@@ -469,6 +469,34 @@ test("16. /lsearch <query> biggest searches the biggest cleaned file and /csearc
     await fake.close();
 });
 
+test("17. /lsearch <query> searches the biggest cleaned file by default without target arg, and /lsearch <query> all searches all", async () => {
+    const smallProc = path.join(PROC_DIR, "small_cleaned.txt");
+    const bigProc = path.join(PROC_DIR, "big_cleaned.txt");
+    fs.writeFileSync(smallProc, "user1@targetclean.com:p1\n", "utf8");
+    fs.writeFileSync(bigProc, "user2@targetclean.com:p2\nuser3@targetclean.com:p3\nuser4@targetclean.com:p4\n", "utf8");
+
+    const fake = await startFakeApi();
+    const bot = makeBot(fake.apiRoot);
+    const chatId = 8887;
+
+    // Call /lsearch targetclean.com (no target arg) -> defaults to biggest cleaned file
+    await bot.handleUpdate(commandUpdate("/lsearch targetclean.com", chatId));
+
+    const foundDefaultBiggest = await waitFor(() =>
+        fake.calls.some((c) => c.payload.text && (c.payload.text.includes("big_cleaned.txt") || (c.payload.text.includes("SEARCH RESULTS") && c.payload.text.includes("user2@targetclean.com:p2"))))
+    );
+    assert.ok(foundDefaultBiggest, "Should default to searching biggest cleaned file");
+
+    // Call /lsearch targetclean.com all -> searches all files
+    await bot.handleUpdate(commandUpdate("/lsearch targetclean.com all", chatId));
+    const foundAllSearch = await waitFor(() =>
+        fake.calls.some((c) => c.payload.text && c.payload.text.includes("All Vault Files"))
+    );
+    assert.ok(foundAllSearch, "Should search all files when explicit 'all' target is passed");
+
+    await fake.close();
+});
+
 test.after(() => {
     try {
         fs.rmSync(TEST_DIR, { recursive: true, force: true });

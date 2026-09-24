@@ -1765,7 +1765,8 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
         `  • ${CODE("/save")} — Save replied file or activate file listener mode`,
         `  • ${CODE("/vault")} ${I("(or /files)")} — Server vault, tabs & 1-click merge`,
         `  • ${CODE("/search <term>")} — Instant search in active batch`,
-        `  • ${CODE("/lsearch <term>")} — Search all server vault files on disk`,
+        `  • ${CODE("/lsearch <term>")} — Search biggest cleaned file (${CODE("/lsearch <term> all")} for all vault)`,
+        `  • ${CODE("/csearch <term>")} — Search all cleaned files on disk`,
         `  • ${CODE("/stats")} ${I("(or /status)")} — View batch size, capacity & RAM`,
         `  • ${CODE("/preview")} — Peek at sample clean credentials`,
         `  • ${CODE("/clean")} — Clean logs or export combo`,
@@ -2314,17 +2315,21 @@ function renderLocalSearch(params = {}) {
     const isAll = Boolean(p.isAll || (Array.isArray(fileResults) && fileResults.length > 0));
 
     const lines = [];
+    const searchTitle = (p.isProc && isAll)
+        ? "CLEANED VAULT SEARCH RESULTS"
+        : (isAll ? "VAULT SEARCH RESULTS" : "VAULT SEARCH RESULTS (LOCAL FILE SEARCH)");
     lines.push(
-        `${tgEmoji("🔎")}  ${B(isAll ? "VAULT SEARCH RESULTS" : "VAULT SEARCH RESULTS (LOCAL FILE SEARCH)")}  ${tgEmoji("⚡️")}`,
+        `${tgEmoji("🔎")}  ${B(searchTitle)}  ${tgEmoji("⚡️")}`,
         RULE,
     );
 
     if (fileName) {
-        lines.push(`📂  ${B("File:")} ${CODE(escapeHtml(fileName))}${fileSize > 0 ? ` (${humanSize(fileSize)})` : ""}`);
+        lines.push(`📂  ${B(p.isProc ? "Cleaned File:" : "File:")} ${CODE(escapeHtml(fileName))}${fileSize > 0 ? ` (${humanSize(fileSize)})` : ""}`);
     } else if (isAll) {
         const searched = p.searchedFiles !== undefined ? p.searchedFiles : (fileResults ? fileResults.length : 0);
         const totalF = p.totalFiles || searched;
-        lines.push(`📁  ${B("Scope:")} All Vault Files (${B(num(searched))} of ${num(totalF)} matched)`);
+        const scopeName = p.isProc ? "Cleaned Vault Files" : "All Vault Files";
+        lines.push(`📁  ${B("Scope:")} ${scopeName} (${B(num(searched))} of ${num(totalF)} matched)`);
     }
     lines.push(`🎯  ${B("Query:")} ${CODE(escapeHtml(query))}`);
     lines.push(`💎  ${B("Total Matches:")} ${B(num(total))} hit${total === 1 ? "" : "s"}`);
@@ -2345,7 +2350,9 @@ function renderLocalSearch(params = {}) {
             "",
             `💡 ${I("Suggestions:")}`,
             `  • Try a broader search term (e.g. gmail.com instead of specific user)`,
-            `  • Use /lsearch <query> without a target to search across all vault files`,
+            `  • Use /lsearch <query> to search the biggest cleaned file`,
+            `  • Use /lsearch <query> all to search across all vault files`,
+            `  • Use /csearch <query> to search all cleaned files`,
             `  • Save more files with /save`,
         );
         return lines.join("\n");
@@ -2406,11 +2413,10 @@ function localSearchResultKeyboard(params = {}) {
     const actionRow = [];
     if (!isAll && fileIdx !== null) {
         actionRow.push(Markup.button.callback("🔍 Search File Again", `file:search:${isProc ? "proc:" : ""}${fileIdx}`));
-        if (isProc) {
-            actionRow.push(Markup.button.callback("💎 Cleaned Vault", query ? registerCallbackPayload("lsearch:proc:run:", query) : "lsearch:prompt:clean"));
-        }
+        actionRow.push(Markup.button.callback("💎 Cleaned Vault", query ? registerCallbackPayload("lsearch:proc:run:", query) : "lsearch:prompt:clean"));
         actionRow.push(Markup.button.callback("🌐 Search All Vault", query ? registerCallbackPayload("lsearch:all:run:", query) : "lsearch:prompt"));
     } else {
+        actionRow.push(Markup.button.callback("💎 Cleaned Vault", query ? registerCallbackPayload("lsearch:proc:run:", query) : "lsearch:prompt:clean"));
         actionRow.push(Markup.button.callback("🔍 New Vault Search", "lsearch:prompt"));
     }
     rows.push(actionRow);

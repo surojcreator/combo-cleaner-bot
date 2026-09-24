@@ -2957,16 +2957,25 @@ function createBot(token, meta = {}) {
             return;
         }
 
-        // Explicit biggest file request (/lsearch <query> biggest)
-        if (target && /^(biggest|largest|big|max)$/i.test(target)) {
+        const isExplicitVaultSearch = cmdName === "vaultsearch" || cmdName === "vsearch" || (target && /^(all|vault)$/i.test(target));
+
+        // Default /lsearch <query> searches the biggest cleaned file directly on disk
+        if (!isExplicitVaultSearch && (!target || /^(biggest|largest|big|max)$/i.test(target))) {
             if (procFiles.length > 0) {
                 return await runSingleFileSearch(procFiles[0], 0, true);
             } else if (rawFiles.length > 0) {
                 return await runSingleFileSearch(rawFiles[0], 0, false);
+            } else {
+                await safeReply(
+                    ctx,
+                    `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                    mainKeyboard()
+                );
+                return;
             }
         }
 
-        // Specific file target by index or name
+        // Specific file target by index or name (/lsearch <query> <# or filename>)
         if (target && !/^(all|vault)$/i.test(target)) {
             let matchedFile = null;
             let fileIdx = null;
@@ -3003,6 +3012,13 @@ function createBot(token, meta = {}) {
 
             if (matchedFile) {
                 return await runSingleFileSearch(matchedFile, fileIdx, isProc);
+            } else {
+                await safeReply(
+                    ctx,
+                    `⚠️ No file matching "${escapeHtml(target)}" found in server vault.\nUse ${CODE("/lsearch " + escapeHtml(query))} to search the biggest cleaned file, or ${CODE("/lsearch " + escapeHtml(query) + " all")} to search all vault files.`,
+                    localSearchResultKeyboard({ query, total: 0, isAll: true })
+                );
+                return;
             }
         }
 

@@ -143,6 +143,8 @@ const EMOJI_KEY_MAP = {
     "↔": "arrow_left_right",
     "🚫": "prohibited",
     "👀": "eyes",
+    "📋": "clipboard",
+    "📎": "paperclip",
 };
 
 const REVERSE_EMOJI_KEY_MAP = Object.fromEntries(
@@ -380,6 +382,10 @@ const DEFAULT_CUSTOM_ANIMATED_EMOJIS = {
     "prohibited": "5371077759080598847",
     "👀": "5371077759080598831",
     "eyes": "5371077759080598831",
+    "📋": "5371077759080598837",
+    "clipboard": "5371077759080598837",
+    "📎": "5371077759080598842",
+    "paperclip": "5371077759080598842",
 };
 
 /**
@@ -1368,6 +1374,65 @@ function searchPromptKeyboard() {
 }
 
 /**
+ * Keyboard when a target domain is typed in chat (smart intent detection).
+ * @param {string} domain
+ */
+function domainActionKeyboard(domain = "") {
+    const cleanDomain = String(domain || "").trim();
+    const shortDom = cleanDomain.length > 20 ? cleanDomain.slice(0, 17) + "…" : cleanDomain;
+    return createInlineKeyboard([
+        [
+            Markup.button.callback(`🚀 Run ULP Search (${shortDom})`, registerCallbackPayload("ulp:quick:", cleanDomain)),
+        ],
+        [
+            Markup.button.callback("🔎 Search Batch", registerCallbackPayload("batch:quicksearch:", cleanDomain)),
+            Markup.button.callback("📂 Vault Search", registerCallbackPayload("lsearch:all:run:", cleanDomain)),
+        ],
+        [
+            Markup.button.callback("➕ Pin to Targets", registerCallbackPayload("ulp:custom:add:", cleanDomain)),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
+}
+
+/**
+ * Keyboard when a search query is typed in chat (smart search intent).
+ * @param {string} query
+ */
+function queryActionKeyboard(query = "") {
+    const cleanQuery = String(query || "").trim();
+    const shortQ = cleanQuery.length > 18 ? cleanQuery.slice(0, 15) + "…" : cleanQuery;
+    return createInlineKeyboard([
+        [
+            Markup.button.callback(`🔎 Search Batch ("${shortQ}")`, registerCallbackPayload("batch:quicksearch:", cleanQuery)),
+        ],
+        [
+            Markup.button.callback("📂 Search Vault Files", registerCallbackPayload("lsearch:all:run:", cleanQuery)),
+            Markup.button.callback("🚀 ULP Search", registerCallbackPayload("ulp:quick:", cleanQuery)),
+        ],
+        [
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
+}
+
+/**
+ * Keyboard shown when /process is invoked without an argument.
+ */
+function processPromptKeyboard() {
+    return createInlineKeyboard([
+        [
+            Markup.button.callback("⚡️ Process Newest File", "process:local"),
+            Markup.button.callback("📂 Server Vault", "server_files"),
+        ],
+        [
+            Markup.button.callback("📥 Save Large Files", "save:start"),
+            Markup.button.callback("🔙 Main Menu", "help"),
+        ],
+    ]);
+}
+
+/**
  * Visual guide card explaining how to save files to the server vault.
  */
 function renderSaveGuide() {
@@ -1645,6 +1710,18 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
         `  • ${tgEmoji("📥")} ${B("Save Large Files:")} Bypass 20MB limit via MTProto userbot`,
         `  • ${tgEmoji("📂")} ${B("Server Vault:")} Tabbed disk storage, multi-file select & background merge`,
         `  • ${tgEmoji("📦")} ${B("Get Combined File:")} Instant deduplicated, sanitized master export`,
+        RULE,
+        `${tgEmoji("⌨️")}  ${B("COMMAND SHORTCUTS")}`,
+        `  • ${CODE("/ulp <domain> [days]")} — Launch automated day-by-day ULP search`,
+        `  • ${CODE("/combine")} ${I("(or /get)")} — Download clean deduplicated batch`,
+        `  • ${CODE("/save")} — Save replied file or activate file listener mode`,
+        `  • ${CODE("/vault")} ${I("(or /files)")} — Server vault, tabs & 1-click merge`,
+        `  • ${CODE("/search <term>")} — Instant search in active batch`,
+        `  • ${CODE("/lsearch <term>")} — Search all server vault files on disk`,
+        `  • ${CODE("/stats")} ${I("(or /status)")} — View batch size, capacity & RAM`,
+        `  • ${CODE("/preview")} — Peek at sample clean credentials`,
+        `  • ${CODE("/clean")} — Clean logs or export combo`,
+        `  • ${CODE("/clear")} ${I("(or /wipe)")} — Wipe batch for a fresh start`,
         RULE,
         "",
         `${tgEmoji("✨")}  ${B("INTERACTIVE ACTION DASHBOARD")}`,
@@ -3274,6 +3351,9 @@ module.exports = {
     previewKeyboard,
     statsKeyboard,
     fileReportKeyboard,
+    domainActionKeyboard,
+    queryActionKeyboard,
+    processPromptKeyboard,
 };
 
 

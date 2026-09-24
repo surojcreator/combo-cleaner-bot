@@ -12,7 +12,7 @@ const {
     mergeZipFiles,
     isZipBuffer,
 } = require("./extractor");
-const { cleanUserPassOnly, createSearchMatcher, searchBufferCI, resolveStealerRecordFromLines, decodeBufferToText } = require("./cleaner");
+const { cleanUserPassOnly, createSearchMatcher, searchBufferCI, resolveStealerRecordFromLines, decodeBufferToText, extractSearchDomain } = require("./cleaner");
 const { sanitizeSiteSlug, detectSite } = require("./sites");
 const { getSharedPool } = require("./worker-pool");
 const searchbot = require("./searchbot");
@@ -93,6 +93,9 @@ const {
     previewKeyboard,
     statsKeyboard,
     fileReportKeyboard,
+    domainActionKeyboard,
+    queryActionKeyboard,
+    processPromptKeyboard,
 } = require("./messages");
 
 // Telegram Bot API caps bot downloads at 20 MB.
@@ -268,25 +271,23 @@ function createBot(token, meta = {}) {
         getSharedPool().warmup();
     } catch (_) {}
 
-    bot.start(async (ctx) => {
+    const handleStartHelp = async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const batch = store.getStats(ctx.chat.id);
         await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard());
-    });
+    };
 
-    bot.help(async (ctx) => {
-        userPromptState.delete(ctx.chat.id);
-        const batch = store.getStats(ctx.chat.id);
-        await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard());
-    });
+    bot.start(handleStartHelp);
+    bot.help(handleStartHelp);
+    bot.command(["menu", "home", "dashboard"], handleStartHelp);
 
-    bot.command("stats", async (ctx) => {
+    bot.command(["stats", "status", "info", "analytics", "metrics"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const stats = store.getStats(ctx.chat.id);
         await safeReply(ctx, renderStats(stats), statsKeyboard(stats && stats.size > 0));
     });
 
-    bot.command("sites", async (ctx) => {
+    bot.command(["sites", "domains"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const counts = store.getSiteCounts(ctx.chat.id);
         await safeReply(ctx, renderSites(counts), sitesKeyboard(counts));
@@ -353,7 +354,7 @@ function createBot(token, meta = {}) {
         await safeReply(ctx, text, lines.length === 0 ? emptyBatchKeyboard() : previewKeyboard(lines.length));
     }
 
-    bot.command("preview", async (ctx) => {
+    bot.command(["preview", "sample"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         await sendPreview(ctx);
     });
@@ -2218,6 +2219,42 @@ function createBot(token, meta = {}) {
         }
     });
 
+    bot.action(/^ulp:custom:add:(.+)$/, async (ctx) => {
+        const rawToken = ctx.match[1];
+        const domain = resolveCallbackPayload(rawToken);
+        if (domain && store && store.addCustomDomain) {
+            store.addCustomDomain(ctx.chat.id, domain);
+        }
+        await safeAnswerCbQuery(ctx, `📌 Added ${domain} to targets!`).catch(() => {});
+        const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+        const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        const text = `✅ ${B("Pinned")} ${CODE(escapeHtml(domain))} ${B("to your quick presets!")}`;
+        if (msg) {
+            await safeEdit(ctx, msg.message_id, text, ulpMenuKeyboard(activeDays, customDomains));
+        } else {
+            await safeReply(ctx, text, ulpMenuKeyboard(activeDays, customDomains));
+        }
+    });
+
+    bot.action("process:local", async (ctx) => {
+        await ctx.answerCbQuery("Processing newest file…").catch(() => {});
+        const target = latestFileIn(process.env.LOCAL_PROCESS_ROOT || "/var/data");
+        if (!target) {
+            await safeReply(ctx, `⚠️ Nothing found under ${CODE(process.env.LOCAL_PROCESS_ROOT || "/var/data")}.`, mainKeyboard());
+            return;
+        }
+        if (localJobs.has(ctx.chat.id)) {
+            await safeReply(ctx, `⏳ Already processing ${CODE(escapeHtml(localJobs.get(ctx.chat.id)))}.`);
+            return;
+        }
+        localJobs.set(ctx.chat.id, target);
+        await ctx.replyWithChatAction("typing").catch(() => {});
+        void processFile(ctx, target)
+            .catch((err) => safeReply(ctx, `💥 ${B("Local processing failed")}\n${I(escapeHtml(err.message))}`))
+            .finally(() => localJobs.delete(ctx.chat.id));
+    });
+
     bot.action("ulp:custom:edit", async (ctx) => {
         await ctx.answerCbQuery().catch(() => { });
         userPromptState.delete(ctx.chat.id);
@@ -2326,7 +2363,7 @@ function createBot(token, meta = {}) {
     });
 
     bot.action(/^batch:quicksearch:(.+)$/, async (ctx) => {
-        const query = ctx.match[1];
+        const query = resolveCallbackPayload(ctx.match[1]);
         await safeAnswerCbQuery(ctx, `Searching ${query}…`);
         const chatStats = store.getStats(ctx.chat.id);
         let result;
@@ -2446,7 +2483,7 @@ function createBot(token, meta = {}) {
         }
     });
 
-    bot.command(["lsearch", "vaultsearch", "vsearch"], async (ctx) => {
+    bot.command(["lsearch", "vaultsearch", "vsearch", "filesearch", "fsearch"], async (ctx) => {
         const raw = (ctx.message?.text || "").replace(/^\S+\s*/, "").trim();
         const rawFiles = scanDirFiles(localProcessRoot());
         const procFiles = scanDirFiles(localProcessedRoot());
@@ -2913,27 +2950,27 @@ function createBot(token, meta = {}) {
         );
     });
 
-    bot.command(["clear", "wipe", "reset", "empty"], async (ctx) => {
+    bot.command(["clear", "wipe", "reset", "empty", "purge"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const stats = store.getStats(ctx.chat.id);
         if (!stats || stats.size === 0) {
-            await safeReply(ctx, "\uD83D\uDCED Nothing stored for this chat \u2014 all clean \u2728");
+            await safeReply(ctx, "📬 Nothing stored for this chat — all clean ✨", emptyBatchKeyboard());
             return;
         }
         // Two-step confirmation so a stray tap can't wipe the batch.
         await safeReply(
             ctx,
             [
-                `\uD83E\uDDF9  ${B("Clear this batch?")}`,
-                `\uD83D\uDCE6 It holds ${B(num(stats.size))} unique line${stats.size === 1 ? "" : "s"}`,
+                `🧹  ${B("Clear this batch?")}`,
+                `📦 It holds ${B(num(stats.size))} unique line${stats.size === 1 ? "" : "s"}`,
                 "",
-                `${I("This can't be undone \u26A0\uFE0F")}`,
+                `${I("This can't be undone ⚠️")}`,
             ].join("\n"),
             confirmClearKeyboard(),
         );
     });
 
-    bot.command(["combine", "download", "get", "export"], async (ctx) => {
+    bot.command(["combine", "download", "get", "export", "dl"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         await ctx.replyWithChatAction("upload_document").catch(() => { });
         await sendCombined(ctx);
@@ -2970,22 +3007,22 @@ function createBot(token, meta = {}) {
     //   /process /var/data/netflix.zip
     //   /process /var/data/dump.txt
     //   /process local          -> pick the latest file under /var/data (optional)
-    bot.command("process", async (ctx) => {
+    bot.command(["process", "proc"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const raw = (ctx.message?.text || "").replace(/^\/\S+\s*/, "").trim();
         if (!raw) {
             await safeReply(
                 ctx,
                 [
-                    `\uD83D\uDCCB  ${B("PROCESS A LOCAL FILE")}`,
+                    `📋  ${B("PROCESS A LOCAL FILE")}`,
                     RULE,
                     `${I("Usage:")} ${CODE("/process /var/data/file.zip")}  ${I("or")}  ${CODE("/process /var/data/file.txt")}`,
                     "",
-                    `${I("Plain-text files are streamed (memory-safe). HUGE zips must fit in RAM \u2014 split them first if needed.")}`,
+                    `${I("Plain-text files are streamed (memory-safe). Huge zips must fit in RAM.")}`,
                     "",
-                    `A ${CODE("/var/data")} disk is mounted on this server for local files.`,
+                    `👇 ${I("Tap an action below to process the newest server file or browse your vault:")}`,
                 ].join("\n"),
-                mainKeyboard(),
+                processPromptKeyboard(),
             );
             return;
         }
@@ -4019,7 +4056,7 @@ function createBot(token, meta = {}) {
         await ctx.answerCbQuery("\u2753").catch(() => { });
         const batch = store.getStats(ctx.chat.id);
         const msgId = ctx.callbackQuery?.message?.message_id;
-        const text = renderHelp(meta.botUsername, batch);
+        const text = renderHelp(meta.botUsername, batch, searchOptions.botUsername);
         if (msgId) {
             await safeEdit(ctx, msgId, text, mainKeyboard());
         } else {
@@ -4132,7 +4169,7 @@ function createBot(token, meta = {}) {
         });
     };
 
-    bot.command(["ulp", "searchbot", "ulpsearch"], ulpCommand);
+    bot.command(["ulp", "searchbot", "ulpsearch", "searchulp", "findulp"], ulpCommand);
 
     const rerunUlp = async (ctx, scope) => {
         const run = searchbot.getRun(ctx.chat.id);
@@ -4941,17 +4978,159 @@ function createBot(token, meta = {}) {
             );
             return;
         }
+
+        const rawText = (msg.text || msg.caption || "").trim();
+        const lower = rawText.toLowerCase();
+
+        // 1. Natural language single-word command shortcuts
+        if (lower === "menu" || lower === "help" || lower === "start" || lower === "home") {
+            const batch = store.getStats(ctx.chat.id);
+            await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard());
+            return;
+        }
+
+        if (lower === "stats" || lower === "status" || lower === "info" || lower === "analytics" || lower === "metrics") {
+            const stats = store.getStats(ctx.chat.id);
+            await safeReply(ctx, renderStats(stats), statsKeyboard(stats && stats.size > 0));
+            return;
+        }
+
+        if (lower === "combine" || lower === "download" || lower === "get" || lower === "export" || lower === "dl") {
+            await ctx.replyWithChatAction("upload_document").catch(() => {});
+            await sendCombined(ctx);
+            return;
+        }
+
+        if (lower === "vault" || lower === "files" || lower === "storage" || lower === "server") {
+            await showServerFiles(ctx, null, 0, "overview");
+            return;
+        }
+
+        if (lower === "save" || lower === "batchsave" || lower === "listen") {
+            userPromptState.set(ctx.chat.id, {
+                action: "save:listening",
+                startedAt: Date.now(),
+                queue: [],
+                active: false,
+                processed: [],
+                noticeId: null,
+            });
+            await safeReply(ctx, renderSaveListeningPrompt(meta.botUsername), saveListeningKeyboard());
+            return;
+        }
+
+        if (lower === "clean") {
+            const stats = store.getStats(ctx.chat.id);
+            if (stats && stats.size > 0) {
+                await ctx.replyWithChatAction("upload_document").catch(() => {});
+                await sendCombined(ctx);
+            } else {
+                await safeReply(
+                    ctx,
+                    [
+                        `⚡️  ${B("READY TO CLEAN")}`,
+                        RULE,
+                        `📤 ${I("Send or forward any .txt, .zip, .rar, or .7z log dump to clean it instantly!")}`,
+                        `💾 ${I("Or use /save by replying to any large file to stream it directly to disk.")}`,
+                    ].join("\n"),
+                    mainKeyboard(),
+                );
+            }
+            return;
+        }
+
+        if (lower === "clear" || lower === "wipe" || lower === "reset" || lower === "empty" || lower === "purge") {
+            const stats = store.getStats(ctx.chat.id);
+            if (!stats || stats.size === 0) {
+                await safeReply(ctx, "📬 Nothing stored for this chat — all clean ✨", emptyBatchKeyboard());
+                return;
+            }
+            await safeReply(
+                ctx,
+                [
+                    `🧹  ${B("Clear this batch?")}`,
+                    `📦 It holds ${B(num(stats.size))} unique line${stats.size === 1 ? "" : "s"}`,
+                    "",
+                    `${I("This can't be undone ⚠️")}`,
+                ].join("\n"),
+                confirmClearKeyboard(),
+            );
+            return;
+        }
+
+        if (lower === "preview" || lower === "sample") {
+            await sendPreview(ctx);
+            return;
+        }
+
+        if (lower === "sites" || lower === "domains") {
+            const counts = store.getSiteCounts(ctx.chat.id);
+            await safeReply(ctx, renderSites(counts), sitesKeyboard(counts));
+            return;
+        }
+
+        if (lower === "ulp" || lower === "searchbot") {
+            const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
+            const customDomains = (store && store.getCustomDomains && store.getCustomDomains(ctx.chat.id)) || [];
+            await safeReply(
+                ctx,
+                renderUlpHint({
+                    searcherBot: searchOptions.botUsername,
+                    stepDelayMs: searchOptions.stepDelayMs,
+                    maxTries: searchOptions.maxTries,
+                    daysCount: activeDays,
+                }),
+                ulpMenuKeyboard(activeDays, customDomains),
+            );
+            return;
+        }
+
+        // 2. Smart target domain recognition (e.g. "netflix.com", "https://portal.site.com")
+        if (!rawText.includes(" ") && !rawText.includes("\n")) {
+            const detectedDomain = extractSearchDomain(rawText);
+            if (detectedDomain) {
+                await safeReply(
+                    ctx,
+                    [
+                        `🎯  ${B("TARGET DOMAIN DETECTED")}  ${tgEmoji("⚡️")}`,
+                        RULE,
+                        `🌐  Target: ${CODE(escapeHtml(detectedDomain))}`,
+                        "",
+                        `Choose an instant action for this target:`,
+                    ].join("\n"),
+                    domainActionKeyboard(detectedDomain),
+                );
+                return;
+            }
+        }
+
+        // 3. Smart search query recognition (single search term or email, not multi-word sentences)
+        if (rawText.length >= 2 && rawText.length <= 40 && !rawText.includes(" ") && !rawText.includes("\n") && (rawText.includes("@") || rawText.includes(":") || rawText.length > 3)) {
+            await safeReply(
+                ctx,
+                [
+                    `🔎  ${B("SEARCH QUERY DETECTED")}  ${tgEmoji("⚡️")}`,
+                    RULE,
+                    `🎯  Query: ${CODE(escapeHtml(rawText))}`,
+                    "",
+                    `Where would you like to search?`,
+                ].join("\n"),
+                queryActionKeyboard(rawText),
+            );
+            return;
+        }
+
         await safeReply(
             ctx,
             [
-                `\uD83D\uDCCE  ${B("Send it as a file")}`,
+                `📎  ${B("Send it as a file")}`,
                 "",
-                `Forward or upload a ${B(".zip")} \u2014 or a text file`,
-                `(${B(".txt")}, .csv, .log, \u2026) and I'll clean it \uD83E\uDDFC`,
+                `Forward or upload a ${B(".zip")} — or a text file`,
+                `(${B(".txt")}, .csv, .log, …) and I'll clean it 🧼`,
                 "",
-                `${I("Or just type /search your-query to search your batch \uD83D\uDD0E")}`,
+                `${I("Or just type /search your-query to search your batch 🔎")}`,
                 `${I("Tip: if a forwarded zip arrived as text, download")}`,
-                `${I("it first, then send it as a document \uD83D\uDCC2")}`,
+                `${I("it first, then send it as a document 📂")}`,
             ].join("\n"),
             mainKeyboard(),
         );

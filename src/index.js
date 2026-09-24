@@ -75,6 +75,7 @@ if (ALLOWED_USER_ID) {
 async function registerCommands() {
     try {
         await bot.telegram.setMyCommands([
+            { command: "start", description: "🚀 Start bot & open dashboard" },
             { command: "menu", description: "\uD83C\uDFE0 Open the main dashboard" },
             { command: "combine", description: "\uD83D\uDCE6 Download the combined file" },
             { command: "link", description: "🔗 Direct download link for batch" },

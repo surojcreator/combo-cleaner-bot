@@ -334,9 +334,32 @@ function createBot(token, meta = {}) {
         getSharedPool().warmup();
     } catch (_) {}
 
+    // Anti-double-tap debounce middleware for rapid button clicks (telegram-bot-builder pattern)
+    const activeCallbacks = new Map();
+    bot.use(async (ctx, next) => {
+        if (ctx.callbackQuery && ctx.callbackQuery.data) {
+            const key = `${ctx.chat?.id || 0}:${ctx.callbackQuery.data}`;
+            const now = Date.now();
+            const lastTime = activeCallbacks.get(key);
+            if (lastTime && now - lastTime < 350) {
+                try {
+                    await ctx.answerCbQuery("⏳ Processing...").catch(() => {});
+                } catch (_) {}
+                return;
+            }
+            activeCallbacks.set(key, now);
+            if (activeCallbacks.size > 2000) {
+                const oldest = activeCallbacks.keys().next().value;
+                activeCallbacks.delete(oldest);
+            }
+        }
+        await next();
+    });
+
     const handleStartHelp = async (ctx) => {
         userPromptState.delete(ctx.chat.id);
         const batch = store.getStats(ctx.chat.id);
+        await safeChatAction(ctx, "typing");
         await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard(batch));
     };
 
@@ -346,6 +369,7 @@ function createBot(token, meta = {}) {
 
     bot.command(["stats", "status", "info", "analytics", "metrics"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
+        await safeChatAction(ctx, "typing");
         const stats = store.getStats(ctx.chat.id);
         await safeReply(ctx, renderStats(stats), statsKeyboard(stats && stats.size > 0));
     });
@@ -5789,9 +5813,30 @@ function createBot(token, meta = {}) {
         );
     });
 
-    bot.catch((err, ctx) => {
+    bot.catch(async (err, ctx) => {
         const updateId = ctx && ctx.update ? ctx.update.update_id : "unknown";
         console.error(`Bot error for update ${updateId}:`, err);
+        try {
+            if (ctx && typeof ctx.answerCbQuery === "function") {
+                await ctx.answerCbQuery("⚠️ Action encountered an issue. Please retry.").catch(() => {});
+            }
+            if (ctx && typeof ctx.reply === "function" && ctx.chat) {
+                await safeReply(
+                    ctx,
+                    [
+                        `${tgEmoji("⚠️")}  ${B("AN UNEXPECTED ERROR OCCURRED")}`,
+                        RULE,
+                        `The requested operation could not be completed smoothly.`,
+                        `${I(escapeHtml(err && err.message ? err.message : String(err)))}`,
+                        "",
+                        `👇 ${I("Tap below to return to the dashboard:")}`,
+                    ].join("\n"),
+                    Markup.inlineKeyboard([
+                        [Markup.button.callback(`${tgEmoji("🏠")} Main Dashboard`, "menu:refresh")],
+                    ])
+                ).catch(() => {});
+            }
+        } catch (_) {}
     });
 
     return bot;
@@ -5885,6 +5930,20 @@ async function safeAnswerCbQuery(ctx, text = "", showAlert = false) {
     } catch {
         // silently ignore callback answer failures (expired callback queries, etc.)
     }
+}
+
+/**
+ * Safely send a chat action (typing, upload_document, etc.) without throwing.
+ * Prevents user feeling like the bot is dead during intensive I/O or multi-pass regex.
+ * @param {import('telegraf').Context} ctx
+ * @param {"typing"|"upload_document"|"find_location"|"record_video"|"upload_video"|"record_voice"|"upload_voice"|"upload_photo"|"choose_sticker"} [action]
+ */
+async function safeChatAction(ctx, action = "typing") {
+    try {
+        if (ctx && typeof ctx.sendChatAction === "function") {
+            await ctx.sendChatAction(action).catch(() => {});
+        }
+    } catch (_) {}
 }
 
 /**
@@ -8271,6 +8330,7 @@ module.exports = {
     safeSendDocument,
     sendHtml,
     sendHtmlTo,
+    safeChatAction,
 };
 
 

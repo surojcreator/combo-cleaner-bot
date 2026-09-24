@@ -1890,6 +1890,166 @@ function createBot(token, meta = {}) {
         );
     });
 
+    bot.action("lsearch:prompt:biggest", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => { });
+        const procFiles = scanDirFiles(localProcessedRoot());
+        const rawFiles = scanDirFiles(localProcessRoot());
+        let matchedFile = null;
+        let isProc = false;
+
+        if (procFiles.length > 0) {
+            matchedFile = procFiles[0];
+            isProc = true;
+        } else if (rawFiles.length > 0) {
+            matchedFile = rawFiles[0];
+            isProc = false;
+        }
+
+        if (!matchedFile) {
+            userPromptState.delete(ctx.chat.id);
+            await safeReply(
+                ctx,
+                `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                mainKeyboard()
+            );
+            return;
+        }
+
+        userPromptState.set(ctx.chat.id, {
+            action: "lsearch:query:biggest",
+            createdAt: Date.now(),
+            fileName: matchedFile.name,
+            filePath: matchedFile.path,
+            fileSize: matchedFile.size,
+            isProc,
+        });
+
+        const customQ = store.getCustomQueries(ctx.chat.id);
+        const rowsPrompt = [];
+        if (customQ.length > 0) {
+            const recents = customQ.slice(0, 4);
+            for (let i = 0; i < recents.length; i += 2) {
+                const row = [];
+                const q1 = recents[i];
+                const label1 = q1.length > 18 ? q1.slice(0, 15) + "…" : q1;
+                row.push(Markup.button.callback(`🏷 ${label1}`, registerCallbackPayload("lsearch:biggest:run:", q1)));
+                if (recents[i + 1]) {
+                    const q2 = recents[i + 1];
+                    const label2 = q2.length > 18 ? q2.slice(0, 15) + "…" : q2;
+                    row.push(Markup.button.callback(`🏷 ${label2}`, registerCallbackPayload("lsearch:biggest:run:", q2)));
+                }
+                rowsPrompt.push(row);
+            }
+        }
+        rowsPrompt.push([Markup.button.callback("❌ Cancel", "search:cancel")]);
+
+        await safeReply(
+            ctx,
+            [
+                `${tgEmoji("🔎")}  ${B("SEARCH BIGGEST FILE")}  ${tgEmoji("⚡️")}`,
+                RULE,
+                `📁  ${B("Target:")} ${CODE(escapeHtml(matchedFile.name))} (${B(humanSize(matchedFile.size))})`,
+                `🏷  ${B("Type:")} ${isProc ? "Cleaned Vault File" : "Raw Dump"}`,
+                "",
+                `💬  ${I("Send the keyword, email, or domain to search inside this file:")}`,
+                `💡  ${I("Send cancel or tap below at any time to exit.")}`,
+            ].join("\n"),
+            createInlineKeyboard(rowsPrompt)
+        );
+    });
+
+    bot.action(/^lsearch:biggest:run:(.+)$/, async (ctx) => {
+        const query = resolveCallbackPayload(ctx.match[1]);
+        await safeAnswerCbQuery(ctx, `Searching biggest file for "${query}"…`);
+        store.addCustomQuery(ctx.chat.id, query);
+
+        const procFiles = scanDirFiles(localProcessedRoot());
+        const rawFiles = scanDirFiles(localProcessRoot());
+        let matchedFile = null;
+        let isProc = false;
+
+        if (procFiles.length > 0) {
+            matchedFile = procFiles[0];
+            isProc = true;
+        } else if (rawFiles.length > 0) {
+            matchedFile = rawFiles[0];
+            isProc = false;
+        }
+
+        if (!matchedFile) {
+            await safeReply(
+                ctx,
+                `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                mainKeyboard()
+            );
+            return;
+        }
+
+        const abortController = new AbortController();
+        activeVaultSearches.set(ctx.chat.id, {
+            query,
+            startedAt: Date.now(),
+            controller: abortController,
+        });
+
+        const status = await safeReply(
+            ctx,
+            renderFileSearchProgress({
+                query,
+                fileName: matchedFile.name,
+                fileSize: matchedFile.size,
+                current: 0,
+                total: 1,
+                matchesCount: 0,
+                isAll: false,
+            }),
+            fileSearchProgressKeyboard({ current: 0, total: 1 })
+        );
+
+        const t0 = Date.now();
+        try {
+            const res = await searchTextFile(matchedFile.path, query, 20, { signal: abortController.signal });
+            const durationMs = Date.now() - t0;
+            const card = renderLocalSearch({
+                query,
+                total: res.total,
+                matches: res.matches,
+                fileName: matchedFile.name,
+                fileSize: matchedFile.size,
+                isProc,
+                fileIdx: 0,
+                durationMs,
+            });
+            const kb = localSearchResultKeyboard({
+                query,
+                total: res.total,
+                fileIdx: 0,
+                isProc,
+                hasMore: res.total > 20,
+            });
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, card, kb);
+            } else {
+                await safeReply(ctx, card, kb);
+            }
+        } catch (err) {
+            if (abortController.signal.aborted) {
+                if (status && status.message_id) {
+                    await safeEdit(ctx, status.message_id, "🚫 File search cancelled.", mainKeyboard());
+                }
+                return;
+            }
+            const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+            if (status && status.message_id) {
+                await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+            } else {
+                await safeReply(ctx, errMsg, mainKeyboard());
+            }
+        } finally {
+            activeVaultSearches.delete(ctx.chat.id);
+        }
+    });
+
     bot.action("lsearch:prompt", async (ctx) => {
         await ctx.answerCbQuery().catch(() => { });
         const rawFiles = scanDirFiles(localProcessRoot());
@@ -2969,6 +3129,22 @@ function createBot(token, meta = {}) {
         }
 
         const isExplicitVaultSearch = cmdName === "vaultsearch" || cmdName === "vsearch" || (target && /^(all|vault)$/i.test(target));
+
+        // When invoking /lsearch, strictly search the biggest file on disk (cleaned file preferred, fallback to raw dump)
+        if (cmdName === "lsearch" && !isExplicitVaultSearch) {
+            if (procFiles.length > 0) {
+                return await runSingleFileSearch(procFiles[0], 0, true);
+            } else if (rawFiles.length > 0) {
+                return await runSingleFileSearch(rawFiles[0], 0, false);
+            } else {
+                await safeReply(
+                    ctx,
+                    `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                    mainKeyboard()
+                );
+                return;
+            }
+        }
 
         // Default /lsearch <query> searches the biggest cleaned file directly on disk
         if (!isExplicitVaultSearch && (!target || /^(biggest|largest|big|max)$/i.test(target))) {
@@ -5107,6 +5283,103 @@ function createBot(token, meta = {}) {
                     if (abortController.signal.aborted) {
                         if (status && status.message_id) {
                             await safeEdit(ctx, status.message_id, "🚫 Cleaned vault search cancelled.", mainKeyboard());
+                        }
+                        return;
+                    }
+                    const errMsg = `💥 Search failed: ${escapeHtml(err.message)}`;
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, errMsg, mainKeyboard());
+                    } else {
+                        await safeReply(ctx, errMsg, mainKeyboard());
+                    }
+                } finally {
+                    activeVaultSearches.delete(ctx.chat.id);
+                }
+                return;
+            }
+
+            if (prompt.action === "lsearch:query:biggest") {
+                userPromptState.delete(ctx.chat.id);
+                const query = input.trim();
+                if (!query) {
+                    await safeReply(ctx, "⚠️ Search query cannot be empty.", mainKeyboard());
+                    return;
+                }
+                store.addCustomQuery(ctx.chat.id, query);
+
+                const procFiles = scanDirFiles(localProcessedRoot());
+                const rawFiles = scanDirFiles(localProcessRoot());
+                let matchedFile = null;
+                let isProc = false;
+
+                if (procFiles.length > 0) {
+                    matchedFile = procFiles[0];
+                    isProc = true;
+                } else if (rawFiles.length > 0) {
+                    matchedFile = rawFiles[0];
+                    isProc = false;
+                }
+
+                if (!matchedFile) {
+                    await safeReply(
+                        ctx,
+                        `⚠️ No files found in server vault (${CODE(localProcessRoot())} or ${CODE(localProcessedRoot())}).\nUpload or save some dumps first!`,
+                        mainKeyboard()
+                    );
+                    return;
+                }
+
+                const abortController = new AbortController();
+                activeVaultSearches.set(ctx.chat.id, {
+                    query,
+                    startedAt: Date.now(),
+                    controller: abortController,
+                });
+
+                const status = await safeReply(
+                    ctx,
+                    renderFileSearchProgress({
+                        query,
+                        fileName: matchedFile.name,
+                        fileSize: matchedFile.size,
+                        current: 0,
+                        total: 1,
+                        matchesCount: 0,
+                        isAll: false,
+                    }),
+                    fileSearchProgressKeyboard({ current: 0, total: 1 })
+                );
+
+                const t0 = Date.now();
+                try {
+                    const res = await searchTextFile(matchedFile.path, query, 20, { signal: abortController.signal });
+                    const durationMs = Date.now() - t0;
+                    const card = renderLocalSearch({
+                        query,
+                        total: res.total,
+                        matches: res.matches,
+                        fileName: matchedFile.name,
+                        fileSize: matchedFile.size,
+                        isProc,
+                        fileIdx: 0,
+                        durationMs,
+                    });
+                    const kb = localSearchResultKeyboard({
+                        query,
+                        total: res.total,
+                        fileIdx: 0,
+                        isProc,
+                        hasMore: res.total > 20,
+                    });
+                    if (status && status.message_id) {
+                        await safeEdit(ctx, status.message_id, card, kb);
+                    } else {
+                        await safeReply(ctx, card, kb);
+                    }
+                } catch (err) {
+                    if (abortController.signal.aborted) {
+                        if (status && status.message_id) {
+                            await safeEdit(ctx, status.message_id, "🚫 File search cancelled.", mainKeyboard());
                         }
                         return;
                     }

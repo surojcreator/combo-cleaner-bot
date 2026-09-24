@@ -810,18 +810,21 @@ function mainKeyboard() {
         ],
         [
             Markup.button.callback("🔎 Search Batch", "batch:search:prompt"),
+            Markup.button.callback("💎 Search Biggest File", "lsearch:prompt:biggest"),
+        ],
+        [
             Markup.button.callback("👁 Line Preview", "preview"),
-        ],
-        [
             Markup.button.callback("📊 Batch Analytics", "stats"),
+        ],
+        [
             Markup.button.callback("🌐 Manage Domains", "sites"),
-        ],
-        [
             Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
-            Markup.button.callback("⚙️ Storage & Wipes", "files:tab:tools"),
         ],
         [
+            Markup.button.callback("⚙️ Storage & Wipes", "files:tab:tools"),
             Markup.button.callback("❓ Fast /save Guide", "help:save"),
+        ],
+        [
             Markup.button.callback("🔄 Refresh Menu", "help"),
         ],
     ]);
@@ -2467,6 +2470,7 @@ function renderLocalSearchHub(rawFiles = [], procFiles = []) {
 function localSearchHubKeyboard(rawFiles = [], procFiles = [], customQueries = []) {
     const rows = [];
     rows.push([
+        Markup.button.callback("💎 Search Biggest File", "lsearch:prompt:biggest"),
         Markup.button.callback("✏️ Enter Search Query", "lsearch:prompt"),
     ]);
     const valid = Array.isArray(customQueries)

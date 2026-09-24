@@ -19,6 +19,7 @@ const {
     renderLocalSearchHub,
     localSearchHubKeyboard,
     localFileSearchKeyboard,
+    mainKeyboard,
 } = require("../src/messages");
 
 const TEST_DIR = path.join(os.tmpdir(), `lsearch-test-${process.pid}-${Date.now()}`);
@@ -493,6 +494,49 @@ test("17. /lsearch <query> searches the biggest cleaned file by default without 
         fake.calls.some((c) => c.payload.text && c.payload.text.includes("All Vault Files"))
     );
     assert.ok(foundAllSearch, "Should search all files when explicit 'all' target is passed");
+
+    await fake.close();
+});
+
+test("18. Home menu includes Search Biggest File button and interactive biggest file search flow", async () => {
+    // 1. Verify mainKeyboard has the button
+    const kb = mainKeyboard();
+    const allBtns = kb.reply_markup.inline_keyboard.flat();
+    const biggestBtn = allBtns.find((b) => b.callback_data === "lsearch:prompt:biggest");
+    assert.ok(biggestBtn, "mainKeyboard should include lsearch:prompt:biggest button");
+    assert.ok(biggestBtn.text.includes("Search Biggest File"), "Button text should mention Search Biggest File");
+
+    // 2. Verify localSearchHubKeyboard also has the button
+    const hubKb = localSearchHubKeyboard([], []);
+    const hubBtns = hubKb.reply_markup.inline_keyboard.flat();
+    assert.ok(hubBtns.some((b) => b.callback_data === "lsearch:prompt:biggest"), "Hub keyboard should include lsearch:prompt:biggest");
+
+    // 3. Interactive prompt test
+    const fake = await startFakeApi();
+    const bot = makeBot(fake.apiRoot);
+    const chatId = 8888;
+
+    // Trigger lsearch:prompt:biggest
+    await bot.handleUpdate(callbackUpdate("lsearch:prompt:biggest", chatId));
+
+    assert.ok(bot.userPromptState.has(chatId), "userPromptState should be active");
+    const promptState = bot.userPromptState.get(chatId);
+    assert.equal(promptState.action, "lsearch:query:biggest");
+    assert.equal(promptState.fileName, "big_cleaned.txt");
+
+    const promptSent = await waitFor(() =>
+        fake.calls.some((c) => c.payload.text && c.payload.text.includes("SEARCH BIGGEST FILE") && c.payload.text.includes("big_cleaned.txt"))
+    );
+    assert.ok(promptSent, "Prompt should display SEARCH BIGGEST FILE and the biggest file name");
+
+    // 4. Send query to search only the biggest file
+    await bot.handleUpdate(textUpdate("user3", chatId));
+
+    assert.ok(!bot.userPromptState.has(chatId), "Prompt state should be cleared after query");
+    const resultSent = await waitFor(() =>
+        fake.calls.some((c) => c.payload.text && c.payload.text.includes("SEARCH RESULTS") && c.payload.text.includes("user3@targetclean.com:p3"))
+    );
+    assert.ok(resultSent, "Should return search results from the biggest file");
 
     await fake.close();
 });

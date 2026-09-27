@@ -12,6 +12,9 @@ RUN npm install --omit=dev
 COPY src ./src
 COPY package.json ./
 
+# Ensure data directories exist
+RUN mkdir -p /var/data /var/data/processed
+
 EXPOSE 8080
 
 CMD ["node", "src/index.js"]

@@ -76,7 +76,17 @@ function resolveBaseUrl() {
         return process.env.PUBLIC_URL.trim().replace(/\/+$/, "");
     }
 
-    // 3. Render injected external URL
+    // 3. Railway injected public domain
+    if (process.env.RAILWAY_PUBLIC_DOMAIN && process.env.RAILWAY_PUBLIC_DOMAIN.trim()) {
+        const domain = process.env.RAILWAY_PUBLIC_DOMAIN.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+        return `https://${domain}`;
+    }
+    if (process.env.RAILWAY_STATIC_URL && process.env.RAILWAY_STATIC_URL.trim()) {
+        const domain = process.env.RAILWAY_STATIC_URL.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+        return `https://${domain}`;
+    }
+
+    // 4. Render injected external URL
     if (process.env.RENDER_EXTERNAL_URL && process.env.RENDER_EXTERNAL_URL.trim()) {
         return process.env.RENDER_EXTERNAL_URL.trim().replace(/\/+$/, "");
     }

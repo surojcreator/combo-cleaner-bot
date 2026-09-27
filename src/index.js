@@ -32,13 +32,17 @@ const ALLOWED_USER_ID = process.env.ALLOWED_USER_ID
     : null;
 
 const PORT = Number(process.env.PORT || 8080);
-const PUBLIC_URL = (process.env.PUBLIC_URL ||
+const PUBLIC_URL = (
+    process.env.PUBLIC_URL ||
     process.env.WEBHOOK_URL ||
+    (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : "") ||
+    (process.env.RAILWAY_STATIC_URL ? `https://${process.env.RAILWAY_STATIC_URL}` : "") ||
     // Render injects RENDER_EXTERNAL_URL into every web service — use it to
     // switch to webhook mode automatically (avoids long-polling 409 conflicts
     // when two instances briefly overlap during a deploy).
     process.env.RENDER_EXTERNAL_URL ||
-    "").replace(/\/+$/, "");
+    ""
+).replace(/\/+$/, "");
 const WEBHOOK_PATH = `/telegraf/${encodeURIComponent(TOKEN)}`;
 
 // ULP search relay settings: which searcher bot to drive, how long to wait

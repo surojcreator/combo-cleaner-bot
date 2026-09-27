@@ -18,13 +18,7 @@ process.on("uncaughtException", (err, origin) => {
     console.error(`CRITICAL GUARD: Uncaught Exception (${origin}):`, err);
 });
 
-const TOKEN = process.env.BOT_TOKEN;
-if (!TOKEN) {
-    console.error(
-        "Missing BOT_TOKEN. Create a bot with @BotFather and set BOT_TOKEN in your environment (see .env.example).",
-    );
-    process.exit(1);
-}
+const TOKEN = process.env.BOT_TOKEN || "";
 
 // Optional shared secret so only your Telegram account can use the bot.
 const ALLOWED_USER_ID = process.env.ALLOWED_USER_ID
@@ -43,7 +37,7 @@ const PUBLIC_URL = (
     process.env.RENDER_EXTERNAL_URL ||
     ""
 ).replace(/\/+$/, "");
-const WEBHOOK_PATH = `/telegraf/${encodeURIComponent(TOKEN)}`;
+const WEBHOOK_PATH = TOKEN ? `/telegraf/${encodeURIComponent(TOKEN)}` : "/telegraf/webhook";
 
 // ULP search relay settings: which searcher bot to drive, how long to wait
 // before every try (7s by default) and how many retries are allowed.
@@ -57,7 +51,7 @@ const botMeta = { search: searchbot.loadOptions() };
 const userbotConfig = userbot.loadConfig();
 botMeta.search.transport = userbotConfig.transport;
 
-const bot = createBot(TOKEN, botMeta);
+const bot = createBot(TOKEN || "123456:STANDBY_TOKEN", botMeta);
 
 // Optional access control.
 if (ALLOWED_USER_ID) {
@@ -129,7 +123,7 @@ function startServer(webhookHandler) {
         }
         if (req.url === "/" || req.url === "/healthz") {
             res.writeHead(200, { "Content-Type": "text/plain" });
-            res.end("ok\n");
+            res.end(TOKEN ? "ok\n" : "standing_by_for_bot_token\n");
             return;
         }
         res.writeHead(404, { "Content-Type": "text/plain" });
@@ -226,6 +220,12 @@ async function relayUserbotResult(peer, msg) {
 }
 
 async function main() {
+    if (!TOKEN) {
+        console.warn(`⚠️  BOT_TOKEN is not set yet. Standing by on HTTP port ${PORT}.`);
+        console.warn("[setup] Set BOT_TOKEN in Railway dashboard variables to activate your bot.");
+        startServer(null);
+        return;
+    }
     let me = null;
     for (let attempt = 1; attempt <= 5; attempt++) {
         try {

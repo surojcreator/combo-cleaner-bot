@@ -502,20 +502,24 @@ function saveEmojiRegistryFile(filePath) {
  */
 function seedAnimatedEmojis() {
     const path = require("path");
+    // Bundled registry first (full UI coverage), then volume/env supplements
+    // so a stale /var/data file cannot hide newer defaults after a deploy.
     const candidates = [
-        process.env.EMOJI_REGISTRY_PATH,
-        "/var/data/emoji-registry.json",
         path.join(__dirname, "emoji-registry.json"),
         path.join(__dirname, "..", "data", "emoji-registry.json"),
         path.join(process.cwd(), "data", "emoji-registry.json"),
+        process.env.EMOJI_REGISTRY_PATH,
+        "/var/data/emoji-registry.json",
     ].filter(Boolean);
     let loaded = 0;
+    const seen = new Set();
     for (const file of candidates) {
+        if (seen.has(file)) continue;
+        seen.add(file);
         const n = loadEmojiRegistryFile(file);
         if (n > 0) {
             loaded = customAnimatedEmojis.size;
-            console.log(`Animated emojis: loaded ${loaded} ids from ${file}`);
-            break;
+            console.log(`Animated emojis: loaded/merged ${loaded} ids from ${file}`);
         }
     }
     // Env override / supplement

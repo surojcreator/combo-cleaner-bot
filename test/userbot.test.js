@@ -159,6 +159,44 @@ test("isSearcherForward handles @ in username and chat/channel forwards", () => 
     assert.equal(isSearcherForward(chanForward, meta, searchOptions), true);
 });
 
+test("DUMP Base 34 style pager: bare arrows + 1/5 indicator are detected", () => {
+    // Simulate screenshot UI: date rows + [←] [1/5] [→] + Language/Info
+    const page1 = {
+        id: 1,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: "📅 02.10.2026", data: Buffer.from("folder:02.10.2026") }] },
+                { buttons: [{ text: "📅 01.10.2026", data: Buffer.from("folder:01.10.2026") }] },
+                { buttons: [{ text: "📅 30.09.2026", data: Buffer.from("folder:30.09.2026") }] },
+                { buttons: [
+                    { text: "←", data: Buffer.from("page:prev") },
+                    { text: "1/5", data: Buffer.from("page:info") },
+                    { text: "→", data: Buffer.from("page:next") },
+                ] },
+                { buttons: [
+                    { text: "🌐 Language", data: Buffer.from("lang") },
+                    { text: "ℹ️ Info", data: Buffer.from("info") },
+                ] },
+            ],
+        },
+    };
+    assert.equal(userbot.isPageIndicatorButton(page1.replyMarkup.rows[3].buttons[1]), true);
+    assert.equal(userbot.isPrevPageButton(page1.replyMarkup.rows[3].buttons[0]), true);
+    assert.equal(userbot.isNextPageButton(page1.replyMarkup.rows[3].buttons[2]), true);
+    assert.equal(userbot.isUtilityButton(page1.replyMarkup.rows[4].buttons[0]), true);
+
+    const dates = userbot.extractFolderDatesFromMessage(page1).map((d) => d.dateStr);
+    assert.deepEqual(dates.sort().reverse().slice(0, 3), ["02.10.2026", "01.10.2026", "30.09.2026"].sort().reverse().slice(0, 3));
+    assert.ok(!dates.includes("1/5"));
+
+    const next = userbot.findNavButton(page1, "next");
+    assert.ok(next && next.data, "expected next arrow from pager row");
+    assert.equal(next.data.toString("utf8"), "page:next");
+    const prev = userbot.findNavButton(page1, "prev");
+    assert.ok(prev && prev.data, "expected prev arrow from pager row");
+    assert.equal(prev.data.toString("utf8"), "page:prev");
+});
+
 test("detectLatestBatchDate extracts the latest batch date from menu buttons", () => {
     const mockMenu = {
         replyMarkup: {

@@ -389,35 +389,66 @@ function buttonDataString(btn) {
     }
 }
 
+/** Page indicator like "1/5" in DUMP // Base 34 style menus — not a date, not a nav click target. */
+function isPageIndicatorButton(btn) {
+    if (!btn) return false;
+    const text = String(btn.text || "").replace(/\s+/g, "").trim();
+    if (/^\d+\/\d+$/.test(text)) return true;
+    const dataStr = buttonDataString(btn);
+    if (/page.?info|pages|pager|counter/i.test(dataStr)) return true;
+    return false;
+}
+
 function isNextPageButton(btn) {
     if (!btn) return false;
+    if (isPageIndicatorButton(btn)) return false;
     const dataStr = buttonDataString(btn);
-    const text = String(btn.text || "");
-    if (text.includes("⬅️") || text.includes("Prev") || text.includes("◀️") || text.includes("<<") || /prev|назад|пред/i.test(text)) {
+    const text = String(btn.text || "").trim();
+    // Explicit prev → never next
+    if (
+        text.includes("⬅️") || text.includes("◀") || text.includes("◁") || text.includes("‹") ||
+        text.includes("◀️") || text.includes("<<") || text.includes("←") || text.includes("⇦") ||
+        /^(prev|back|назад|пред)$/i.test(text) || /prev|назад|пред/i.test(text)
+    ) {
         return false;
     }
-    if (/next|след|далее|»|➡️|▶️|>>/i.test(text)) return true;
-    const pageMatch = dataStr.match(/^menu:page:(\d+)$/i);
+    // Bare arrows used by DUMP // Base 34 style UIs
+    if (
+        text === "→" || text === "⇒" || text === "➡" || text === "➡️" || text === "▶️" ||
+        text === "▶" || text === "▷" || text === "›" || text === "»" || text === ">>" ||
+        text === ">" || text === "≫" || text === "↦" || text === "↪"
+    ) {
+        return true;
+    }
+    if (/next|след|далее|forward/i.test(text)) return true;
+    // Callback data heuristics
+    if (/next|forward|page[_-]?(up|right|\+|inc)/i.test(dataStr)) return true;
+    const pageMatch = dataStr.match(/(?:menu:)?page[=:_-]?(\d+)/i);
     if (pageMatch) {
         const n = Number(pageMatch[1]);
-        // page 0 is usually "home/first"; treat higher indexes as next
+        // page 0 is usually home/first; higher index = next
         return Number.isFinite(n) && n > 0;
     }
+    // row position fallback handled in findNavButton when text is empty icon button
     return false;
 }
 
 function isPrevPageButton(btn) {
     if (!btn) return false;
+    if (isPageIndicatorButton(btn)) return false;
     const dataStr = buttonDataString(btn);
-    const text = String(btn.text || "");
-    return (
-        text.includes("⬅️") ||
-        text.includes("Prev") ||
-        text.includes("◀️") ||
-        text.includes("<<") ||
-        /prev|назад|пред/i.test(text) ||
-        (dataStr === "menu:page:0" && !isNextPageButton(btn))
-    );
+    const text = String(btn.text || "").trim();
+    if (
+        text === "←" || text === "⇐" || text === "⬅" || text === "⬅️" || text === "◀️" ||
+        text === "◀" || text === "◁" || text === "‹" || text === "«" || text === "<<" ||
+        text === "<" || text === "≪" || text === "↤" || text === "↩"
+    ) {
+        return true;
+    }
+    if (/^(prev|back|назад|пред)$/i.test(text) || /prev|назад|пред/i.test(text)) return true;
+    if (/prev|back|page[_-]?(down|left|dec|-)/i.test(dataStr)) return true;
+    if (dataStr === "menu:page:0" || /(?:menu:)?page[=:_-]?0\b/i.test(dataStr)) return true;
+    return false;
 }
 
 function isBackButton(btn) {
@@ -444,6 +475,17 @@ function isBackButton(btn) {
     );
 }
 
+function isUtilityButton(btn) {
+    if (!btn) return false;
+    if (isPageIndicatorButton(btn) || isNextPageButton(btn) || isPrevPageButton(btn) || isBackButton(btn)) return true;
+    const text = String(btn.text || "").toLowerCase();
+    const dataStr = buttonDataString(btn).toLowerCase();
+    // DUMP // Base 34 style: Language / Info footers
+    if (/language|язык|info|about|help|start|settings|настройки/.test(text)) return true;
+    if (/lang|language|info|about|help|settings/.test(dataStr)) return true;
+    return false;
+}
+
 function extractFolderDatesFromMessage(menuMsg) {
     const out = [];
     if (!menuMsg || !menuMsg.replyMarkup || !Array.isArray(menuMsg.replyMarkup.rows)) return out;
@@ -451,10 +493,11 @@ function extractFolderDatesFromMessage(menuMsg) {
         if (!row || !Array.isArray(row.buttons)) continue;
         for (const btn of row.buttons) {
             if (!btn) continue;
+            if (isUtilityButton(btn)) continue;
             const dataBuf = buttonDataBuffer(btn);
             const dataStr = dataBuf ? dataBuf.toString("utf8") : "";
             const textStr = String(btn.text || "");
-            if (isNextPageButton(btn) || isPrevPageButton(btn)) continue;
+            // Prefer full DD.MM.YYYY (DUMP // Base 34 calendar rows)
             const dmy =
                 dataStr.match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/) ||
                 textStr.match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/);
@@ -477,10 +520,13 @@ function extractFolderDatesFromMessage(menuMsg) {
 
 function findNavButton(menuMsg, kind = "next") {
     if (!menuMsg || !menuMsg.replyMarkup || !Array.isArray(menuMsg.replyMarkup.rows)) return null;
+
+    // Pass 1: semantic match (text / data)
     for (const row of menuMsg.replyMarkup.rows) {
         if (!row || !Array.isArray(row.buttons)) continue;
         for (const btn of row.buttons) {
             if (!btn) continue;
+            if (isPageIndicatorButton(btn)) continue;
             const data = buttonDataBuffer(btn);
             if (kind === "next" && isNextPageButton(btn)) {
                 return { text: String(btn.text || ""), data };
@@ -488,8 +534,39 @@ function findNavButton(menuMsg, kind = "next") {
             if (kind === "prev" && isPrevPageButton(btn)) {
                 return { text: String(btn.text || ""), data };
             }
-            if (kind === "back" && isBackButton(btn) && !isNextPageButton(btn) && !isPrevPageButton(btn)) {
+            if (kind === "back" && isBackButton(btn)) {
                 return { text: String(btn.text || ""), data };
+            }
+        }
+    }
+
+    // Pass 2: DUMP // Base 34 style pager row: [ ← ] [ 1/5 ] [ → ]
+    // Identify by a 3-button row whose middle is a page indicator.
+    if (kind === "next" || kind === "prev") {
+        for (const row of menuMsg.replyMarkup.rows) {
+            if (!row || !Array.isArray(row.buttons) || row.buttons.length < 2) continue;
+            const btns = row.buttons.filter(Boolean);
+            if (btns.length < 2) continue;
+            const mid = btns.length === 3 ? btns[1] : null;
+            const hasIndicator = mid ? isPageIndicatorButton(mid) : btns.some(isPageIndicatorButton);
+            if (!hasIndicator && btns.length !== 3) continue;
+
+            if (kind === "prev") {
+                const left = btns[0];
+                if (left && !isPageIndicatorButton(left) && !isUtilityButton(left)) {
+                    // Prefer left if it's clearly prev OR unknown icon in pager row
+                    if (isPrevPageButton(left) || (!isNextPageButton(left) && hasIndicator)) {
+                        return { text: String(left.text || ""), data: buttonDataBuffer(left) };
+                    }
+                }
+            }
+            if (kind === "next") {
+                const right = btns[btns.length - 1];
+                if (right && !isPageIndicatorButton(right) && !isUtilityButton(right)) {
+                    if (isNextPageButton(right) || (!isPrevPageButton(right) && hasIndicator)) {
+                        return { text: String(right.text || ""), data: buttonDataBuffer(right) };
+                    }
+                }
             }
         }
     }
@@ -498,25 +575,30 @@ function findNavButton(menuMsg, kind = "next") {
 
 function isMenuMessage(m) {
     if (!m || !m.replyMarkup || !Array.isArray(m.replyMarkup.rows)) return false;
+    let dateLike = 0;
     for (const row of m.replyMarkup.rows) {
         if (!row || !Array.isArray(row.buttons)) continue;
         for (const btn of row.buttons) {
             if (!btn) continue;
             const dataStr = buttonDataString(btn);
             const textStr = String(btn.text || "");
+            if (isPageIndicatorButton(btn)) return true; // DUMP // Base 34 pager
             if (
                 dataStr.includes("folder:") ||
                 dataStr.includes("menu:page:") ||
-                /\d{1,2}[.\/-]\d{1,2}/.test(textStr) ||
-                /\d{1,2}[.\/-]\d{1,2}/.test(dataStr) ||
+                /\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4}/.test(textStr) ||
+                /\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4}/.test(dataStr) ||
                 isNextPageButton(btn) ||
                 isPrevPageButton(btn)
             ) {
                 return true;
             }
+            // Count bare calendar labels "02.10.2026"
+            if (/\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}/.test(textStr)) dateLike += 1;
         }
     }
-    return false;
+    // A grid of date buttons alone is a menu even without pager text
+    return dateLike >= 2;
 }
 
 /**
@@ -777,9 +859,11 @@ module.exports = {
     buttonMatchesDate,
     buttonDataBuffer,
     buttonDataString,
+    isPageIndicatorButton,
     isNextPageButton,
     isPrevPageButton,
     isBackButton,
+    isUtilityButton,
     extractFolderDatesFromMessage,
     findNavButton,
     isMenuMessage,
@@ -1667,31 +1751,74 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
              * Returns newest-first list of { date, dateStr }.
              * Does NOT cache callback bytes — those go stale after page changes.
              */
+            const readPageIndicator = (menuMsg) => {
+                // DUMP // Base 34 style: middle button text "1/5"
+                if (!menuMsg || !menuMsg.replyMarkup || !Array.isArray(menuMsg.replyMarkup.rows)) return null;
+                for (const row of menuMsg.replyMarkup.rows) {
+                    if (!row || !Array.isArray(row.buttons)) continue;
+                    for (const btn of row.buttons) {
+                        if (!btn) continue;
+                        const text = String(btn.text || "").replace(/\s+/g, "").trim();
+                        const m = text.match(/^(\d+)\/(\d+)$/);
+                        if (m) return { page: Number(m[1]), total: Number(m[2]), text };
+                    }
+                }
+                return null;
+            };
+
             const inventoryAllDates = async (menuMsg) => {
                 const byKey = new Map(); // dateStr -> Date
                 let current = menuMsg;
                 let pages = 0;
                 const maxPages = 40;
                 let stableRepeats = 0;
+                let lastIndicator = readPageIndicator(current);
 
                 while (current && pages < maxPages) {
                     if (shouldStop()) break;
+                    const indicator = readPageIndicator(current) || lastIndicator;
+                    if (indicator) lastIndicator = indicator;
+                    const pageLabel = indicator ? `${indicator.page}/${indicator.total}` : String(pages + 1);
                     onStatus({
                         day: "scan",
                         attempt: pages + 1,
                         totalDays,
-                        step: `Scanning menu page ${pages + 1} for dump dates…`,
+                        step: `Scanning menu page ${pageLabel} for dump dates…`,
                     });
 
                     const beforeSize = byKey.size;
+                    const pageDates = extractFolderDatesFromMessage(current).map((f) => f.dateStr);
                     for (const f of extractFolderDatesFromMessage(current)) {
                         if (f.dateStr && !byKey.has(f.dateStr)) {
                             byKey.set(f.dateStr, f.date);
                         }
                     }
+                    log.log(`userbot inventory page ${pageLabel}: +${byKey.size - beforeSize} dates [${pageDates.join(", ")}] total=${byKey.size}`);
+
+                    // Stop if indicator says we're on the last page
+                    if (indicator && indicator.page >= indicator.total) {
+                        log.log(`userbot inventory reached last page ${indicator.text}`);
+                        break;
+                    }
 
                     const next = findNavButton(current, "next");
-                    if (!next || !next.data) break;
+                    if (!next || !next.data) {
+                        log.log(`userbot inventory: no next-page button on page ${pageLabel} (dates so far=${byKey.size})`);
+                        // Debug: list non-date button labels so we can learn unknown nav glyphs
+                        try {
+                            const labels = [];
+                            for (const row of current.replyMarkup.rows || []) {
+                                for (const btn of (row && row.buttons) || []) {
+                                    if (!btn) continue;
+                                    const t = String(btn.text || "");
+                                    const d = buttonDataString(btn).slice(0, 40);
+                                    if (!/\d{1,2}[.\/-]\d{1,2}[.\/-]\d{4}/.test(t)) labels.push(`${JSON.stringify(t)}→${JSON.stringify(d)}`);
+                                }
+                            }
+                            log.log(`userbot inventory non-date buttons: ${labels.join(" | ")}`);
+                        } catch (_) {}
+                        break;
+                    }
 
                     try {
                         await clickLive(current.id, next.data, "nextPage");
@@ -1699,24 +1826,35 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         log.error("userbot nextPage error:", e && e.message ? e.message : e);
                         break;
                     }
-                    await sleep(900);
+                    await sleep(1000);
 
                     let refreshed = null;
-                    for (let pWait = 0; pWait < 8; pWait++) {
+                    for (let pWait = 0; pWait < 10; pWait++) {
                         refreshed = await refreshMsg(current.id);
-                        if (refreshed && refreshed.replyMarkup) break;
+                        if (refreshed && refreshed.replyMarkup) {
+                            // Prefer when page indicator advanced
+                            const ind2 = readPageIndicator(refreshed);
+                            if (!indicator || !ind2 || ind2.page !== indicator.page || pWait >= 3) break;
+                        }
                         const maybe = await findMenu(0);
-                        if (maybe) { refreshed = maybe; break; }
+                        if (maybe && maybe.id !== current.id) { refreshed = maybe; break; }
                         await sleep(400);
                     }
                     if (!refreshed) break;
 
                     const beforeKeys = extractFolderDatesFromMessage(current).map((f) => f.dateStr).sort().join("|");
                     const afterKeys = extractFolderDatesFromMessage(refreshed).map((f) => f.dateStr).sort().join("|");
+                    const indAfter = readPageIndicator(refreshed);
                     current = refreshed;
                     pages += 1;
 
-                    if (beforeKeys && afterKeys && beforeKeys === afterKeys) {
+                    if (indicator && indAfter && indAfter.page === indicator.page && beforeKeys === afterKeys) {
+                        stableRepeats += 1;
+                        if (stableRepeats >= 2) {
+                            log.log("userbot menu pagination stuck (same page indicator + same dates twice)");
+                            break;
+                        }
+                    } else if (beforeKeys && afterKeys && beforeKeys === afterKeys && !indAfter) {
                         stableRepeats += 1;
                         if (stableRepeats >= 2) {
                             log.log("userbot menu pagination stopped (page content unchanged twice)");
@@ -1724,11 +1862,6 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         }
                     } else {
                         stableRepeats = 0;
-                    }
-
-                    // No new dates and we already have some → likely end
-                    if (byKey.size === beforeSize && byKey.size > 0 && pages > 1 && !findNavButton(current, "next")) {
-                        break;
                     }
                 }
 

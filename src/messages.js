@@ -569,22 +569,24 @@ function clearCustomEmojis() {
  */
 function attachButtonEmoji(btn) {
     if (!btn || typeof btn !== "object") return btn;
-    if (btn.icon_custom_emoji_id) return btn;
     // No registered custom IDs → leave button text as plain unicode emoji.
     if (customAnimatedEmojis.size === 0) return btn;
     const text = btn.text;
     if (!text || typeof text !== "string") return btn;
 
-    let id = null;
+    let id = btn.icon_custom_emoji_id ? String(btn.icon_custom_emoji_id) : null;
+    let leading = null;
 
-    // Check for leading emoji — only attach a real registered document ID.
+    // Leading emoji run (handles ZWJ / FE0F sequences).
     const match = text.match(/^((?:[\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\uFE0F|\u200D)+)\s*/u);
     if (match) {
-        const sym = match[1].trim();
-        id =
-            customAnimatedEmojis.get(sym) ||
-            (EMOJI_KEY_MAP[sym] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[sym]) : null) ||
-            customAnimatedEmojis.get(sym.replace(/\uFE0F/g, ""));
+        leading = match[1].trim();
+        if (!id) {
+            id =
+                customAnimatedEmojis.get(leading) ||
+                (EMOJI_KEY_MAP[leading] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[leading]) : null) ||
+                customAnimatedEmojis.get(leading.replace(/\uFE0F/g, ""));
+        }
     }
 
     if (!id) {
@@ -592,13 +594,25 @@ function attachButtonEmoji(btn) {
         for (const [sym, name] of Object.entries(EMOJI_KEY_MAP)) {
             if (text.includes(sym)) {
                 id = customAnimatedEmojis.get(sym) || customAnimatedEmojis.get(name);
-                if (id) break;
+                if (id) {
+                    leading = leading || sym;
+                    break;
+                }
             }
         }
     }
 
     if (id) {
         btn.icon_custom_emoji_id = String(id);
+        // Drop the plain leading unicode glyph so Telegram shows only the
+        // animated custom icon (otherwise you get BOTH: custom + normal).
+        if (leading && text.startsWith(leading)) {
+            const rest = text.slice(leading.length).replace(/^\s+/, "");
+            if (rest) btn.text = rest;
+        } else if (match) {
+            const rest = text.slice(match[0].length);
+            if (rest) btn.text = rest;
+        }
     }
     return btn;
 }

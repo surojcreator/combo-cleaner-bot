@@ -37,7 +37,12 @@ const PUBLIC_URL = (
     process.env.RENDER_EXTERNAL_URL ||
     ""
 ).replace(/\/+$/, "");
-const WEBHOOK_PATH = TOKEN ? `/telegraf/${encodeURIComponent(TOKEN)}` : "/telegraf/webhook";
+// Stable path — never put the bot token (with ":") in the URL.
+// Telegram posts the webhook path unencoded; encodeURIComponent(TOKEN) used to
+// make the server only accept %3A while Telegram hit ":" → 404 "bot offline".
+const WEBHOOK_PATH = "/telegraf/webhook";
+const WEBHOOK_PATH_LEGACY_RAW = TOKEN ? `/telegraf/${TOKEN}` : null;
+const WEBHOOK_PATH_LEGACY_ENC = TOKEN ? `/telegraf/${encodeURIComponent(TOKEN)}` : null;
 
 // ULP search relay settings: which searcher bot to drive, how long to wait
 // before every try (7s by default) and how many retries are allowed.
@@ -124,10 +129,21 @@ async function registerCommands() {
  *
  * @param {((req: import('http').IncomingMessage, res: import('http').ServerResponse) => void)|null} webhookHandler
  */
+function isWebhookRequest(urlPath) {
+    if (!urlPath) return false;
+    const pathOnly = String(urlPath).split("?")[0];
+    if (pathOnly === WEBHOOK_PATH) return true;
+    // Accept legacy token-in-path forms until all clients refresh the webhook URL
+    if (WEBHOOK_PATH_LEGACY_RAW && pathOnly === WEBHOOK_PATH_LEGACY_RAW) return true;
+    if (WEBHOOK_PATH_LEGACY_ENC && pathOnly === WEBHOOK_PATH_LEGACY_ENC) return true;
+    return false;
+}
+
 function startServer(webhookHandler) {
     const server = http.createServer((req, res) => {
+        const urlPath = String(req.url || "").split("?")[0];
         // Always answer health quickly even if a long job is running.
-        if (req.url === "/" || req.url === "/healthz" || req.url === "/status") {
+        if (urlPath === "/" || urlPath === "/healthz" || urlPath === "/status") {
             const userbotReady = Boolean(botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady());
             const payload = TOKEN
                 ? [
@@ -143,11 +159,16 @@ function startServer(webhookHandler) {
             res.end(payload + "\n");
             return;
         }
-        if (webhookHandler && req.url === WEBHOOK_PATH) {
+        if (webhookHandler && isWebhookRequest(urlPath)) {
             // Bound webhook request lifetime so Telegram doesn't sit on Read timeout.
             // Long ULP work is backgrounded in bot handlers — this only guards hangs.
             req.setTimeout(55000);
             res.setTimeout(55000);
+            // Telegraf callback matches on exact path it was created with. Rewrite
+            // legacy token paths to the stable WEBHOOK_PATH so the handler accepts them.
+            if (urlPath !== WEBHOOK_PATH) {
+                req.url = WEBHOOK_PATH + (String(req.url || "").includes("?") ? "?" + String(req.url).split("?").slice(1).join("?") : "");
+            }
             webhookHandler(req, res);
             return;
         }
@@ -432,9 +453,7 @@ async function main() {
 
     let launched = false;
     if (PUBLIC_URL) {
-        // Webhook mode: best when the host gives you a public HTTPS URL.
-        // Drop pending on boot so a previous deploy's stuck "Read timeout" updates
-        // don't block the bot looking dead. Fresh messages still arrive immediately.
+        // Webhook mode: stable path without bot token (avoids : vs %3A 404 mismatch).
         const webhookUrl = `${PUBLIC_URL}${WEBHOOK_PATH}`;
         const webhookHandler = bot.webhookCallback(WEBHOOK_PATH);
         startServer(webhookHandler);
@@ -443,6 +462,16 @@ async function main() {
             max_connections: 40,
         });
         console.log(`Webhook set to ${webhookUrl}`);
+        // Verify Telegram can reach us (helps catch 404 path bugs early)
+        try {
+            const info = await bot.telegram.getWebhookInfo();
+            console.log(
+                `Webhook info: url=${info && info.url || "?"} pending=${info && info.pending_update_count} ` +
+                `last_error=${(info && info.last_error_message) || "none"}`
+            );
+        } catch (wiErr) {
+            console.warn("getWebhookInfo failed:", wiErr && wiErr.message ? wiErr.message : wiErr);
+        }
     } else {
         // Long-polling mode: works anywhere, no public URL needed.
         await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => { });

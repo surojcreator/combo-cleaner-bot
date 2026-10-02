@@ -573,50 +573,12 @@ function clearCustomEmojis() {
  */
 function attachButtonEmoji(btn) {
     if (!btn || typeof btn !== "object") return btn;
-    // No registered custom IDs → leave button text as plain unicode emoji.
-    if (customAnimatedEmojis.size === 0) return btn;
-    const text = btn.text;
-    if (!text || typeof text !== "string") return btn;
-
-    let id = btn.icon_custom_emoji_id ? String(btn.icon_custom_emoji_id) : null;
-    let leading = null;
-
-    // Leading emoji run (handles ZWJ / FE0F sequences).
-    const match = text.match(/^((?:[\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\uFE0F|\u200D)+)\s*/u);
-    if (match) {
-        leading = match[1].trim();
-        if (!id) {
-            id =
-                customAnimatedEmojis.get(leading) ||
-                (EMOJI_KEY_MAP[leading] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[leading]) : null) ||
-                customAnimatedEmojis.get(leading.replace(/\uFE0F/g, ""));
-        }
-    }
-
-    if (!id) {
-        // Search text for any recognized emoji that has a registered custom ID
-        for (const [sym, name] of Object.entries(EMOJI_KEY_MAP)) {
-            if (text.includes(sym)) {
-                id = customAnimatedEmojis.get(sym) || customAnimatedEmojis.get(name);
-                if (id) {
-                    leading = leading || sym;
-                    break;
-                }
-            }
-        }
-    }
-
-    if (id) {
-        btn.icon_custom_emoji_id = String(id);
-        // Drop the plain leading unicode glyph so Telegram shows only the
-        // animated custom icon (otherwise you get BOTH: custom + normal).
-        if (leading && text.startsWith(leading)) {
-            const rest = text.slice(leading.length).replace(/^\s+/, "");
-            if (rest) btn.text = rest;
-        } else if (match) {
-            const rest = text.slice(match[0].length);
-            if (rest) btn.text = rest;
-        }
+    // Always keep the plain unicode glyph in the label so buttons never go
+    // icon-less. Bot API `icon_custom_emoji_id` is optional polish and often
+    // renders blank for recipients without that pack — do not strip text.
+    // Strip any previously attached custom icon id (legacy path).
+    if (btn.icon_custom_emoji_id) {
+        delete btn.icon_custom_emoji_id;
     }
     return btn;
 }
@@ -723,17 +685,27 @@ function createInlineKeyboard(rows) {
  * @param {string} [nameKey] optional semantic name key, e.g. "rocket", "diamond"
  * @returns {string} HTML string with <tg-emoji> or fallback unicode
  */
+function animatedEmojisEnabled() {
+    const v = String(process.env.ANIMATED_EMOJIS || "0").trim().toLowerCase();
+    return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+/**
+ * Render a custom animated emoji tag if animation is enabled AND we have a
+ * real document id; otherwise always return plain unicode so every client
+ * still sees an emoji (custom tags often render blank when the pack is
+ * unavailable to the viewer).
+ */
 function tgEmoji(symbol, nameKey) {
     if (!symbol) return "";
+    if (!animatedEmojisEnabled() || customAnimatedEmojis.size === 0) {
+        return symbol;
+    }
     const key = nameKey || EMOJI_KEY_MAP[symbol] || symbol;
     let id =
         customAnimatedEmojis.get(symbol) ||
         (nameKey ? customAnimatedEmojis.get(nameKey) : null) ||
         customAnimatedEmojis.get(key);
-    // Only use IDs that were explicitly registered (userbot sync or CUSTOM_ANIMATED_EMOJIS).
-    // Never fall back to DEFAULT_CUSTOM_ANIMATED_EMOJIS here — those are placeholder
-    // sequential IDs that Telegram rejects with DOCUMENT_INVALID, which used to
-    // permanently kill animated emoji for the whole process.
     if (!id && typeof symbol === "string") {
         const stripped = symbol.replace(/\uFE0F/g, "");
         id =
@@ -757,6 +729,8 @@ const EMOJI_TOKEN_RE = /(<tg-emoji[^>]*>.*?<\/tg-emoji>|<[^>]+>)|((?:[0-9#*]\uFE
  */
 function ensureAnimatedEmojis(html) {
     if (!html || typeof html !== "string") return html;
+    // Plain unicode by default — never risk blank custom tags for normal users.
+    if (!animatedEmojisEnabled()) return html;
     if (customAnimatedEmojis.size === 0) return html;
     if (!HAS_EMOJI_RE.test(html)) {
         return html;
@@ -3677,6 +3651,7 @@ module.exports = {
     siteEmoji,
     humanSize,
     tgEmoji,
+    animatedEmojisEnabled,
     registerCustomEmojis,
     loadEmojiRegistryFile,
     saveEmojiRegistryFile,

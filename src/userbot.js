@@ -1501,16 +1501,18 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             let daysProcessed = 0;
             let resultsFound = 0;
 
-            const clickCb = async (msgId, data, label = "click") => {
-                let dataBuf;
+            const clickLive = async (msgId, data, label = "click") => {
+                // CRITICAL: pass the exact bytes Telegram attached to the button on
+                // THIS message id. Re-encoded / stale buffers → "Encrypted data invalid".
+                let dataBuf = null;
                 if (Buffer.isBuffer(data)) dataBuf = data;
-                else if (data instanceof Uint8Array) dataBuf = Buffer.from(data);
-                else if (typeof data === "string") dataBuf = Buffer.from(data, "binary"); // already-decoded payload
-                else if (data == null) dataBuf = Buffer.alloc(0);
-                else dataBuf = Buffer.from(String(data), "utf8");
-                if (!dataBuf.length) {
-                    throw new Error(`userbot ${label}: empty callback data`);
+                else if (data instanceof Uint8Array) dataBuf = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+                else if (data && data.buffer && ArrayBuffer.isView(data)) {
+                    dataBuf = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+                } else if (typeof data === "string") {
+                    dataBuf = Buffer.from(data, "utf8");
                 }
+                if (!dataBuf || !dataBuf.length) throw new Error(`userbot ${label}: empty callback data`);
                 return await withTimeout(
                     client.invoke(new Api.messages.GetBotCallbackAnswer({
                         peer: searchTarget,
@@ -1520,6 +1522,20 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     timeoutMs,
                     `userbot ${label}`,
                 );
+            };
+
+            const extractLiveData = (btn) => {
+                // Prefer nested teleproto type.data (exact bytes)
+                try {
+                    if (btn && btn.type && btn.type.data != null) {
+                        const d = btn.type.data;
+                        if (Buffer.isBuffer(d)) return d;
+                        if (d instanceof Uint8Array) return Buffer.from(d.buffer, d.byteOffset, d.byteLength);
+                        if (d.buffer && ArrayBuffer.isView(d)) return Buffer.from(d.buffer, d.byteOffset, d.byteLength);
+                        if (typeof d === "string") return Buffer.from(d, "utf8");
+                    }
+                } catch {}
+                return buttonDataBuffer(btn);
             };
 
             const refreshMsg = async (msgId) => {
@@ -1554,7 +1570,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 return null;
             };
 
-            const openMenuOnce = async () => {
+            const openRootMenu = async () => {
                 let sentStart = null;
                 for (let startAttempt = 0; startAttempt < 3; startAttempt++) {
                     if (shouldStop()) return null;
@@ -1573,94 +1589,86 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         if (sentStart) break;
                     } catch (startErr) {
                         log.error(`userbot send /start attempt ${startAttempt + 1} failed:`, startErr && startErr.message ? startErr.message : startErr);
-                        await sleep(1500);
+                        await sleep(1200);
                     }
                 }
                 await sleep(1200);
                 return await findMenu(sentStart && sentStart.id ? sentStart.id : 0);
             };
 
+            /** Try back-button first; fall back to fresh /start. */
+            const ensureRootMenu = async (preferMsg = null) => {
+                // 1) if current message still shows date folders, reuse it
+                if (preferMsg && isMenuMessage(preferMsg) && extractFolderDatesFromMessage(preferMsg).length > 0) {
+                    return preferMsg;
+                }
+                // 2) try Back on latest markup
+                try {
+                    const latest = await client.getMessages(searchTarget, { limit: 8 });
+                    const withBtns = Array.isArray(latest) ? latest.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) : null;
+                    if (withBtns) {
+                        if (isMenuMessage(withBtns) && extractFolderDatesFromMessage(withBtns).length > 0) return withBtns;
+                        const back = findNavButton(withBtns, "back");
+                        if (back && back.data) {
+                            await clickLive(withBtns.id, back.data, "back").catch(() => {});
+                            await sleep(900);
+                            const after = await refreshMsg(withBtns.id) || await findMenu(0);
+                            if (after && extractFolderDatesFromMessage(after).length > 0) return after;
+                        }
+                    }
+                } catch {}
+                // 3) hard reset
+                return await openRootMenu();
+            };
+
             /**
-             * Walk every menu page once and inventory folder buttons.
-             * Avoids re-/start every day and the "page 0 only" trap.
+             * On a LIVE menu message, page forward until the target date button is
+             * visible, then return { menuMsg, btn } with raw live bytes.
              */
-            const inventoryDateFolders = async (menuMsg) => {
-                const byDate = new Map(); // dateStr -> { date, dateStr, text, data, messageId, page }
-                let page = 0;
+            const findDateButtonLive = async (menuMsg, targetDate, dateStr) => {
                 let current = menuMsg;
-                const visitedPages = new Set();
-                const maxPages = 25;
+                for (let pageTry = 0; pageTry < 20; pageTry++) {
+                    if (shouldStop()) return null;
+                    if (!current) current = await findMenu(0);
+                    if (!current) return null;
 
-                while (current && page < maxPages) {
-                    if (shouldStop()) break;
-                    const pageKey = String(current.id) + ":" + page;
-                    if (visitedPages.has(pageKey) && page > 0) break;
-                    visitedPages.add(pageKey);
-
-                    onStatus({
-                        day: "scan",
-                        attempt: page + 1,
-                        totalDays,
-                        step: `Scanning menu page ${page + 1} for date folders…`,
-                    });
-
-                    const folders = extractFolderDatesFromMessage(current);
-                    for (const f of folders) {
-                        if (!byDate.has(f.dateStr)) {
-                            byDate.set(f.dateStr, { ...f, page });
+                    // Scan live buttons on this page
+                    const rows = (current.replyMarkup && current.replyMarkup.rows) || [];
+                    for (const row of rows) {
+                        if (!row || !Array.isArray(row.buttons)) continue;
+                        for (const btn of row.buttons) {
+                            if (!btn || isNextPageButton(btn) || isPrevPageButton(btn)) continue;
+                            const data = extractLiveData(btn);
+                            const dataStr = data ? data.toString("utf8") : "";
+                            const textStr = String(btn.text || "");
+                            if (
+                                buttonMatchesDate(btn, targetDate) ||
+                                dataStr.includes(dateStr) ||
+                                textStr.includes(dateStr)
+                            ) {
+                                return { menuMsg: current, btn, data, text: textStr };
+                            }
                         }
                     }
 
                     const next = findNavButton(current, "next");
-                    if (!next) break;
-
+                    if (!next || !next.data) break;
                     try {
-                        await clickCb(current.id, next.data, "nextPage");
-                    } catch (pageErr) {
-                        log.error("userbot nextPage error:", pageErr && pageErr.message ? pageErr.message : pageErr);
+                        await clickLive(current.id, next.data, "nextPage");
+                    } catch (e) {
+                        log.error("userbot nextPage error:", e && e.message ? e.message : e);
                         break;
                     }
-                    await sleep(900);
-                    let refreshed = null;
-                    for (let pWait = 0; pWait < 6; pWait++) {
-                        refreshed = await refreshMsg(current.id);
-                        if (refreshed && refreshed.replyMarkup) break;
-                        // menu may be a new message after pagination
-                        const maybe = await findMenu(0);
-                        if (maybe && maybe.id !== current.id) {
-                            refreshed = maybe;
-                            break;
-                        }
-                        await sleep(400);
-                    }
+                    await sleep(800);
+                    const refreshed = await refreshMsg(current.id) || await findMenu(0);
                     if (!refreshed) break;
-                    // stop if page content didn't change (infinite next loops)
-                    const beforeKeys = folders.map((f) => f.dateStr || f.dataStr).sort().join("|");
-                    const afterKeys = extractFolderDatesFromMessage(refreshed).map((f) => f.dateStr || f.dataStr).sort().join("|");
-                    if (beforeKeys && afterKeys && beforeKeys === afterKeys) {
-                        // Only stop if we already have at least one page of dates — otherwise keep trying.
-                        if (byDate.size > 0 && page > 0) {
-                            log.log("userbot menu page content unchanged after next — stopping scan");
-                            break;
-                        }
-                    }
+                    // detect no-op pagination
+                    const before = extractFolderDatesFromMessage(current).map((f) => f.dateStr).join("|");
+                    const after = extractFolderDatesFromMessage(refreshed).map((f) => f.dateStr).join("|");
                     current = refreshed;
-                    page += 1;
+                    if (before && after && before === after) break;
                 }
-
-                // Prefer returning to first page if possible (keeps later clicks stable)
-                try {
-                    const prev = findNavButton(current, "prev");
-                    if (prev) {
-                        await clickCb(current.id, prev.data, "prevPage").catch(() => {});
-                        await sleep(600);
-                        const backHome = await refreshMsg(current.id);
-                        if (backHome) current = backHome;
-                    }
-                } catch {}
-
-                const list = Array.from(byDate.values()).sort((a, b) => b.date.getTime() - a.date.getTime());
-                return { menuMsg: current, folders: list };
+                return null;
             };
 
             const ensureDomainQuery = async () => {
@@ -1724,13 +1732,9 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             });
                         }
                         if (options.onResult) {
-                            await options.onResult(m).catch((resErr) => {
-                                log.error("userbot onResult error:", resErr && resErr.message ? resErr.message : resErr);
-                            });
+                            try { await Promise.resolve(options.onResult(m)); } catch (_) {}
                         } else if (resultSink) {
-                            await resultSink(m).catch((sinkErr) => {
-                                log.error("userbot resultSink error:", sinkErr && sinkErr.message ? sinkErr.message : sinkErr);
-                            });
+                            try { await Promise.resolve(resultSink(m)); } catch (_) {}
                         }
                         if (chatId && typeof forwardResult === "function") {
                             await forwardResult(chatId, m, {
@@ -1746,8 +1750,27 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 return { foundDoc, foundAny };
             };
 
-            const processOneFolder = async (folder, dayIdx) => {
-                const dateStr = folder.dateStr;
+            const processOneDay = async (targetDate, dayIdx) => {
+                const dateStr = formatDateDmy(targetDate);
+                onStatus({
+                    day: dateStr,
+                    attempt: dayIdx + 1,
+                    totalDays,
+                    step: `Opening menu for ${dateStr}…`,
+                });
+
+                let menuMsg = await ensureRootMenu(null);
+                if (!menuMsg) {
+                    log.log(`userbot no menu for ${dateStr}`);
+                    return false;
+                }
+
+                const live = await findDateButtonLive(menuMsg, targetDate, dateStr);
+                if (!live || !live.data) {
+                    log.log(`userbot could not find date folder for ${dateStr}`);
+                    return false;
+                }
+
                 onStatus({
                     day: dateStr,
                     attempt: dayIdx + 1,
@@ -1755,106 +1778,59 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     step: `Selecting date folder: ${dateStr}`,
                 });
 
-                // Make sure we still have a live menu message for this button when possible
-                let menuForClick = null;
-                if (folder.messageId) {
-                    menuForClick = await refreshMsg(folder.messageId);
-                }
-                if (!menuForClick || !menuForClick.replyMarkup) {
-                    menuForClick = await findMenu(0);
-                }
-                if (!menuForClick) {
-                    log.log(`userbot missing menu to click folder ${dateStr}`);
-                    return false;
-                }
-
-                // If folder not visible on current page, page forward looking for it
-                let folderBtn = null;
-                for (let pageTry = 0; pageTry < 15 && !folderBtn; pageTry++) {
-                    if (shouldStop()) return false;
-                    const foldersHere = extractFolderDatesFromMessage(menuForClick);
-                    const hitFolder = foldersHere.find((f) => f.dateStr === dateStr);
-                    if (hitFolder) {
-                        folderBtn = {
-                            text: hitFolder.text || dateStr,
-                            data: hitFolder.data || folder.data, // Buffer
-                            messageId: menuForClick.id,
-                        };
-                    } else {
-                        const rows = (menuForClick.replyMarkup && menuForClick.replyMarkup.rows) || [];
-                        outerBtn:
+                let clicked = false;
+                for (let clickTry = 0; clickTry < 3; clickTry++) {
+                    try {
+                        // Always re-resolve live button right before click
+                        let msg = await refreshMsg(live.menuMsg.id) || live.menuMsg;
+                        let hit = null;
+                        const rows = (msg.replyMarkup && msg.replyMarkup.rows) || [];
                         for (const row of rows) {
                             if (!row || !Array.isArray(row.buttons)) continue;
                             for (const btn of row.buttons) {
-                                if (buttonMatchesDate(btn, folder.date)) {
-                                    folderBtn = {
-                                        text: String(btn.text || dateStr),
-                                        data: buttonDataBuffer(btn) || folder.data,
-                                        messageId: menuForClick.id,
-                                    };
-                                    break outerBtn;
+                                if (buttonMatchesDate(btn, targetDate)) {
+                                    hit = { msg, data: extractLiveData(btn) };
+                                    break;
                                 }
                             }
+                            if (hit) break;
                         }
-                    }
-                    if (folderBtn) break;
-                    // use pre-known data as last resort on first page try
-                    if (pageTry === 0 && folder.data) {
-                        const data = Buffer.isBuffer(folder.data)
-                            ? folder.data
-                            : (typeof folder.data === "string"
-                                ? Buffer.from(folder.data, "utf8")
-                                : buttonDataBuffer({ data: folder.data }));
-                        folderBtn = { text: folder.text || dateStr, data, messageId: menuForClick.id };
-                        break;
-                    }
-                    const next = findNavButton(menuForClick, "next");
-                    if (!next) break;
-                    try {
-                        await clickCb(menuForClick.id, next.data, "nextPage-find");
-                    } catch {
-                        break;
-                    }
-                    await sleep(800);
-                    const refreshed = await refreshMsg(menuForClick.id) || await findMenu(0);
-                    if (!refreshed) break;
-                    menuForClick = refreshed;
-                }
-
-                if (!folderBtn) {
-                    log.log(`userbot could not find date folder for ${dateStr}`);
-                    return false;
-                }
-
-                for (let clickTry = 0; clickTry < 3; clickTry++) {
-                    try {
-                        await clickCb(folderBtn.messageId || menuForClick.id, folderBtn.data, "click folder");
+                        if (!hit) {
+                            // page may have shifted — re-find
+                            const again = await findDateButtonLive(msg, targetDate, dateStr);
+                            if (again) hit = { msg: again.menuMsg, data: again.data };
+                        }
+                        if (!hit || !hit.data) throw new Error("live folder button missing");
+                        await clickLive(hit.msg.id, hit.data, "click folder");
+                        clicked = true;
                         break;
                     } catch (clickErr) {
                         log.error(`userbot click folder error (attempt ${clickTry + 1}):`, clickErr && clickErr.message ? clickErr.message : clickErr);
-                        await sleep(900);
+                        await sleep(1000);
+                        // Soft recovery: re-open root menu
+                        menuMsg = await ensureRootMenu(null);
                     }
                 }
-                await sleep(1200);
+                if (!clicked) return false;
+                await sleep(1400);
                 if (shouldStop()) return false;
 
+                // Domain AFTER first successful folder open (DumpNews expects context)
                 await ensureDomainQuery();
                 if (shouldStop()) return false;
 
-                // Locate hist/download button inside the opened folder view
-                let folderView = null;
-                let histBtn = null;
-                for (let histScan = 0; histScan < 8; histScan++) {
+                // Find hist/download on LIVE folder view
+                let histHit = null;
+                for (let histScan = 0; histScan < 10; histScan++) {
                     if (shouldStop()) return false;
-                    let candidateMsg = await refreshMsg(menuForClick.id);
                     try {
                         const folderMsgs = await withTimeout(
-                            client.getMessages(searchTarget, { limit: 8 }),
+                            client.getMessages(searchTarget, { limit: 10 }),
                             timeoutMs,
                             "userbot getMessages folder",
                         );
                         if (Array.isArray(folderMsgs)) {
-                            // Harvest early results that may already be present
+                            // Harvest early dumps
                             for (const m of folderMsgs) {
                                 const isDoc = Boolean(m.document || (m.media && (m.media.document || m.media.className === "MessageMediaDocument")));
                                 const rawText = String(m.message || m.text || "");
@@ -1875,52 +1851,61 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                     }
                                 }
                             }
-                            const matchWithHist = folderMsgs.find(
-                                (m) => !m.out && m.replyMarkup && Array.isArray(m.replyMarkup.rows) &&
-                                    m.replyMarkup.rows.some((r) => r.buttons && r.buttons.some((b) => isHistButton(b)))
-                            );
-                            if (matchWithHist) candidateMsg = matchWithHist;
-                            else if (!candidateMsg) candidateMsg = folderMsgs.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) || menuForClick;
+                            for (const m of folderMsgs) {
+                                if (m.out || !m.replyMarkup || !Array.isArray(m.replyMarkup.rows)) continue;
+                                for (const row of m.replyMarkup.rows) {
+                                    if (!row || !Array.isArray(row.buttons)) continue;
+                                    for (const btn of row.buttons) {
+                                        if (!btn) continue;
+                                        const data = extractLiveData(btn);
+                                        const dataStr = data ? data.toString("utf8") : "";
+                                        const textStr = String(btn.text || "");
+                                        if (
+                                            isHistButton(btn) ||
+                                            dataStr.startsWith(`hist:${dateStr}`) ||
+                                            dataStr.includes("hist:") ||
+                                            /hist|full|history|dump|скачать|download/i.test(textStr)
+                                        ) {
+                                            histHit = { msg: m, data, text: textStr };
+                                            break;
+                                        }
+                                    }
+                                    if (histHit) break;
+                                }
+                                if (histHit) break;
+                            }
                         }
                     } catch (fErr) {
                         log.error("userbot getMessages folder error:", fErr && fErr.message ? fErr.message : fErr);
                     }
-
-                    if (candidateMsg && candidateMsg.replyMarkup && Array.isArray(candidateMsg.replyMarkup.rows)) {
-                        for (const row of candidateMsg.replyMarkup.rows) {
-                            if (!row || !Array.isArray(row.buttons)) continue;
-                            for (const btn of row.buttons) {
-                                if (!btn) continue;
-                                const dataStr = buttonDataString(btn);
-                                const textStr = String(btn.text || "");
-                                if (
-                                    isHistButton(btn) ||
-                                    dataStr.startsWith(`hist:${dateStr}`) ||
-                                    dataStr.includes("hist:") ||
-                                    /hist|full|history|dump|скачать|download/i.test(textStr)
-                                ) {
-                                    histBtn = { text: textStr, data: buttonDataBuffer(btn) || Buffer.from(dataStr, "utf8") };
-                                    folderView = candidateMsg;
-                                    break;
-                                }
-                            }
-                            if (histBtn) break;
-                        }
-                    }
-                    if (histBtn) break;
+                    if (histHit) break;
                     await sleep(700);
                 }
 
-                if (histBtn && folderView) {
+                if (histHit && histHit.data) {
                     onStatus({
                         day: dateStr,
                         attempt: dayIdx + 1,
                         totalDays,
-                        step: `Requesting dump: ${histBtn.text || dateStr}`,
+                        step: `Requesting dump: ${histHit.text || dateStr}`,
                     });
                     for (let histClickTry = 0; histClickTry < 3; histClickTry++) {
                         try {
-                            await clickCb(folderView.id, histBtn.data, "click hist");
+                            // Re-read live message before hist click
+                            const fresh = await refreshMsg(histHit.msg.id) || histHit.msg;
+                            let data = histHit.data;
+                            // Prefer live re-match
+                            const rows = (fresh.replyMarkup && fresh.replyMarkup.rows) || [];
+                            for (const row of rows) {
+                                if (!row || !Array.isArray(row.buttons)) continue;
+                                for (const btn of row.buttons) {
+                                    if (isHistButton(btn)) {
+                                        data = extractLiveData(btn) || data;
+                                        break;
+                                    }
+                                }
+                            }
+                            await clickLive(fresh.id, data, "click hist");
                             break;
                         } catch (clickErr) {
                             log.error(`userbot click hist error (attempt ${histClickTry + 1}):`, clickErr && clickErr.message ? clickErr.message : clickErr);
@@ -1934,15 +1919,10 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         if (shouldStop()) return true;
                         await sleep(waitAttempt === 0 ? 1800 : 1200);
                         const got = await ingestIncoming(dateStr, dayIdx);
-                        if (got.foundDoc) {
-                            foundDoc = true;
-                            await sleep(500);
-                            break;
-                        }
+                        if (got.foundDoc) { foundDoc = true; await sleep(400); break; }
                         if (got.foundAny && waitAttempt >= 3) break;
                     }
                     if (!foundDoc) {
-                        // one extra quiet poll
                         await sleep(800);
                         await ingestIncoming(dateStr, dayIdx);
                     }
@@ -1951,81 +1931,60 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     await ingestIncoming(dateStr, dayIdx);
                 }
 
-                // Try to return to root menu without /start (back button), else /start once
-                try {
-                    const latest = await client.getMessages(searchTarget, { limit: 6 });
-                    const withBtns = Array.isArray(latest) ? latest.find((m) => !m.out && m.replyMarkup && m.replyMarkup.rows) : null;
-                    const back = withBtns ? findNavButton(withBtns, "back") : null;
-                    if (back && withBtns) {
-                        await clickCb(withBtns.id, back.data, "back").catch(() => {});
-                        await sleep(700);
-                    }
-                } catch {}
-
+                // Return to root for the next day
+                await ensureRootMenu(null);
                 return true;
             };
 
             try {
-                // 1) Open menu once
-                let menuMsg = await openMenuOnce();
+                // Resolve start date from menu once
+                let menuMsg = await openRootMenu();
                 if (!menuMsg) {
                     return { status: "error", error: "Could not open searcher menu (/start).", daysProcessed: 0 };
                 }
 
-                // 2) Inventory available dump folders across pages (or use explicit startDate path)
-                onStatus({ day: "scan", attempt: 1, totalDays, step: "Building date-folder inventory…" });
-                const inventory = await inventoryDateFolders(menuMsg);
-                menuMsg = inventory.menuMsg || menuMsg;
-                let folders = inventory.folders || [];
-
-                if (startDate) {
-                    // Keep folders on/before requested start date
-                    const startTs = startDate.getTime();
-                    folders = folders.filter((f) => f.date.getTime() <= startTs + 12 * 3600 * 1000);
+                let cursor = startDate ? new Date(startDate.getTime()) : detectLatestBatchDate(menuMsg);
+                if (!cursor) {
+                    cursor = new Date();
+                    log.log(`userbot falling back to current date: ${formatDateDmy(cursor)}`);
+                } else if (!startDate) {
+                    log.log(`userbot detected latest batch date from menu: ${formatDateDmy(cursor)}`);
                 }
 
-                if (folders.length === 0) {
-                    // Fall back: synthesize target dates from latest menu date backward
-                    const latest = detectLatestBatchDate(menuMsg) || (startDate ? new Date(startDate.getTime()) : new Date());
-                    log.log(`userbot inventory empty — synthesizing ${totalDays} days from ${formatDateDmy(latest)}`);
-                    let d = new Date(latest.getTime());
-                    for (let i = 0; i < totalDays; i++) {
-                        folders.push({
-                            date: new Date(d.getTime()),
-                            dateStr: formatDateDmy(d),
-                            text: formatDateDmy(d),
-                            data: `folder:${formatDateDmy(d)}`,
-                            messageId: menuMsg.id,
-                            page: 0,
-                        });
-                        d = previousDate(d);
-                    }
-                } else {
-                    log.log(`userbot inventory found ${folders.length} date folders (newest ${folders[0].dateStr})`);
-                    folders = folders.slice(0, totalDays);
+                // Build planned day list (exact count the user asked for)
+                const planned = [];
+                let d = new Date(cursor.getTime());
+                for (let i = 0; i < totalDays; i++) {
+                    planned.push(new Date(d.getTime()));
+                    d = previousDate(d);
                 }
+                log.log(`userbot will walk ${planned.length} day(s) from ${formatDateDmy(planned[0])} backward`);
 
-                // 3) Domain once, then walk only real (or synthesized) folders
-                await ensureDomainQuery();
-
-                for (let dayIdx = 0; dayIdx < folders.length; dayIdx++) {
+                let consecutiveMisses = 0;
+                for (let dayIdx = 0; dayIdx < planned.length; dayIdx++) {
                     if (shouldStop()) return { status: "stopped", daysProcessed, resultsFound };
-                    const folder = folders[dayIdx];
-                    await processOneFolder(folder, dayIdx);
-                    if (dayIdx < folders.length - 1) {
+                    const ok = await processOneDay(planned[dayIdx], dayIdx);
+                    if (!ok) {
+                        consecutiveMisses += 1;
+                        if (consecutiveMisses >= 8) {
+                            log.log("userbot stopping after 8 consecutive missing days");
+                            break;
+                        }
+                    } else {
+                        consecutiveMisses = 0;
+                    }
+                    if (dayIdx < planned.length - 1) {
                         onStatus({
-                            day: folder.dateStr,
+                            day: formatDateDmy(planned[dayIdx]),
                             attempt: dayIdx + 1,
-                            totalDays: folders.length,
+                            totalDays: planned.length,
                             step: "Pacing before next day…",
                         });
-                        // Honor caller pacing (default 14s). Inventory-first flow means
-                        // we only pay this cost between real dump days, not wasted misses.
                         await sleep(Math.max(500, Number(stepDelayMs) || 14000));
                     }
                 }
 
-                return { status: "done", daysProcessed, resultsFound, foldersScanned: folders.length };
+                return { status: "done", daysProcessed, resultsFound, foldersScanned: planned.length };
             } catch (fatalErr) {
                 log.error("userbot searchDayByDay fatal error:", fatalErr && fatalErr.message ? fatalErr.message : fatalErr);
                 return {
@@ -2039,4 +1998,3 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
     };
 }
-

@@ -1720,22 +1720,30 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 return null;
             };
 
-            const openRootMenu = async () => {
+            const openRootMenu = async (reason = "open menu") => {
                 let sentStart = null;
                 for (let startAttempt = 0; startAttempt < 3; startAttempt++) {
                     if (shouldStop()) return null;
                     try {
                         onStatus({
                             day: "init",
-                            attempt: 1,
+                            attempt: Math.max(1, daysProcessed + 1),
                             totalDays,
-                            step: startAttempt === 0 ? "Sending /start to open menu…" : `Retrying /start (attempt ${startAttempt + 1})…`,
+                            step: startAttempt === 0
+                                ? `Sending /start (${reason})…`
+                                : `Retrying /start (attempt ${startAttempt + 1})…`,
                         });
+                        // /start counts as a dump-bot action — keep the 15s gap
+                        await paceDumpBot("/start");
+                        if (shouldStop()) return null;
                         sentStart = await withTimeout(
                             client.sendMessage(searchTarget, { message: "/start" }),
                             timeoutMs,
                             "userbot send /start",
                         );
+                        markDumpAction();
+                        // Fresh menu = dump bot may have lost domain context
+                        domainSent = false;
                         if (sentStart) break;
                     } catch (startErr) {
                         log.error(`userbot send /start attempt ${startAttempt + 1} failed:`, startErr && startErr.message ? startErr.message : startErr);
@@ -1835,83 +1843,6 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 return null;
             };
 
-            /**
-             * After folder/hist, get back to the date-list on the SAME page.
-             * Prefer Back; fall back to /start + flip forward to targetPage.
-             */
-            const returnToDateList = async (preferMsgId, targetPage) => {
-                const tryBackOn = async (msg) => {
-                    if (!msg || !msg.replyMarkup) return null;
-                    if (extractFolderDatesFromMessage(msg).length > 0) {
-                        const ind = readPageIndicator(msg);
-                        if (!targetPage || !ind || ind.page === targetPage) return msg;
-                        // wrong page — keep going
-                    }
-                    const back = findNavButton(msg, "back");
-                    if (!back || !back.data) return null;
-                    try {
-                        await clickLive(msg.id, back.data, "back");
-                    } catch (backErr) {
-                        log.error("userbot back click error:", backErr && backErr.message ? backErr.message : backErr);
-                        return null;
-                    }
-                    await sleep(900);
-                    const after = (await refreshMsg(msg.id)) || (await findMenu(0));
-                    if (after && extractFolderDatesFromMessage(after).length > 0) {
-                        const ind = readPageIndicator(after);
-                        if (!targetPage || !ind || ind.page === targetPage) return after;
-                        return after; // still a date list — caller can flip if needed
-                    }
-                    return null;
-                };
-
-                // 1) Prefer the message we just interacted with
-                if (preferMsgId) {
-                    try {
-                        const preferred = await refreshMsg(preferMsgId);
-                        const hit = await tryBackOn(preferred);
-                        if (hit) return hit;
-                    } catch (_) {}
-                }
-
-                // 2) Newest markup with buttons
-                try {
-                    const latest = await client.getMessages(searchTarget, { limit: 10 });
-                    if (Array.isArray(latest)) {
-                        for (const m of latest) {
-                            if (!m || m.out || !m.replyMarkup || !m.replyMarkup.rows) continue;
-                            const hit = await tryBackOn(m);
-                            if (hit) return hit;
-                        }
-                    }
-                } catch (_) {}
-
-                // 3) Fresh /start, then walk forward to targetPage if needed
-                let menu = await openRootMenu();
-                if (!menu) return null;
-                if (!targetPage || targetPage <= 1) return menu;
-
-                for (let hop = 1; hop < targetPage && hop < 40; hop++) {
-                    if (shouldStop()) return menu;
-                    const ind = readPageIndicator(menu);
-                    if (ind && ind.page >= targetPage) break;
-                    if (ind && ind.page >= ind.total) break;
-                    const next = findNavButton(menu, "next");
-                    if (!next || !next.data) break;
-                    try {
-                        await clickLive(menu.id, next.data, "nextPage-restore");
-                    } catch (e) {
-                        log.error("userbot nextPage-restore error:", e && e.message ? e.message : e);
-                        break;
-                    }
-                    await sleep(900);
-                    const refreshed = (await refreshMsg(menu.id)) || (await findMenu(0));
-                    if (!refreshed) break;
-                    menu = refreshed;
-                }
-                return menu;
-            };
-
             /** Click → and wait until page indicator / dates change. */
             const goNextPage = async (menuMsg) => {
                 if (!menuMsg) return null;
@@ -1928,7 +1859,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     return null;
                 }
                 try {
-                    await clickLive(menuMsg.id, next.data, "nextPage");
+                    // Re-read LIVE next bytes right before click (markup may have been edited)
+                    const liveMenu = (await refreshMsg(menuMsg.id)) || menuMsg;
+                    const liveNext = findNavButton(liveMenu, "next") || next;
+                    if (!liveNext || !liveNext.data) return null;
+                    await clickLive(liveMenu.id, liveNext.data, "nextPage");
                 } catch (e) {
                     log.error("userbot nextPage error:", e && e.message ? e.message : e);
                     return null;
@@ -1972,13 +1907,74 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 return refreshed;
             };
 
+            /**
+             * After a day finishes (results returned), ALWAYS send /start for a clean menu.
+             * Then hop forward with → until targetPage (1-based) if needed.
+             * Dump bots often leave you stuck in folder/result views; Back is unreliable.
+             */
+            const restartMenuAtPage = async (targetPage = 1, reason = "after day results") => {
+                let menu = await openRootMenu(reason);
+                if (!menu) return null;
+                const want = Math.max(1, Number(targetPage) || 1);
+                if (want <= 1) return menu;
+
+                for (let hop = 1; hop < want && hop < 40; hop++) {
+                    if (shouldStop()) return menu;
+                    const ind = readPageIndicator(menu);
+                    if (ind && ind.page >= want) break;
+                    if (ind && ind.page >= ind.total) break;
+                    const next = findNavButton(menu, "next");
+                    if (!next || !next.data) {
+                        log.log(`userbot restartMenuAtPage: no → while seeking page ${want} (at ${pageLabelOf(menu)})`);
+                        logNonDateButtons(menu, "restart-seek");
+                        break;
+                    }
+                    const advanced = await goNextPage(menu);
+                    if (!advanced) break;
+                    menu = advanced;
+                }
+                log.log(`userbot restarted menu at page ${pageLabelOf(menu)} (wanted ${want})`);
+                return menu;
+            };
+
+            /**
+             * From current menu (usually page 1 after /start), walk → until a page
+             * still has unprocessed date folders. Returns { menuMsg, folders } or null.
+             */
+            const seekNextUnprocessedPage = async (menuMsg, processed, startTsFilter) => {
+                let current = menuMsg;
+                let hops = 0;
+                while (current && hops < 40) {
+                    if (shouldStop()) return null;
+                    const ind = readPageIndicator(current);
+                    const raw = extractFolderDatesFromMessage(current);
+                    let folders = raw.slice();
+                    if (startTsFilter != null) {
+                        folders = folders.filter((f) => f.date && f.date.getTime() <= startTsFilter);
+                    }
+                    folders = folders.filter((f) => f.dateStr && !processed.has(f.dateStr));
+                    if (folders.length > 0) {
+                        return { menuMsg: current, folders, pageLabel: pageLabelOf(current, hops + 1) };
+                    }
+                    if (ind && ind.page >= ind.total) {
+                        log.log(`userbot seek: last page ${ind.text} with no remaining dates`);
+                        return null;
+                    }
+                    const next = await goNextPage(current);
+                    if (!next) return null;
+                    current = next;
+                    hops += 1;
+                }
+                return null;
+            };
+
             const ensureDomainQuery = async () => {
                 if (domainSent || !query) return;
                 onStatus({
                     day: "init",
-                    attempt: 1,
+                    attempt: Math.max(1, daysProcessed + 1),
                     totalDays,
-                    step: `Setting domain query "${query}" (once for whole run)`,
+                    step: `Setting domain query "${query}" (after /start)`,
                 });
                 for (let qTry = 0; qTry < 3; qTry++) {
                     if (shouldStop()) return;
@@ -2055,11 +2051,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
             /**
              * Process one REAL dump day that is already visible on the current page.
-             * Uses live callback bytes from the current markup only (no cross-page seek).
-             * Returns { ok, menuMsg } where menuMsg is the date-list after returning.
+             * After hist + results: ALWAYS /start again (clean menu), then restore page.
+             * Returns { ok, menuMsg, page } with a fresh root-or-restored date list.
              */
             const processOneDayOnPage = async (menuMsg, targetDate, dateStr, dayIdx, pageLabel, onPageIdx, onPageTotal) => {
                 const progressPrefix = `Page ${pageLabel} · day ${dateStr} (${onPageIdx}/${onPageTotal} on page)`;
+                const startInd = readPageIndicator(menuMsg);
+                const stayPage = startInd ? startInd.page : 1;
+
                 onStatus({
                     day: dateStr,
                     attempt: dayIdx + 1,
@@ -2083,24 +2082,31 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             clickErr && clickErr.message ? clickErr.message : clickErr
                         );
                         await sleep(1200);
-                        current = (await refreshMsg(menuMsg.id)) || (await findMenu(0)) || current;
+                        // Folder disappeared / markup stale — fresh /start and restore page, then retry
+                        current = await restartMenuAtPage(stayPage, `retry folder ${dateStr}`) || current;
                     }
                 }
                 if (!clicked) {
                     log.log(`userbot could not click date folder ${dateStr} on page ${pageLabel}`);
-                    return { ok: false, menuMsg: current };
+                    const menu = await restartMenuAtPage(stayPage, `after failed ${dateStr}`).catch(() => null);
+                    return { ok: false, menuMsg: menu || current, page: stayPage };
                 }
                 await sleep(1500);
-                if (shouldStop()) return { ok: false, menuMsg: current };
+                if (shouldStop()) {
+                    const menu = await restartMenuAtPage(1, "stopped").catch(() => null);
+                    return { ok: false, menuMsg: menu || current, page: stayPage };
+                }
 
-                // Domain once after first successful folder (DumpNews context)
+                // Domain after folder open (reset after every /start so each day gets context)
                 await ensureDomainQuery();
-                if (shouldStop()) return { ok: false, menuMsg: current };
+                if (shouldStop()) {
+                    return { ok: false, menuMsg: current, page: stayPage };
+                }
 
                 // Hist / download
                 let histHit = null;
                 for (let histScan = 0; histScan < 12; histScan++) {
-                    if (shouldStop()) return { ok: false, menuMsg: current };
+                    if (shouldStop()) break;
                     try {
                         const folderMsgs = await withTimeout(
                             client.getMessages(searchTarget, { limit: 12 }),
@@ -2195,11 +2201,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     daysProcessed += 1;
 
                     let foundDoc = false;
-                    for (let waitAttempt = 0; waitAttempt < 8; waitAttempt++) {
+                    for (let waitAttempt = 0; waitAttempt < 10; waitAttempt++) {
                         if (shouldStop()) break;
-                        await sleep(waitAttempt === 0 ? 1800 : 1200);
+                        await sleep(waitAttempt === 0 ? 2000 : 1200);
                         const got = await ingestIncoming(dateStr, dayIdx);
-                        if (got.foundDoc) { foundDoc = true; await sleep(400); break; }
+                        if (got.foundDoc) { foundDoc = true; await sleep(600); break; }
                         if (got.foundAny && waitAttempt >= 3) break;
                     }
                     if (!foundDoc) {
@@ -2212,36 +2218,34 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     daysProcessed += 1;
                 }
 
-                // Prefer the live folder message id for Back (same id when markup is edited in place).
-                const folderMsgId = (histHit && histHit.msg && histHit.msg.id) || (current && current.id) || menuMsg.id;
-                const ind = readPageIndicator(menuMsg);
-                const targetPage = ind ? ind.page : null;
-                const backMenu = await returnToDateList(folderMsgId, targetPage);
-                // Never hand a folder/hist view back to the page loop — force another restore if needed.
-                let restored = backMenu;
-                if (!restored || extractFolderDatesFromMessage(restored).length === 0) {
-                    restored = await returnToDateList(folderMsgId, targetPage);
-                }
-                if (!restored || extractFolderDatesFromMessage(restored).length === 0) {
-                    restored = await openRootMenu();
-                    if (restored && targetPage && targetPage > 1) {
-                        restored = await returnToDateList(restored.id, targetPage) || restored;
-                    }
-                }
-                return { ok: true, menuMsg: restored || current || menuMsg };
+                // CRITICAL: after results return, always /start again for a clean date menu.
+                // Do not rely on Back — dump bots leave you in folder/result views.
+                onStatus({
+                    day: dateStr,
+                    attempt: daysProcessed,
+                    totalDays,
+                    step: `${progressPrefix} — results in; /start for next day…`,
+                });
+                log.log(`userbot day ${dateStr} done — /start again (stay near page ${stayPage})`);
+                const restored = await restartMenuAtPage(stayPage, `after ${dateStr} results`);
+                return {
+                    ok: true,
+                    menuMsg: restored || current || menuMsg,
+                    page: stayPage,
+                };
             };
 
             try {
                 /*
-                 * Page-first, day-by-day algorithm (DUMP // Base 34):
-                 *   open menu (page 1)
-                 *   for each page 1..N:
-                 *     process every date button on THIS page top→bottom (e.g. 02.10 → 01.10 → …)
-                 *     then click → and continue
-                 *   stop when daysCount real dates are done OR last page reached
+                 * Page-first, day-by-day (DUMP // Base 34):
+                 *   /start → page 1
+                 *   for each real date top→bottom on current page:
+                 *     click date → domain → hist → wait results
+                 *     then ALWAYS /start again (clean menu) and restore page
+                 *   when page exhausted → → next page
                  * Never invent missing calendar days.
                  */
-                let menuMsg = await openRootMenu();
+                let menuMsg = await openRootMenu("open menu");
                 if (!menuMsg) {
                     return { status: "error", error: "Could not open searcher menu (/start).", daysProcessed: 0 };
                 }
@@ -2256,151 +2260,107 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     day: "init",
                     attempt: 1,
                     totalDays,
-                    step: `Page ${pageLabelOf(menuMsg, "1")} — processing dates top→bottom, then next page…`,
+                    step: `Page ${pageLabelOf(menuMsg, "1")} — day-by-day, /start after each result…`,
                 });
                 log.log(`userbot page-first run: need ${totalDays} real day(s), starting page ${pageLabelOf(menuMsg, "1")}`);
                 logNonDateButtons(menuMsg, "page1");
+
+                // Empty first open → one /start retry
+                if (extractFolderDatesFromMessage(menuMsg).length === 0) {
+                    log.log("userbot page 1 has no date folders — retrying /start");
+                    menuMsg = await openRootMenu("retry empty menu");
+                    if (!menuMsg || extractFolderDatesFromMessage(menuMsg).length === 0) {
+                        logNonDateButtons(menuMsg, "empty-page1");
+                        if (!menuMsg || !findNavButton(menuMsg, "next")) {
+                            return { status: "error", error: "No dump date folders found in searcher menu.", daysProcessed: 0 };
+                        }
+                    }
+                }
 
                 while (daysProcessed < totalDays && pagesWalked < maxPages) {
                     if (shouldStop()) {
                         return { status: "stopped", daysProcessed, resultsFound, datesTried, foldersScanned: datesTried.length };
                     }
 
-                    menuMsg = (await refreshMsg(menuMsg.id)) || menuMsg;
-                    const indicator = readPageIndicator(menuMsg);
-                    const pageLabel = pageLabelOf(menuMsg, pagesWalked + 1);
-
-                    // Dates on THIS page only, UI order (top→bottom as shown)
-                    const rawOnPage = extractFolderDatesFromMessage(menuMsg);
-                    let pageFolders = rawOnPage.slice();
-                    if (startTs != null) {
-                        pageFolders = pageFolders.filter((f) => f.date && f.date.getTime() <= startTs);
+                    // After each /start the menu may be on page 1 — walk → to next unprocessed page
+                    const sought = await seekNextUnprocessedPage(menuMsg, processedSet, startTs);
+                    if (!sought) {
+                        log.log(`userbot no more unprocessed dump dates (done ${daysProcessed}/${totalDays})`);
+                        break;
                     }
-                    // Skip already-processed dates if we landed on a page twice
-                    pageFolders = pageFolders.filter((f) => f.dateStr && !processedSet.has(f.dateStr));
+                    menuMsg = sought.menuMsg;
+                    const pageFolders = sought.folders;
+                    const pageLabel = sought.pageLabel;
+                    const ind = readPageIndicator(menuMsg);
 
                     log.log(
-                        `userbot page ${pageLabel}: ${pageFolders.length} date(s) to do ` +
+                        `userbot page ${pageLabel}: ${pageFolders.length} date(s) remaining ` +
                         `[${pageFolders.map((f) => f.dateStr).join(", ")}] ` +
-                        `(raw=${rawOnPage.map((f) => f.dateStr).join(", ") || "none"}; done ${daysProcessed}/${totalDays})`
+                        `(done ${daysProcessed}/${totalDays})`
                     );
 
-                    // Truly empty menu on first open (no date buttons at all) → retry /start once
-                    if (rawOnPage.length === 0 && pagesWalked === 0 && daysProcessed === 0 && datesTried.length === 0) {
-                        log.log("userbot page 1 has no date folders — retrying /start");
-                        menuMsg = await openRootMenu();
-                        if (!menuMsg) {
-                            return { status: "error", error: "No dump date folders found in searcher menu.", daysProcessed: 0 };
-                        }
-                        const raw2 = extractFolderDatesFromMessage(menuMsg);
-                        pageFolders = raw2.slice();
-                        if (startTs != null) {
-                            pageFolders = pageFolders.filter((f) => f.date && f.date.getTime() <= startTs);
-                        }
-                        if (raw2.length === 0) {
-                            logNonDateButtons(menuMsg, "empty-page1");
-                            // Still allow flipping → if a pager exists; otherwise fail
-                            const hasNext = Boolean(findNavButton(menuMsg, "next"));
-                            if (!hasNext) {
-                                return { status: "error", error: "No dump date folders found in searcher menu.", daysProcessed: 0 };
-                            }
-                        }
-                    }
-
-                    // Page has dates but none eligible (newer than startDate / already done) → flip without processing
-                    if (pageFolders.length === 0) {
-                        log.log(`userbot page ${pageLabel}: nothing to process here — advancing`);
-                    }
-
-                    for (let i = 0; i < pageFolders.length && daysProcessed < totalDays; i++) {
-                        if (shouldStop()) {
-                            return { status: "stopped", daysProcessed, resultsFound, datesTried, foldersScanned: datesTried.length };
-                        }
-                        const folder = pageFolders[i];
-                        const dateStr = folder.dateStr;
-                        if (!dateStr || processedSet.has(dateStr)) continue;
-
-                        // Re-bind to live markup before each day (edits invalidate stale bytes)
-                        menuMsg = (await refreshMsg(menuMsg.id)) || menuMsg || (await findMenu(0));
-                        if (!menuMsg) {
-                            menuMsg = await openRootMenu();
-                            if (!menuMsg) break;
-                            // After full restart we may be on page 1 — restore page if needed
-                            if (indicator && indicator.page > 1) {
-                                menuMsg = await returnToDateList(menuMsg.id, indicator.page) || menuMsg;
-                            }
-                        }
-
-                        onStatus({
-                            day: dateStr,
-                            attempt: daysProcessed + 1,
-                            totalDays,
-                            step: `Page ${pageLabel} · ${dateStr} (${i + 1}/${pageFolders.length} on page)`,
-                        });
-
-                        const dayIdx = datesTried.length;
-                        const result = await processOneDayOnPage(
-                            menuMsg,
-                            folder.date,
-                            dateStr,
-                            dayIdx,
-                            pageLabel,
-                            i + 1,
-                            pageFolders.length,
-                        );
-                        menuMsg = result.menuMsg || menuMsg;
+                    // Process ONE day, then /start is forced inside processOneDayOnPage
+                    const folder = pageFolders[0];
+                    const dateStr = folder.dateStr;
+                    if (!dateStr || processedSet.has(dateStr)) {
                         processedSet.add(dateStr);
-                        datesTried.push(dateStr);
+                        continue;
+                    }
 
-                        if (!result.ok) {
-                            log.log(`userbot day ${dateStr} on page ${pageLabel} failed — continuing on same page`);
-                        }
+                    // Live rebind right before click
+                    menuMsg = (await refreshMsg(menuMsg.id)) || menuMsg;
+                    if (!menuMsg || extractFolderDatesFromMessage(menuMsg).length === 0) {
+                        menuMsg = await restartMenuAtPage(ind ? ind.page : 1, "menu lost before day") || menuMsg;
+                    }
+                    if (!menuMsg) break;
 
-                        if (daysProcessed >= totalDays) break;
+                    onStatus({
+                        day: dateStr,
+                        attempt: daysProcessed + 1,
+                        totalDays,
+                        step: `Page ${pageLabel} · ${dateStr} (1/${pageFolders.length} remaining on page)`,
+                    });
 
-                        // Stay paced before the next date on this page (paceDumpBot also gates clicks)
-                        onStatus({
-                            day: dateStr,
-                            attempt: daysProcessed,
-                            totalDays,
-                            step: `Page ${pageLabel} · next day in ~${Math.round(clickGapMs / 1000)}s…`,
-                        });
+                    const dayIdx = datesTried.length;
+                    const result = await processOneDayOnPage(
+                        menuMsg,
+                        folder.date,
+                        dateStr,
+                        dayIdx,
+                        pageLabel,
+                        1,
+                        pageFolders.length,
+                    );
+                    // processOneDayOnPage always ends with /start + page restore
+                    menuMsg = result.menuMsg || menuMsg;
+                    processedSet.add(dateStr);
+                    datesTried.push(dateStr);
+
+                    if (!result.ok) {
+                        log.log(`userbot day ${dateStr} on page ${pageLabel} failed — /start'd and continuing`);
                     }
 
                     if (daysProcessed >= totalDays) break;
 
-                    // Finished all dates on this page → flip →
-                    const indNow = readPageIndicator(menuMsg) || indicator;
-                    if (indNow && indNow.page >= indNow.total) {
-                        log.log(`userbot finished last page ${indNow.text} (processed ${daysProcessed}/${totalDays})`);
-                        break;
+                    // Count page passes loosely (seek may hop multiple)
+                    const nowInd = readPageIndicator(menuMsg);
+                    if (nowInd && ind && nowInd.page !== ind.page) pagesWalked += 1;
+                    else if (!pageFolders.slice(1).some((f) => f.dateStr && !processedSet.has(f.dateStr))) {
+                        // This page exhausted after the day — next loop seek will flip →
+                        pagesWalked += 1;
                     }
 
                     onStatus({
-                        day: "page",
-                        attempt: daysProcessed + 1,
+                        day: dateStr,
+                        attempt: daysProcessed,
                         totalDays,
-                        step: `Page ${pageLabel} done — flipping → next page…`,
+                        step: `Next dump day after /start (~${Math.round(clickGapMs / 1000)}s pace)…`,
                     });
-
-                    menuMsg = (await refreshMsg(menuMsg && menuMsg.id)) || menuMsg || (await findMenu(0));
-                    if (!menuMsg) {
-                        menuMsg = await openRootMenu();
-                        if (!menuMsg) break;
-                    }
-
-                    const nextMenu = await goNextPage(menuMsg);
-                    if (!nextMenu) {
-                        log.log(`userbot no further pages after ${pageLabel} (processed ${daysProcessed}/${totalDays})`);
-                        break;
-                    }
-                    menuMsg = nextMenu;
-                    pagesWalked += 1;
                 }
 
                 log.log(
                     `userbot page-first done: ${daysProcessed} day(s), ${resultsFound} result(s), ` +
-                    `dates=[${datesTried.join(", ")}], pages≈${pagesWalked + 1}`
+                    `dates=[${datesTried.join(", ")}], pages≈${Math.max(1, pagesWalked)}`
                 );
 
                 return {

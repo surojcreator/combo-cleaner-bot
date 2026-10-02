@@ -361,12 +361,15 @@ test("searchDayByDay sends /start first, selects date folder, then writes domain
 
     assert.equal(res.status, "done");
 
-    // Reliable multi-day: /start may repeat per day to reset menu; domain is still once.
+    // After each day's results we /start again for a clean menu.
     assert.equal(actions[0].type, "sendMessage");
     assert.equal(actions[0].message, "/start");
+    const starts = actions.filter((a) => a.type === "sendMessage" && a.message === "/start");
+    assert.ok(starts.length >= 2, "expected /start after each day (at least open + after day1)");
 
+    // Domain is re-sent after each /start (dump bot loses context on restart)
     const domainSends = actions.filter((a) => a.type === "sendMessage" && a.message === "netflix.com");
-    assert.equal(domainSends.length, 1, "Domain query should only be sent once");
+    assert.ok(domainSends.length >= 1, "Domain query should be sent at least once");
 
     const folderClicks = actions.filter((a) => a.type === "callback" && String(a.data || "").startsWith("folder:"));
     const histClicks = actions.filter((a) => a.type === "callback" && String(a.data || "").startsWith("hist:"));
@@ -502,12 +505,16 @@ test("searchDayByDay page-first: finish page 1 dates then flip → for page 2", 
         "expected page1 top→bottom then page2 (02.10 → 01.10 → 30.09)",
     );
 
+    // /start after each day's results (open + after d1 + after d2 + after d3 at minimum for multi-day)
+    const starts = actions.filter((a) => a.type === "sendMessage" && a.message === "/start");
+    assert.ok(starts.length >= 3, `expected /start after each day, got ${starts.length}`);
+
     const nextIdx = actions.findIndex((a) => a.type === "callback" && a.data === "page:next");
     assert.ok(nextIdx > 0, "expected → flip to page 2");
     const lastPage1FolderIdx = actions.findIndex((a) => a.type === "callback" && a.data === `folder:${d2}:0`);
     assert.ok(nextIdx > lastPage1FolderIdx, "→ must come after finishing page 1 dates");
 
-    assert.ok(actions.some((a) => a.type === "sendMessage" && a.message === "paypal.com"), "domain once");
+    assert.ok(actions.some((a) => a.type === "sendMessage" && a.message === "paypal.com"), "domain sent");
     assert.ok(actions.some((a) => a.type === "callback" && a.data === `hist:${d1}:0`));
     assert.ok(actions.some((a) => a.type === "callback" && a.data === `hist:${d3}:0`));
     assert.ok(res.daysProcessed >= 3 || res.foldersScanned >= 3);

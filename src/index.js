@@ -126,14 +126,7 @@ async function registerCommands() {
  */
 function startServer(webhookHandler) {
     const server = http.createServer((req, res) => {
-        if (webhookHandler && req.url === WEBHOOK_PATH) {
-            webhookHandler(req, res);
-            return;
-        }
-        if (downloads.isDownloadRequest(req)) {
-            downloads.handleDownloadRequest(req, res);
-            return;
-        }
+        // Always answer health quickly even if a long job is running.
         if (req.url === "/" || req.url === "/healthz" || req.url === "/status") {
             const userbotReady = Boolean(botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady());
             const payload = TOKEN
@@ -150,9 +143,25 @@ function startServer(webhookHandler) {
             res.end(payload + "\n");
             return;
         }
+        if (webhookHandler && req.url === WEBHOOK_PATH) {
+            // Bound webhook request lifetime so Telegram doesn't sit on Read timeout.
+            // Long ULP work is backgrounded in bot handlers — this only guards hangs.
+            req.setTimeout(55000);
+            res.setTimeout(55000);
+            webhookHandler(req, res);
+            return;
+        }
+        if (downloads.isDownloadRequest(req)) {
+            downloads.handleDownloadRequest(req, res);
+            return;
+        }
         res.writeHead(404, { "Content-Type": "text/plain" });
         res.end("not found\n");
     });
+    // Don't let idle sockets or slow clients stick forever during deploy / long jobs.
+    server.requestTimeout = 60000;
+    server.headersTimeout = 65000;
+    server.keepAliveTimeout = 12000;
     server.listen(PORT, () => {
         console.log(`HTTP server listening on port ${PORT}`);
     });
@@ -424,12 +433,15 @@ async function main() {
     let launched = false;
     if (PUBLIC_URL) {
         // Webhook mode: best when the host gives you a public HTTPS URL.
-        // Keep queued updates (drop_pending_updates: false) so messages sent
-        // while the machine was stopped/suspended are delivered on wake-up.
+        // Drop pending on boot so a previous deploy's stuck "Read timeout" updates
+        // don't block the bot looking dead. Fresh messages still arrive immediately.
         const webhookUrl = `${PUBLIC_URL}${WEBHOOK_PATH}`;
         const webhookHandler = bot.webhookCallback(WEBHOOK_PATH);
         startServer(webhookHandler);
-        await bot.telegram.setWebhook(webhookUrl, { drop_pending_updates: false });
+        await bot.telegram.setWebhook(webhookUrl, {
+            drop_pending_updates: true,
+            max_connections: 40,
+        });
         console.log(`Webhook set to ${webhookUrl}`);
     } else {
         // Long-polling mode: works anywhere, no public URL needed.

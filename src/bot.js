@@ -294,8 +294,10 @@ async function* streamLineBatches(filePath, batchSize, highWaterMark = 4 * 1024 
 function createBot(token, meta = {}) {
     botApiCustomEmojiRejected = false;
     botApiCustomEmojiRejectedUntil = 0;
+    // Keep webhook handlers short. Long ULP day-by-day runs must NOT hold the
+    // Telegram webhook open (Telegram times out ~60s → bot looks "offline").
     const bot = new Telegraf(token, {
-        handlerTimeout: 10 * 60 * 1000,
+        handlerTimeout: 90 * 1000,
         // meta.telegram lets tests and local Bot API server users override the
         // client (e.g. { telegram: { apiRoot: "http://127.0.0.1:8081" } }).
         ...(meta.telegram || {}),
@@ -3093,7 +3095,8 @@ function createBot(token, meta = {}) {
         }
         const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         await safeAnswerCbQuery(ctx, `🚀 Launching ${query} (${activeDays}d)…`);
-        await beginUlpRun(ctx, {
+        // Fire-and-forget: multi-day ULP can run for hours; do not block webhook.
+        void beginUlpRun(ctx, {
             query,
             scope: "day",
             daysCount: activeDays,
@@ -3102,6 +3105,8 @@ function createBot(token, meta = {}) {
             ulpStartedAt,
             ulpWindows,
             cardMessageId: ctx.callbackQuery && ctx.callbackQuery.message ? ctx.callbackQuery.message.message_id : null,
+        }).catch((err) => {
+            console.error("beginUlpRun (quick) background error:", err && err.message ? err.message : err);
         });
     });
 
@@ -5137,7 +5142,8 @@ function createBot(token, meta = {}) {
         if (parsed.query && store && store.addCustomDomain) {
             store.addCustomDomain(ctx.chat.id, parsed.query);
         }
-        await beginUlpRun(ctx, {
+        // Fire-and-forget so webhook returns immediately (Telegram ~60s timeout).
+        void beginUlpRun(ctx, {
             query: parsed.query,
             scope: parsed.scope,
             startDate: parsed.startDate || null,
@@ -5146,6 +5152,8 @@ function createBot(token, meta = {}) {
             meta,
             ulpStartedAt,
             ulpWindows,
+        }).catch((err) => {
+            console.error("beginUlpRun (/ulp) background error:", err && err.message ? err.message : err);
         });
     };
 
@@ -5166,10 +5174,10 @@ function createBot(token, meta = {}) {
             }
             return;
         }
-        await ctx.answerCbQuery(`Scope \u00B7 ${scope}`).catch(() => { });
+        await ctx.answerCbQuery(`Scope · ${scope}`).catch(() => { });
         const message = ctx.callbackQuery && ctx.callbackQuery.message;
         const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
-        await beginUlpRun(ctx, {
+        void beginUlpRun(ctx, {
             query: run.query,
             scope,
             daysCount: activeDays,
@@ -5178,6 +5186,8 @@ function createBot(token, meta = {}) {
             ulpStartedAt,
             ulpWindows,
             cardMessageId: message ? message.message_id : null,
+        }).catch((err) => {
+            console.error("beginUlpRun (rerun) background error:", err && err.message ? err.message : err);
         });
     };
 
@@ -5667,7 +5677,7 @@ function createBot(token, meta = {}) {
                 }
                 const activeDays = parsed.daysCount || (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
                 await safeReply(ctx, `🚀 ${B("Starting search for")} ${CODE(escapeHtml(query))} (${activeDays} days)…\n💾 ${I("Saved to your custom target domains.")}`);
-                await beginUlpRun(ctx, {
+                void beginUlpRun(ctx, {
                     query,
                     scope: parsed.scope || "day",
                     startDate: parsed.startDate || null,
@@ -5676,6 +5686,8 @@ function createBot(token, meta = {}) {
                     meta,
                     ulpStartedAt,
                     ulpWindows,
+                }).catch((err) => {
+                    console.error("beginUlpRun (prompt) background error:", err && err.message ? err.message : err);
                 });
                 return;
             }

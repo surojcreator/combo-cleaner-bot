@@ -1608,7 +1608,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 daysCount = 5,
                 startDate = null,
                 chatId = null,
-                stepDelayMs = 3500,
+                stepDelayMs = 10000,
                 shouldStop = () => false,
                 onStatus = () => {},
                 sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1616,13 +1616,48 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
             const totalDays = Math.max(1, Math.min(90, Number(daysCount) || 5));
             const searchTarget = searcherEntity || cfg.searcher;
-            // Pacing on the dump bot: default 3.5s between actions (override via SEARCH_STEP_DELAY_MS).
-            const clickGapMs = Math.max(800, Number(stepDelayMs) || 3500);
+            // Pacing on the dump bot: default 10s between actions (override via SEARCH_STEP_DELAY_MS).
+            const clickGapMs = Math.max(800, Number(stepDelayMs) || 10000);
             const seenResultIds = new Set();
+            /** Only messages strictly newer than this id may be forwarded (anti re-forward of old dumps). */
+            let resultWatermarkId = 0;
             let domainSent = false;
             let daysProcessed = 0;
             let resultsFound = 0;
             let lastDumpActionAt = 0;
+
+            /**
+             * Snapshot current searcher chat: mark existing docs/combos as already seen
+             * and raise watermark so we never forward leftovers from previous runs/days.
+             */
+            const seedSeenFromHistory = async () => {
+                try {
+                    const latest = await client.getMessages(searchTarget, { limit: 40 });
+                    if (!Array.isArray(latest)) return;
+                    let maxId = resultWatermarkId;
+                    for (const m of latest) {
+                        if (!m || m.out) continue;
+                        const mid = Number(m.id) || 0;
+                        if (mid > maxId) maxId = mid;
+                        const isDoc = Boolean(
+                            m.document ||
+                            (m.media && (m.media.document || m.media.className === "MessageMediaDocument"))
+                        );
+                        const rawText = String(m.message || m.text || "");
+                        const hasCombos = rawText && containsComboCredentials(rawText);
+                        if (isDoc || hasCombos) {
+                            if (mid) {
+                                seenResultIds.add(mid);
+                                markHandledResultId(mid);
+                            }
+                        }
+                    }
+                    if (maxId > resultWatermarkId) resultWatermarkId = maxId;
+                    log.log(`userbot result watermark seeded at msg id ${resultWatermarkId} (ignore older dumps)`);
+                } catch (e) {
+                    log.error("userbot seedSeenFromHistory error:", e && e.message ? e.message : e);
+                }
+            };
 
             /** Wait until clickGapMs has elapsed since the last dump-bot action. */
             const paceDumpBot = async (label = "action") => {
@@ -2032,25 +2067,40 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 }
             };
 
+            const isDumpLikeMessage = (m) => {
+                if (!m || m.out) return false;
+                const isDoc = Boolean(
+                    m.document ||
+                    (m.media && (m.media.document || m.media.className === "MessageMediaDocument"))
+                );
+                const rawText = String(m.message || m.text || "");
+                const hasCombos = rawText && containsComboCredentials(rawText);
+                return { isDoc, hasCombos, ok: isDoc || hasCombos };
+            };
+
+            /** Only NEW dumps after hist — never re-forward previous days' results still in chat. */
             const ingestIncoming = async (dateStr, dayIdx) => {
                 let foundDoc = false;
                 let foundAny = false;
                 try {
                     const latest = await client.getMessages(searchTarget, { limit: 15 });
                     if (!Array.isArray(latest)) return { foundDoc, foundAny };
-                    for (const m of latest) {
-                        const isDoc = Boolean(
-                            m.document ||
-                            (m.media && (m.media.document || m.media.className === "MessageMediaDocument"))
-                        );
-                        const rawText = String(m.message || m.text || "");
-                        const hasCombos = rawText && containsComboCredentials(rawText);
-                        if (m.out || seenResultIds.has(m.id) || (!isDoc && !hasCombos)) continue;
-                        seenResultIds.add(m.id);
-                        markHandledResultId(m.id);
+                    // Process oldest→newest so order is natural; skip anything ≤ watermark
+                    const ordered = latest.slice().sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+                    for (const m of ordered) {
+                        const mid = Number(m.id) || 0;
+                        if (!mid || mid <= resultWatermarkId) continue;
+                        if (seenResultIds.has(mid)) continue;
+                        const kind = isDumpLikeMessage(m);
+                        if (!kind.ok) continue;
+
+                        seenResultIds.add(mid);
+                        markHandledResultId(mid);
+                        // Raise watermark so concurrent scans don't re-pick this id
+                        if (mid > resultWatermarkId) resultWatermarkId = mid;
                         foundAny = true;
                         resultsFound += 1;
-                        if (isDoc) {
+                        if (kind.isDoc) {
                             foundDoc = true;
                             onStatus({
                                 day: dateStr,
@@ -2071,6 +2121,8 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         } else if (resultSink) {
                             try { await Promise.resolve(resultSink(m)); } catch (_) {}
                         }
+                        // When onResult is provided by beginUlpRun it already cleans;
+                        // still forward into the operator chat once for this NEW id only.
                         if (chatId && typeof forwardResult === "function") {
                             await forwardResult(chatId, m, {
                                 botUsername: options.botUsername || botUsername || cfg.botUsername,
@@ -2139,7 +2191,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     return { ok: false, menuMsg: current, page: stayPage };
                 }
 
-                // Hist / download
+                // Hist / download — scan for hist button only (do NOT forward old dumps here)
                 let histHit = null;
                 for (let histScan = 0; histScan < 12; histScan++) {
                     if (shouldStop()) break;
@@ -2150,24 +2202,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                             "userbot getMessages folder",
                         );
                         if (Array.isArray(folderMsgs)) {
+                            // Mark pre-hist dumps as seen so we never treat chat leftovers as this day's result
                             for (const m of folderMsgs) {
-                                const isDoc = Boolean(m.document || (m.media && (m.media.document || m.media.className === "MessageMediaDocument")));
-                                const rawText = String(m.message || m.text || "");
-                                const hasCombos = rawText && containsComboCredentials(rawText);
-                                if (!m.out && !seenResultIds.has(m.id) && (isDoc || hasCombos)) {
-                                    seenResultIds.add(m.id);
-                                    markHandledResultId(m.id);
-                                    resultsFound += 1;
-                                    if (options.onResult) {
-                                        try { await Promise.resolve(options.onResult(m)); } catch (_) {}
-                                    } else if (resultSink) {
-                                        try { await Promise.resolve(resultSink(m)); } catch (_) {}
-                                    }
-                                    if (chatId && typeof forwardResult === "function") {
-                                        await forwardResult(chatId, m, {
-                                            botUsername: options.botUsername || botUsername || cfg.botUsername,
-                                        }).catch(() => {});
-                                    }
+                                if (!m || m.out) continue;
+                                const mid = Number(m.id) || 0;
+                                const kind = isDumpLikeMessage(m);
+                                if (kind.ok && mid) {
+                                    seenResultIds.add(mid);
+                                    markHandledResultId(mid);
+                                    if (mid > resultWatermarkId) resultWatermarkId = mid;
                                 }
                             }
                             for (const m of folderMsgs) {
@@ -2209,6 +2252,17 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         totalDays,
                         step: `${progressPrefix} — requesting dump…`,
                     });
+                    // Raise watermark to "now" right before hist so only brand-new replies count
+                    try {
+                        const snap = await client.getMessages(searchTarget, { limit: 5 });
+                        if (Array.isArray(snap)) {
+                            for (const m of snap) {
+                                const mid = Number(m && m.id) || 0;
+                                if (mid > resultWatermarkId) resultWatermarkId = mid;
+                            }
+                        }
+                    } catch (_) {}
+
                     for (let histClickTry = 0; histClickTry < 3; histClickTry++) {
                         try {
                             const fresh = await refreshMsg(histHit.msg.id) || histHit.msg;
@@ -2280,15 +2334,18 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                  * Page-first, day-by-day (DUMP // Base 34):
                  *   /start → page 1
                  *   for each real date top→bottom on current page:
-                 *     click date → domain → hist → wait results
-                 *     then ALWAYS /start again (clean menu) and restore page
+                 *     click date → domain → hist → wait results (NEW dumps only)
+                 *     return via Back (or /start) and continue
                  *   when page exhausted → → next page
-                 * Never invent missing calendar days.
+                 * Never invent missing calendar days. Never re-forward old dumps.
                  */
+                await seedSeenFromHistory();
                 let menuMsg = await openRootMenu("open menu");
                 if (!menuMsg) {
                     return { status: "error", error: "Could not open searcher menu (/start).", daysProcessed: 0 };
                 }
+                // Seed again after /start menu messages land so they don't count as dumps
+                await seedSeenFromHistory();
 
                 const datesTried = [];
                 const processedSet = new Set();

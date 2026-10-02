@@ -726,7 +726,7 @@ test("searchDayByDay invokes forwardResult without error when chatId is specifie
     assert.equal(forwardCalled, true, "forwardResult should be called when chatId and results are present");
 });
 
-test("searchDayByDay paces dump-bot actions with 3.5 seconds (3500ms) by default", async () => {
+test("searchDayByDay paces dump-bot actions with 10 seconds (10000ms) by default", async () => {
     const cfg = {
         apiId: 12345,
         apiHash: "hash",
@@ -800,10 +800,10 @@ test("searchDayByDay paces dump-bot actions with 3.5 seconds (3500ms) by default
     });
 
     assert.equal(res.status, "done");
-    // Default click gap is 3.5s — used between folder/hist/domain/page actions.
+    // Default click gap is 10s — used between folder/hist/domain/page actions.
     assert.ok(
-        sleeps.some((ms) => ms >= 3500 && ms <= 4500) || sleeps.includes(3500),
-        `expected ~3500ms dump-bot pacing, got: ${JSON.stringify(sleeps)}`,
+        sleeps.some((ms) => ms >= 10000 && ms <= 11000) || sleeps.includes(10000),
+        `expected ~10000ms dump-bot pacing, got: ${JSON.stringify(sleeps)}`,
     );
 });
 

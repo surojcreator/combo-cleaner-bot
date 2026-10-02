@@ -1178,9 +1178,20 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             }).catch(() => {});
 
             const libs = loadLibs();
+            // Only listen to the searcher bot dialog — never all channels/chats.
+            const newMessageFilter = { incoming: true, fromUsers: searcherId ? [searcherId] : undefined };
             client.addEventHandler(async (event) => {
                 const msg = event.message;
                 if (!msg) return;
+                // Hard reject channel / broadcast peers
+                try {
+                    const peer = msg.peerId;
+                    const cls = peer && (peer.className || peer.constructor && peer.constructor.name) || "";
+                    if (/Channel|Chat/i.test(cls) && !/User/i.test(cls)) {
+                        // Allow only if it's clearly the searcher user bot, not a channel
+                        if (cls.includes("Channel")) return;
+                    }
+                } catch (_) {}
                 if (msg.peerId) {
                     try {
                         const mid = markedPeerId(getPeerId(msg.peerId, true));
@@ -1191,14 +1202,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 }
                 if (!resultSink) return;
                 const sender = Number(msg.senderId || (msg.peerId && msg.peerId.userId) || 0);
-                if (searcherId && sender && sender !== searcherId) return;
+                // Must come from the configured searcher bot only
+                if (!searcherId || !sender || sender !== searcherId) return;
                 if (markHandledResultId(msg.id)) return;
                 try {
                     await resultSink(msg);
                 } catch (err) {
                     log.error("userbot result sink failed:", err && err.message ? err.message : err);
                 }
-            }, new libs.NewMessage({}));
+            }, new libs.NewMessage(newMessageFilter));
 
             return { id: searcherId, username: cfg.searcher };
         },

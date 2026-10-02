@@ -497,6 +497,13 @@ async function main() {
                     res.end("bad update\n");
                     return;
                 }
+                // Drop channel traffic immediately (should not be subscribed, but belt-and-suspenders).
+                if (update.channel_post || update.edited_channel_post) {
+                    console.log(`[webhook] drop channel update_id=${update.update_id}`);
+                    res.statusCode = 200;
+                    res.end();
+                    return;
+                }
                 const kind =
                     (update.message && (update.message.text || update.message.caption || "message")) ||
                     (update.callback_query && `cb:${update.callback_query.data || "?"}`) ||
@@ -523,14 +530,12 @@ async function main() {
         await bot.telegram.setWebhook(webhookUrl, {
             drop_pending_updates: true,
             max_connections: 40,
+            // Private + groups only — do NOT subscribe to channel posts.
             allowed_updates: [
                 "message",
                 "edited_message",
                 "callback_query",
-                "channel_post",
-                "edited_channel_post",
                 "my_chat_member",
-                "chat_member",
             ],
         });
         console.log(`Webhook set to ${webhookUrl}`);

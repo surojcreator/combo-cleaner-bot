@@ -322,6 +322,13 @@ function createBot(token, meta = {}) {
         if (ctx.from && myBotId && Number(ctx.from.id) === Number(myBotId)) {
             return;
         }
+        // Never handle channel posts / channel edits — this bot is private/group only.
+        if (ctx.update && (ctx.update.channel_post || ctx.update.edited_channel_post)) {
+            return;
+        }
+        if (ctx.chat && (ctx.chat.type === "channel" || ctx.chat.type === "sender")) {
+            return;
+        }
         try {
             const chatId = ctx.chat && ctx.chat.id;
             const text = (ctx.message && (ctx.message.text || ctx.message.caption)) || "";
@@ -331,12 +338,6 @@ function createBot(token, meta = {}) {
                 (cb ? `cb=${String(cb).slice(0, 60)}` : `text=${JSON.stringify(String(text).slice(0, 60))}`)
             );
         } catch (_) {}
-        if (!ctx.update.message && ctx.update.channel_post) {
-            ctx.update.message = ctx.update.channel_post;
-        }
-        if (!ctx.update.edited_message && ctx.update.edited_channel_post) {
-            ctx.update.edited_message = ctx.update.edited_channel_post;
-        }
         return next();
     });
 
@@ -5576,8 +5577,11 @@ function createBot(token, meta = {}) {
     bot.processForwardedBatch = processForwardedBatch;
     bot.forwardBatches = forwardBatches;
 
-    bot.on(["document", "channel_post"], async (ctx) => {
-        const msg = (ctx && (ctx.message || ctx.channelPost)) || {};
+    bot.on("document", async (ctx) => {
+        // Channel posts are ignored — private/group chats only.
+        if (ctx.chat && ctx.chat.type === "channel") return;
+        if (ctx.update && (ctx.update.channel_post || ctx.update.edited_channel_post)) return;
+        const msg = (ctx && ctx.message) || {};
         const doc = msg.document;
         if (!doc) return;
         try {

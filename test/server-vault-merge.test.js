@@ -158,7 +158,7 @@ test("Multi-Select mode toggles checkmarks and enables merging", async () => {
 
         // Open vault
         await bot.handleUpdate(command("/vault", chatId));
-        assert.equal(await waitFor(() => api.calls.some((c) => /SERVER STORAGE & FILES VAULT/.test(c.payload.text || ""))), true);
+        assert.equal(await waitFor(() => api.calls.some((c) => /SERVER STORAGE/.test(c.payload.text || "") && /VAULT/.test(c.payload.text || ""))), true);
 
         // Switch to multi-select tab
         await bot.handleUpdate(callbackUpdate("files:tab:select", chatId));

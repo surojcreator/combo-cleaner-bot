@@ -969,34 +969,31 @@ const RULE = "─".repeat(28); // ───────────────�
  */
 function mainKeyboard(batch = null) {
     const batchSize = batch ? Number(batch.size || 0) : 0;
-    const combineLabel = batchSize > 0 ? `📦 Get Combined File (${compact(batchSize)})` : "📦 Get Combined File";
+    const combineLabel = batchSize > 0 ? `📦 Combine (${compact(batchSize)})` : "📦 Combine";
+    // 2-col dashboard: primary actions first, then search/vault, then manage.
     return createInlineKeyboard([
         [
-            Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
+            Markup.button.callback("🚀 ULP Search", "ulp:menu"),
             Markup.button.callback(combineLabel, "combine"),
         ],
         [
-            Markup.button.callback("📥 Save Large Files", "save:start"),
-            Markup.button.callback("📂 Server Vault", "server_files"),
-        ],
-        [
             Markup.button.callback("🔎 Search Batch", "batch:search:prompt"),
-            Markup.button.callback("💎 Search Biggest File", "lsearch:prompt:biggest"),
+            Markup.button.callback("💎 Biggest File", "lsearch:prompt:biggest"),
         ],
         [
-            Markup.button.callback("👁 Line Preview", "preview"),
-            Markup.button.callback("📊 Batch Analytics", "stats"),
+            Markup.button.callback("📂 Vault", "server_files"),
+            Markup.button.callback("📥 Save Files", "save:start"),
         ],
         [
-            Markup.button.callback("🌐 Manage Domains", "sites"),
-            Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
+            Markup.button.callback("📊 Stats", "stats"),
+            Markup.button.callback("🌐 Domains", "sites"),
         ],
         [
-            Markup.button.callback("⚙️ Storage & Wipes", "files:tab:tools"),
-            Markup.button.callback("❓ Fast /save Guide", "help:save"),
+            Markup.button.callback("👁 Preview", "preview"),
+            Markup.button.callback("🧹 Wipe", "clear:ask"),
         ],
         [
-            Markup.button.callback("🔄 Refresh Menu", "help"),
+            Markup.button.callback("❓ Help / Save Guide", "help:save"),
         ],
     ]);
 }
@@ -1008,22 +1005,19 @@ function mainKeyboard(batch = null) {
 function afterCombineKeyboard(downloadUrl = null) {
     const rows = [];
     if (downloadUrl && typeof downloadUrl === "string" && downloadUrl.startsWith("http")) {
-        rows.push([Markup.button.url("📥 Direct Download Link", downloadUrl)]);
+        rows.push([Markup.button.url("📥 Direct download", downloadUrl)]);
     }
     rows.push([
-        Markup.button.callback("📦 Send Again", "combine"),
-        Markup.button.callback("📊 Batch Analytics", "stats"),
+        Markup.button.callback("📦 Send again", "combine"),
+        Markup.button.callback("🔎 Search", "batch:search:prompt"),
     ]);
     rows.push([
-        Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
-        Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
+        Markup.button.callback("🚀 ULP Search", "ulp:menu"),
+        Markup.button.callback("📂 Vault", "server_files"),
     ]);
     rows.push([
-        Markup.button.callback("📂 Server Vault", "server_files"),
-        Markup.button.callback("🧹 Wipe Batch", "clear:ask"),
-    ]);
-    rows.push([
-        Markup.button.callback("🔙 Main Menu", "help"),
+        Markup.button.callback("🧹 Wipe", "clear:ask"),
+        Markup.button.callback("🏠 Home", "help"),
     ]);
     return createInlineKeyboard(rows);
 }
@@ -1404,58 +1398,43 @@ function confirmFileDeleteKeyboard(actionType, targetId, fileName = "") {
 function ulpMenuKeyboard(selectedDays = 5, customDomains = []) {
     const rawDays = typeof selectedDays === "symbol" ? 5 : Number(selectedDays) || 5;
     const days = Math.max(1, Math.min(90, rawDays));
-    const daysRow1 = [1, 3, 5].map((d) =>
-        Markup.button.callback(d === days ? `📅 ${d}d ✅` : `📅 ${d} Day${d > 1 ? "s" : ""}`, `ulp:setdays:${d}`)
-    );
-    const daysRow2 = [7, 14, 30].map((d) =>
-        Markup.button.callback(d === days ? `📅 ${d}d ✅` : `📅 ${d} Day${d > 1 ? "s" : ""}`, `ulp:setdays:${d}`)
-    );
+    const dayBtn = (d) =>
+        Markup.button.callback(d === days ? `✅ ${d}d` : `${d}d`, `ulp:setdays:${d}`);
 
     const rows = [];
 
-    // If user has custom saved domains, display them at the top as quick 1-tap buttons
+    // Primary CTA first
+    rows.push([Markup.button.callback("🔍 Search a domain", "ulp:custom:prompt")]);
+
+    // Quick pins (max 6 shown = 3 rows)
     if (Array.isArray(customDomains) && customDomains.length > 0) {
-        for (let i = 0; i < customDomains.length; i += 2) {
-            const d1 = customDomains[i];
-            const l1 = d1.length > 24 ? d1.slice(0, 21) + "…" : d1;
+        const pins = customDomains.slice(0, 6);
+        for (let i = 0; i < pins.length; i += 2) {
+            const d1 = pins[i];
+            const l1 = d1.length > 18 ? d1.slice(0, 15) + "…" : d1;
             const pair = [Markup.button.callback(`🌐 ${l1}`, registerCallbackPayload("ulp:quick:", d1))];
-            if (i + 1 < customDomains.length) {
-                const d2 = customDomains[i + 1];
-                const l2 = d2.length > 24 ? d2.slice(0, 21) + "…" : d2;
+            if (i + 1 < pins.length) {
+                const d2 = pins[i + 1];
+                const l2 = d2.length > 18 ? d2.slice(0, 15) + "…" : d2;
                 pair.push(Markup.button.callback(`🌐 ${l2}`, registerCallbackPayload("ulp:quick:", d2)));
             }
             rows.push(pair);
         }
     }
 
-    // Custom domain action buttons:
-    // 1. Enter a custom domain to search now
     rows.push([
-        Markup.button.callback("🌐 Enter Custom Domain", "ulp:custom:prompt"),
+        Markup.button.callback("➕ Pin domain", "ulp:custom:add:prompt"),
+        Markup.button.callback(
+            customDomains && customDomains.length ? `✏️ Pins (${customDomains.length})` : "✏️ Pins",
+            "ulp:custom:edit",
+        ),
     ]);
 
-    // 2. Add custom domain or edit existing custom domains
-    const editLabel = customDomains && customDomains.length > 0
-        ? `✏️ Edit Domains (${customDomains.length})`
-        : "✏️ Edit Domains";
-    rows.push([
-        Markup.button.callback("➕ Add Domain", "ulp:custom:add:prompt"),
-        Markup.button.callback(editLabel, "ulp:custom:edit"),
-    ]);
+    // Compact duration picker
+    rows.push([dayBtn(1), dayBtn(3), dayBtn(5), dayBtn(7)]);
+    rows.push([dayBtn(14), dayBtn(30), Markup.button.callback(`📅 ${days}d…`, "ulp:custom:days_prompt")]);
 
-    // Duration selectors
-    rows.push(daysRow1);
-    rows.push(daysRow2);
-
-    // Edit amount of days custom button
-    rows.push([
-        Markup.button.callback(`📅 Custom Days (${days}d)`, "ulp:custom:days_prompt"),
-    ]);
-
-    // Back to main menu
-    rows.push([
-        Markup.button.callback("🔙 Main Menu", "help"),
-    ]);
+    rows.push([Markup.button.callback("🏠 Home", "help")]);
 
     return createInlineKeyboard(rows);
 }
@@ -1531,14 +1510,14 @@ function ulpPostSearchKeyboard(selectedDays = 5, customDomains = []) {
  * @param {number} [customCount]
  */
 function renderUlpMenuText(botUsername, activeDays, customCount = 0) {
-    const customLine = customCount > 0 ? `\n🌐  Custom Targets: ${B(`${customCount} saved`)}` : "";
+    const pins = customCount > 0 ? ` · ${B(`${customCount}`)} pinned` : "";
     return [
-        `🚀  ${B("SELECT ULP SEARCH TARGET")}  ⚡️`,
+        `${tgEmoji("🚀")}  ${B("ULP SEARCH")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `🤖  Searcher: ${CODE(`@${escapeHtml(botUsername || "DumpNews14Bot")}`)}`,
-        `📅  Search Duration: ${B(`${activeDays} Day(s)`)}${customLine}`,
-        "",
-        `👇 ${I("Tap a target to start searching, enter a custom domain, or customize duration:")}`,
+        `${tgEmoji("🤖")}  ${CODE(`@${escapeHtml(botUsername || "DumpNews14Bot")}`)}`,
+        `${tgEmoji("📅")}  Looking back ${B(`${activeDays} day(s)`)}${pins}`,
+        RULE,
+        `${tgEmoji("👇")}  ${I("Search a domain, tap a pin, or set days below.")}`,
     ].join("\n");
 }
 
@@ -1963,16 +1942,16 @@ function ulpMergeCompleteKeyboard(downloadUrl = "", token = null) {
 function emptyBatchKeyboard() {
     return createInlineKeyboard([
         [
-            Markup.button.callback("🚀 Run ULP Search", "ulp:menu"),
-            Markup.button.callback("📥 Save Large Files", "save:start"),
+            Markup.button.callback("🚀 ULP Search", "ulp:menu"),
+            Markup.button.callback("📥 Save Files", "save:start"),
         ],
         [
-            Markup.button.callback("📂 Server Vault", "server_files"),
-            Markup.button.callback("📊 Batch Analytics", "stats"),
+            Markup.button.callback("📂 Vault", "server_files"),
+            Markup.button.callback("💎 Biggest File", "lsearch:prompt:biggest"),
         ],
         [
-            Markup.button.callback("❓ Fast /save Guide", "help:save"),
-            Markup.button.callback("🔄 Refresh Menu", "help"),
+            Markup.button.callback("❓ Save Guide", "help:save"),
+            Markup.button.callback("🏠 Home", "help"),
         ],
     ]);
 }
@@ -1983,8 +1962,8 @@ function emptyBatchKeyboard() {
 function confirmClearKeyboard() {
     return createInlineKeyboard([
         [
-            Markup.button.callback("⚠️ Yes, Wipe Batch", "clear:yes"),
-            Markup.button.callback("❌ Keep Batch (Cancel)", "clear:no"),
+            Markup.button.callback("⚠️ Wipe everything", "clear:yes"),
+            Markup.button.callback("❌ Keep batch", "clear:no"),
         ],
     ]);
 }
@@ -1999,49 +1978,36 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
     const mention = botUsername ? `@${escapeHtml(botUsername)}` : "this bot";
     const batchSize = batch ? Number(batch.size || 0) : 0;
     const batchFiles = batch ? Number(batch.files || 0) : 0;
-    const osCpus = require("os").cpus();
-    const cpus = (Array.isArray(osCpus) && osCpus.length) || 4;
-    const mem = process.memoryUsage ? process.memoryUsage() : {};
-    const ramMb = mem.rss ? Math.round(mem.rss / (1024 * 1024)) : 64;
+
+    const batchLine = batchSize > 0
+        ? `${tgEmoji("💎")}  Batch: ${B(compact(batchSize))} lines · ${num(batchFiles)} file(s)`
+        : `${tgEmoji("📭")}  Batch empty — send a dump or run ULP`;
+
+    const nextStep = batchSize > 0
+        ? `${tgEmoji("➡️")}  ${I(`Tap Combine for your ${compact(batchSize)} clean lines, or Search.`)}`
+        : `${tgEmoji("➡️")}  ${I("Tap ULP Search, or forward a .zip / .txt to clean.")}`;
 
     return [
-        `${tgEmoji("💎")}  ${B("COMBO CLEANER ULTIMATE")}  ${tgEmoji("⚡️")}`,
-        `${tgEmoji("🚀")}  ${I("Multi-Core Turbo Cleaning & ULP Relay Engine")}  ${tgEmoji("🛡️")}`,
+        `${tgEmoji("💎")}  ${B("COMBO CLEANER")}  ${tgEmoji("⚡️")}`,
+        `${I("Clean dumps · ULP relay · vault search")}`,
         RULE,
-        `${tgEmoji("📊")}  ${B("SYSTEM ENGINE METRICS")}`,
-        `  • ${tgEmoji("⚡️")} ${B("Multi-Core Workers:")}  ${CODE(`${cpus}x Parallel CPU Cores Active`)}`,
-        `  • ${tgEmoji("💽")} ${B("Process Memory:")}     ${CODE(`${ramMb} MB RSS Allocated`)}`,
-        `  • ${tgEmoji("📦")} ${B("Active Batch Vault:")}  ${B(num(batchSize))} unique lines (${num(batchFiles)} files)`,
-        `  • ${tgEmoji("🤖")} ${B("Connected ULP Bot:")}   ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
-        `  • ${tgEmoji("🚀")} ${B("Engine Mode:")}         ${B("TURBO 100% CPU SATURATION")}`,
+        batchLine,
+        `${tgEmoji("🤖")}  ULP target: ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
         RULE,
-        `${tgEmoji("💡")}  ${B("QUICK ACTION WORKFLOWS")}`,
-        `  • ${tgEmoji("🚀")} ${B("ULP Search:")} Automate day-by-day searches & URL-stripped cleaning`,
-        `  • ${tgEmoji("📥")} ${B("Save Large Files:")} Bypass 20MB limit via MTProto userbot`,
-        `  • ${tgEmoji("📂")} ${B("Server Vault:")} Tabbed disk storage, multi-file select & background merge`,
-        `  • ${tgEmoji("📦")} ${B("Get Combined File:")} Instant deduplicated, sanitized master export`,
+        `${tgEmoji("⚡️")}  ${B("What you can do")}`,
+        `  ${tgEmoji("1️⃣")} ${B("ULP Search")} — day-by-day dumps, auto-clean`,
+        `  ${tgEmoji("2️⃣")} ${B("Clean files")} — forward .zip/.txt or Save Files`,
+        `  ${tgEmoji("3️⃣")} ${B("Vault")} — browse, merge, search on disk`,
+        `  ${tgEmoji("4️⃣")} ${B("Combine")} — one deduped master download`,
         RULE,
-        `${tgEmoji("⌨️")}  ${B("COMMAND SHORTCUTS")}`,
-        `  • ${CODE("/ulp <domain> [days]")} — Launch automated day-by-day ULP search`,
-        `  • ${CODE("/combine")} ${I("(or /get)")} — Download clean deduplicated batch`,
-        `  • ${CODE("/save")} — Save replied file or activate file listener mode`,
-        `  • ${CODE("/vault")} ${I("(or /files)")} — Server vault, tabs & 1-click merge`,
-        `  • ${CODE("/search <term>")} — Instant search in active batch`,
-        `  • ${CODE("/lsearch <term>")} — Search biggest cleaned file (${CODE("/lsearch <term> all")} for all vault)`,
-        `  • ${CODE("/csearch <term>")} — Search all cleaned files on disk`,
-        `  • ${CODE("/stats")} ${I("(or /status)")} — View batch size, capacity & RAM`,
-        `  • ${CODE("/preview")} — Peek at sample clean credentials`,
-        `  • ${CODE("/clean")} — Clean logs or export combo`,
-        `  • ${CODE("/clear")} ${I("(or /wipe)")} — Wipe batch for a fresh start`,
+        `${tgEmoji("⌨️")}  ${B("Shortcuts")}`,
+        `  ${CODE("/ulp domain 7")}  ${CODE("/combine")}  ${CODE("/save")}`,
+        `  ${CODE("/search x")}  ${CODE("/lsearch x")}  ${CODE("/files")}`,
         RULE,
+        nextStep,
+        `${tgEmoji("👇")}  ${I("Use the buttons below — no commands required.")}`,
         "",
-        `${tgEmoji("✨")}  ${B("INTERACTIVE ACTION DASHBOARD")}`,
-        batchSize > 0
-            ? `➡️ ${B("Next step:")} ${I(`your batch has ${compact(batchSize)} clean lines ready — tap Get Combined File, or type any term to search it.`)}`
-            : `➡️ ${B("Next step:")} ${I("send or forward a .zip / .txt dump (or tap Save Large Files for big ones) and I'll clean it instantly.")}`,
-        `👇 ${I("Tap any button below to execute instantly without typing commands:")}`,
-        "",
-        `${tgEmoji("🛡️")} ${mention} · Ultimate Pro Edition`,
+        `${mention}`,
     ].join("\n");
 }
 
@@ -2873,16 +2839,16 @@ function ulpKeyboard(status = true, progress = null) {
     if (isFinished) {
         return createInlineKeyboard([
             [
-                Markup.button.callback("📦 Get Combined File", "combine"),
-                Markup.button.callback("🔁 Run again", "ulp:again"),
+                Markup.button.callback("📦 Combine", "combine"),
+                Markup.button.callback("🔁 Again", "ulp:again"),
             ],
             [
-                Markup.button.callback("🔍 Search Batch", "batch:search:prompt"),
-                Markup.button.callback("📊 Batch Metrics", "stats"),
+                Markup.button.callback("🔎 Search", "batch:search:prompt"),
+                Markup.button.callback("📊 Stats", "stats"),
             ],
             [
-                Markup.button.callback("📂 Server Vault", "server_files"),
-                Markup.button.callback("🔙 Main Menu", "help"),
+                Markup.button.callback("🚀 New ULP", "ulp:menu"),
+                Markup.button.callback("🏠 Home", "help"),
             ],
         ]);
     }
@@ -2891,17 +2857,13 @@ function ulpKeyboard(status = true, progress = null) {
     if (progress && typeof progress === "object" && progress.attempt && progress.maxTries) {
         const { pct, gauge } = renderGauge(progress.attempt, progress.maxTries, 8);
         rows.push([
-            Markup.button.callback(`📊 [${gauge}] ${pct}% · Day ${progress.attempt}/${progress.maxTries}`, "ulp:status_bar"),
+            Markup.button.callback(`📊 ${gauge} ${pct}% · ${progress.attempt}/${progress.maxTries}`, "ulp:status_bar"),
         ]);
     }
 
     rows.push([
-        Markup.button.callback("📦 Get Combined File", "combine"),
-        Markup.button.callback("🛑 Stop Search", "ulp:stop"),
-    ]);
-    rows.push([
-        Markup.button.callback("📊 Live Batch Stats", "stats"),
-        Markup.button.callback("👁 Line Preview", "preview"),
+        Markup.button.callback("📦 Combine now", "combine"),
+        Markup.button.callback("🛑 Stop", "ulp:stop"),
     ]);
 
     return createInlineKeyboard(rows);
@@ -2933,22 +2895,19 @@ function ulpResultKeyboard(hasDocument = false) {
  */
 function renderUlpHint(info = {}) {
     info = info || {};
-    const daysLabel = info.daysCount ? `${info.daysCount} days active` : "5 days default";
+    const daysLabel = info.daysCount ? `${info.daysCount} days` : "5 days";
     return [
-        `${tgEmoji("🚀")}  ${B("ULP SEARCH RELAY")}  ${tgEmoji("⚡️")}`,
+        `${tgEmoji("🚀")}  ${B("ULP SEARCH")}  ${tgEmoji("⚡️")}`,
         RULE,
-        `${I("Usage:")} ${CODE("/ulp <query> [days] [start_date]")}`,
+        `${I("Type a domain or tap a pin below.")}`,
         "",
-        `  ${tgEmoji("📅")} ${B("Duration:")} ${CODE(daysLabel)} · Select 1 to 90 days`,
-        `  ${tgEmoji("💡")} ${B("Examples:")}`,
-        `     • ${CODE("/ulp netflix.com 7")} ${I("(search last 7 days)")}`,
-        `     • ${CODE("/ulp netflix.com 20.09.2026 14")} ${I("(14 days from date)")}`,
-        `     • ${CODE("/ulp 14")} ${I("(set default duration to 14 days)")}`,
+        `${tgEmoji("📅")}  Looking back: ${B(daysLabel)}  ${I("(change with the day buttons)")}`,
+        `${tgEmoji("🤖")}  Via ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))} as your account`,
         "",
-        `  ${tgEmoji("1️⃣")} ${B("Target")} — Sent to ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))}`,
-        `  ${tgEmoji("2️⃣")} ${B("Smart Batch")} — Auto-detects latest batch date & steps down day-by-day`,
-        `  ${tgEmoji("3️⃣")} ${B("Live Forward")} — All dump results are forwarded & auto-cleaned into batch`,
-        `  ${tgEmoji("4️⃣")} ${B("Auto-Delivery")} — Delivers combined file and resets batch when finished ${tgEmoji("💎")}`,
+        `${tgEmoji("💡")}  ${CODE("/ulp netflix.com 7")}`,
+        `     ${CODE("/ulp site.com 20.09.2026 14")}`,
+        RULE,
+        `${tgEmoji("✨")}  ${I("Dumps auto-clean into your batch, then Combine downloads them.")}`,
     ].join("\n");
 }
 

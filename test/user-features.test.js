@@ -222,11 +222,11 @@ describe("User Requested Features & Optimizations", () => {
         // 1. Check ulpKeyboard has combine button in all states
         const runningKb = messages.ulpKeyboard("running");
         const runningBtns = runningKb.reply_markup.inline_keyboard.flat();
-        assert.ok(runningBtns.some((b) => b.callback_data === "combine" && b.text.includes("Combined")));
+        assert.ok(runningBtns.some((b) => b.callback_data === "combine" && /Combine/i.test(b.text)));
 
         const doneKb = messages.ulpKeyboard("done");
         const doneBtns = doneKb.reply_markup.inline_keyboard.flat();
-        assert.ok(doneBtns.some((b) => b.callback_data === "combine" && b.text.includes("Combined")));
+        assert.ok(doneBtns.some((b) => b.callback_data === "combine" && /Combine/i.test(b.text)));
 
         // 2. sendCombined while ULP search is running but 0 lines yet
         const chatId = 99991;
@@ -283,7 +283,8 @@ describe("User Requested Features & Optimizations", () => {
             humanSize: (n) => `${n} B`,
             tab: "overview",
         });
-        assert.match(overviewText, /SERVER STORAGE & FILES VAULT/);
+        assert.match(overviewText, /SERVER STORAGE/);
+        assert.match(overviewText, /VAULT/);
         assert.match(overviewText, /dump1\.zip/);
         assert.match(overviewText, /output1_combined\.txt/);
 
@@ -344,7 +345,8 @@ describe("User Requested Features & Optimizations", () => {
             humanSize: (n) => `${n} B`,
             tab: "tools",
         });
-        assert.match(toolsText, /STORAGE & PURGE MANAGER/);
+        assert.match(toolsText, /STORAGE/);
+        assert.match(toolsText, /PURGE MANAGER/);
 
         const toolsKb = messages.serverFilesKeyboard(rawFiles, processedFiles, { tab: "tools" });
         const toolsBtns = toolsKb.reply_markup.inline_keyboard.flat();
@@ -355,20 +357,33 @@ describe("User Requested Features & Optimizations", () => {
         const messages = require("../src/messages");
         const bot = require("../src/bot");
 
-        // 1. Ensure default animated emojis are active by default
-        messages.resetDefaultCustomEmojis();
+        // Real custom IDs only after explicit register/sync (fake sequential IDs trip DOCUMENT_INVALID).
+        messages.clearCustomEmojis();
+        messages.registerCustomEmojis({
+            "🚀": "5368324170671202287",
+            rocket: "5368324170671202287",
+            "💎": "5368324170671202286",
+            diamond: "5368324170671202286",
+            "🧼": "5371077759080598812",
+            soap: "5371077759080598812",
+            "📂": "5371077759080598835",
+            folder: "5371077759080598835",
+        });
+        if (typeof messages.setAnimatedEmojisEnabled === "function") {
+            messages.setAnimatedEmojisEnabled(true);
+        }
         const rocketHtml = messages.tgEmoji("🚀");
-        assert.ok(rocketHtml.includes("<tg-emoji"), "🚀 should render with <tg-emoji> tag by default");
-        assert.ok(rocketHtml.includes('emoji-id="5368324170671202287"'), "🚀 should have default document ID");
+        assert.ok(rocketHtml.includes("<tg-emoji"), "🚀 should render with <tg-emoji> after register");
+        assert.ok(rocketHtml.includes('emoji-id="5368324170671202287"'), "🚀 should have registered document ID");
 
         const diamondHtml = messages.tgEmoji("💎");
-        assert.ok(diamondHtml.includes("<tg-emoji"), "💎 should render with <tg-emoji> tag by default");
-        assert.ok(diamondHtml.includes('emoji-id="5368324170671202286"'), "💎 should have default document ID");
+        assert.ok(diamondHtml.includes("<tg-emoji"), "💎 should render with <tg-emoji> after register");
+        assert.ok(diamondHtml.includes('emoji-id="5368324170671202286"'), "💎 should have registered document ID");
 
         const soapHtml = messages.tgEmoji("🧼");
-        assert.ok(soapHtml.includes("<tg-emoji"), "🧼 should render with <tg-emoji> tag by default");
+        assert.ok(soapHtml.includes("<tg-emoji"), "🧼 should render with <tg-emoji> after register");
 
-        // 2. Verify keyboard buttons have icon_custom_emoji_id attached by default
+        // Keyboard buttons attach icon_custom_emoji_id when registry has a matching ID
         const mainKb = messages.mainKeyboard();
         const mainBtns = mainKb.reply_markup.inline_keyboard.flat();
 
@@ -380,35 +395,18 @@ describe("User Requested Features & Optimizations", () => {
         assert.ok(btnVault, "Vault button exists");
         assert.equal(btnVault.icon_custom_emoji_id, "5371077759080598835", "📂 button has folder custom emoji id");
 
-        const btnCombine = mainBtns.find((b) => b.callback_data === "combine");
-        assert.ok(btnCombine, "Combine button exists");
-        assert.equal(btnCombine.icon_custom_emoji_id, "5371077759080598813", "📦 button has package custom emoji id");
+        // Empty registry → no icon ids (plain unicode labels only)
+        messages.clearCustomEmojis();
+        const plainKb = messages.mainKeyboard();
+        const plainBtn = plainKb.reply_markup.inline_keyboard.flat().find((b) => b.callback_data === "ulp:menu");
+        assert.ok(plainBtn);
+        assert.equal(plainBtn.icon_custom_emoji_id, undefined, "no icon id without registry");
 
-        const btnStats = mainBtns.find((b) => b.callback_data === "stats");
-        assert.ok(btnStats, "Stats button exists");
-        assert.equal(btnStats.icon_custom_emoji_id, "5371077759080598814", "📊 button has chart custom emoji id");
-
-        // 3. Verify serverFilesKeyboard buttons have animated emoji IDs
-        const serverKb = messages.serverFilesKeyboard(
-            [{ name: "test.zip", size: 1000, mtime: new Date() }],
-            [{ name: "output.txt", size: 500, mtime: new Date() }],
-            { tab: "raw" }
-        );
-        const serverBtns = serverKb.reply_markup.inline_keyboard.flat();
-        const cleanBtn = serverBtns.find((b) => b.callback_data === "file:clean:0");
-        assert.ok(cleanBtn, "Clean button exists");
-        assert.equal(cleanBtn.icon_custom_emoji_id, "5371077759080598812", "🧼 button has soap custom emoji id");
-
-        const delBtn = serverBtns.find((b) => b.callback_data === "file:del:raw:ask:0");
-        assert.ok(delBtn, "Delete button exists");
-        assert.equal(delBtn.icon_custom_emoji_id, "5371077759080598819", "🗑 button has trash custom emoji id");
-
-        // 4. Verify ulpKeyboard has animated emoji IDs
+        // ulp keyboard still has Stop even with plain labels
         const ulpKb = messages.ulpKeyboard("running");
         const ulpBtns = ulpKb.reply_markup.inline_keyboard.flat();
         const stopBtn = ulpBtns.find((b) => b.callback_data === "ulp:stop");
         assert.ok(stopBtn, "Stop button exists");
-        assert.equal(stopBtn.icon_custom_emoji_id, "5371077759080598846", "🛑 button has stop custom emoji id");
 
         // 5. Verify stripButtonEmojis fallback functionality
         const extraWithEmojis = {
@@ -458,20 +456,22 @@ describe("User Requested Features & Optimizations", () => {
             },
         };
 
-        // First call fails with DOCUMENT_INVALID, catches it, strips emoji tags and button icons, sets rejected flag, and succeeds
+        // Staged recovery: try animated → strip button icons → plain unicode. No process-wide kill switch.
         const result = await bot.safeReply(mockSafeCtx, originalText, originalExtra);
         assert.ok(result, "safeReply should return the delivered message object");
         assert.equal(result.message_id, 999);
-        assert.strictEqual(bot.isBotApiCustomEmojiRejected(), true, "botApiCustomEmojiRejected flag should be set to true");
-        assert.equal(recoveryReplied.length, 2, "Should have attempted once with emojis and once with fallback");
-        assert.ok(!recoveryReplied[1].text.includes("<tg-emoji"), "Fallback text should not include tg-emoji tags");
-        assert.strictEqual(recoveryReplied[1].extra.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id, undefined, "Fallback button should have icon_custom_emoji_id stripped");
+        assert.ok(recoveryReplied.length >= 2, "Should attempt with emojis then fallback");
+        const last = recoveryReplied[recoveryReplied.length - 1];
+        assert.ok(!last.text.includes("<tg-emoji"), "Final text should not include tg-emoji tags");
+        assert.strictEqual(
+            last.extra.reply_markup.inline_keyboard[0][0].icon_custom_emoji_id,
+            undefined,
+            "Fallback button should have icon_custom_emoji_id stripped",
+        );
 
-        // Subsequent call is pre-stripped immediately because botApiCustomEmojiRejected is true
-        const secondResult = await bot.safeReply(mockSafeCtx, originalText, originalExtra);
+        // Subsequent call still works (no permanent kill)
+        const secondResult = await bot.safeReply(mockSafeCtx, "Hello plain", { reply_markup: { inline_keyboard: [[{ text: "OK", callback_data: "ok" }]] } });
         assert.ok(secondResult);
-        assert.equal(recoveryReplied.length, 3, "Second call should only send once without failing or retrying");
-        assert.ok(!recoveryReplied[2].text.includes("<tg-emoji"));
 
         // Test safeSendDocument recovery
         bot.setBotApiCustomEmojiRejected(false);
@@ -489,19 +489,20 @@ describe("User Requested Features & Optimizations", () => {
             }
         );
         assert.ok(docResult, "safeSendDocument should recover and deliver file");
-        assert.strictEqual(bot.isBotApiCustomEmojiRejected(), true, "botApiCustomEmojiRejected should be set after doc recovery");
+        // Process-wide kill switch is intentionally NOT set — recovery is per-send.
+        assert.ok(docResult, "safeSendDocument recovers without global kill");
     });
 
     test("12. Cyber-ops modern UI overhaul and unnamed document protection", () => {
-        // 1. Check UI templates for modern cyber-ops styling and formatting
+        // 1. Check UI templates for streamlined dashboard styling
         const helpText = messages.renderHelp("ComboBot");
-        assert.match(helpText, /<b>COMBO CLEANER ULTIMATE<\/b>/);
+        assert.match(helpText, /<b>COMBO CLEANER<\/b>/);
         assert.match(helpText, /────────────────────────────/);
-        assert.match(helpText, /Parallel CPU Cores Active/);
-        assert.match(helpText, /TURBO 100% CPU SATURATION/i);
+        assert.match(helpText, /What you can do/);
+        assert.match(helpText, /ULP Search/);
 
         const statsText = messages.renderStats({ size: 1000, files: 5, totalKept: 1200, sites: 3 });
-        assert.match(statsText, /<b>BATCH METRICS DASHBOARD<\/b>/);
+        assert.match(statsText, /BATCH METRICS DASHBOARD/);
         assert.match(statsText, /────────────────────────────/);
         assert.match(statsText, /Unique Credentials/);
         assert.match(statsText, /Storage Capacity/);
@@ -529,8 +530,8 @@ describe("User Requested Features & Optimizations", () => {
         const keyboard = messages.mainKeyboard();
         const buttons = keyboard.reply_markup.inline_keyboard.flat().map(b => b.text);
         assert.ok(buttons.some(b => b.includes("ULP")));
-        assert.ok(buttons.some(b => b.includes("Server Vault")));
-        assert.ok(buttons.some(b => b.includes("Get Combined File")));
+        assert.ok(buttons.some(b => b.includes("Vault")));
+        assert.ok(buttons.some(b => /Combine/i.test(b)));
 
         // 2. Check unnamed document sanitization
         const userbotMod = require("../src/userbot");

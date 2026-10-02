@@ -103,13 +103,13 @@ test.after(() => {
     getSharedPool().close();
 });
 
-test("Intuitiveness: renderHelp includes COMMAND SHORTCUTS cheat-sheet", () => {
+test("Intuitiveness: renderHelp includes Shortcuts cheat-sheet", () => {
     const help = renderHelp("testbot", { size: 100, files: 2 }, "DumpBot");
-    assert.match(help, /COMMAND SHORTCUTS/);
-    assert.match(help, /\/ulp <domain>/);
+    assert.match(help, /Shortcuts|COMMAND SHORTCUTS/i);
+    assert.match(help, /\/ulp/);
     assert.match(help, /\/combine/);
     assert.match(help, /\/save/);
-    assert.match(help, /\/vault/);
+    assert.match(help, /\/files|\/vault/);
     assert.match(help, /\/search/);
 });
 
@@ -122,7 +122,7 @@ test("Intuitiveness: command aliases (/menu, /status, /info, /domains, /sample) 
         await bot.handleUpdate(makeUpdate("/menu", 1, true));
         let sent = api.calls.filter((c) => c.method === "sendMessage");
         assert.equal(sent.length, 1);
-        assert.match(sent[0].payload.text, /COMBO CLEANER ULTIMATE/);
+        assert.match(sent[0].payload.text, /COMBO CLEANER/);
 
         // /status
         await bot.handleUpdate(makeUpdate("/status", 2, true));
@@ -155,7 +155,7 @@ test("Intuitiveness: plain text single-word shortcuts (menu, stats, sites) invok
         await bot.handleUpdate(makeUpdate("menu", 10));
         let sent = api.calls.filter((c) => c.method === "sendMessage");
         assert.equal(sent.length, 1);
-        assert.match(sent[0].payload.text, /COMBO CLEANER ULTIMATE/);
+        assert.match(sent[0].payload.text, /COMBO CLEANER/);
 
         // User types "stats"
         await bot.handleUpdate(makeUpdate("stats", 11));
@@ -185,7 +185,7 @@ test("Intuitiveness: smart target domain detection for bare domains like 'netfli
         assert.match(sent[0].payload.text, /netflix\.com/);
         assert.ok(sent[0].payload.reply_markup, "expected action keyboard with buttons");
         const buttons = JSON.stringify(sent[0].payload.reply_markup);
-        assert.match(buttons, /Run ULP Search/);
+        assert.match(buttons, /ULP Search/);
         assert.match(buttons, /Search Batch/);
         assert.match(buttons, /Vault Search/);
     } finally {
@@ -223,7 +223,7 @@ test("Intuitiveness: /process without arguments offers processPromptKeyboard wit
         assert.match(sent[0].payload.text, /PROCESS A LOCAL FILE/);
         const buttons = JSON.stringify(sent[0].payload.reply_markup);
         assert.match(buttons, /Process Newest File/);
-        assert.match(buttons, /Server Vault/);
+        assert.match(buttons, /Vault/);
     } finally {
         await api.close();
     }

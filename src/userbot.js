@@ -351,12 +351,39 @@ function buttonMatchesDate(btn, targetDate) {
  * @param {any} m
  * @returns {boolean}
  */
-function buttonDataString(btn) {
-    if (!btn) return "";
+/**
+ * Raw callback payload bytes from a GramJS/teleproto keyboard button.
+ * MUST stay binary — Telegram rejects re-encoded UTF-8 with
+ * "Encrypted data invalid" on messages.GetBotCallbackAnswer.
+ * @param {any} btn
+ * @returns {Buffer|null}
+ */
+function buttonDataBuffer(btn) {
+    if (!btn) return null;
     try {
-        if (btn.type && btn.type.data != null) return btn.type.data.toString();
-        if (Buffer.isBuffer(btn.data)) return btn.data.toString("utf8");
-        return String(btn.data || "");
+        const raw =
+            (btn.type && btn.type.data != null ? btn.type.data : null) ??
+            (btn.data != null ? btn.data : null);
+        if (raw == null) return null;
+        if (Buffer.isBuffer(raw)) return raw;
+        if (raw instanceof Uint8Array) return Buffer.from(raw);
+        if (typeof raw === "string") return Buffer.from(raw, "utf8");
+        if (Array.isArray(raw)) return Buffer.from(raw);
+        // BigInt / number-like — uncommon, stringify as utf8 last resort
+        if (typeof raw === "object" && raw.buffer && ArrayBuffer.isView(raw)) {
+            return Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+        }
+        return Buffer.from(String(raw), "utf8");
+    } catch {
+        return null;
+    }
+}
+
+function buttonDataString(btn) {
+    const buf = buttonDataBuffer(btn);
+    if (!buf) return "";
+    try {
+        return buf.toString("utf8");
     } catch {
         return "";
     }
@@ -419,7 +446,8 @@ function extractFolderDatesFromMessage(menuMsg) {
         if (!row || !Array.isArray(row.buttons)) continue;
         for (const btn of row.buttons) {
             if (!btn) continue;
-            const dataStr = buttonDataString(btn);
+            const dataBuf = buttonDataBuffer(btn);
+            const dataStr = dataBuf ? dataBuf.toString("utf8") : "";
             const textStr = String(btn.text || "");
             if (isNextPageButton(btn) || isPrevPageButton(btn)) continue;
             const dmy =
@@ -432,7 +460,9 @@ function extractFolderDatesFromMessage(menuMsg) {
                 date: parsed,
                 dateStr: formatDateDmy(parsed),
                 text: textStr,
-                data: dataStr,
+                // Keep RAW bytes for GetBotCallbackAnswer — never re-encode.
+                data: dataBuf || Buffer.from(dataStr, "utf8"),
+                dataStr,
                 messageId: Number(menuMsg.id) || 0,
             });
         }
@@ -446,14 +476,15 @@ function findNavButton(menuMsg, kind = "next") {
         if (!row || !Array.isArray(row.buttons)) continue;
         for (const btn of row.buttons) {
             if (!btn) continue;
+            const data = buttonDataBuffer(btn);
             if (kind === "next" && isNextPageButton(btn)) {
-                return { text: String(btn.text || ""), data: buttonDataString(btn) };
+                return { text: String(btn.text || ""), data };
             }
             if (kind === "prev" && isPrevPageButton(btn)) {
-                return { text: String(btn.text || ""), data: buttonDataString(btn) };
+                return { text: String(btn.text || ""), data };
             }
             if (kind === "back" && isBackButton(btn) && !isNextPageButton(btn) && !isPrevPageButton(btn)) {
-                return { text: String(btn.text || ""), data: buttonDataString(btn) };
+                return { text: String(btn.text || ""), data };
             }
         }
     }
@@ -739,6 +770,7 @@ module.exports = {
     parseDmyDate,
     parseAnyDate,
     buttonMatchesDate,
+    buttonDataBuffer,
     buttonDataString,
     isNextPageButton,
     isPrevPageButton,
@@ -1417,7 +1449,11 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
          */
         async clickButton(messageId, callbackData) {
             if (!ready || !client) throw new Error("USERBOT_NOT_READY");
-            const dataBuf = Buffer.isBuffer(callbackData) ? callbackData : Buffer.from(String(callbackData));
+            let dataBuf;
+            if (Buffer.isBuffer(callbackData)) dataBuf = callbackData;
+            else if (callbackData instanceof Uint8Array) dataBuf = Buffer.from(callbackData);
+            else if (typeof callbackData === "string") dataBuf = Buffer.from(callbackData, "binary");
+            else dataBuf = Buffer.from(String(callbackData || ""), "utf8");
             return await withTimeout(
                 client.invoke(new Api.messages.GetBotCallbackAnswer({
                     peer: searcherEntity || cfg.searcher,
@@ -1466,7 +1502,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             let resultsFound = 0;
 
             const clickCb = async (msgId, data, label = "click") => {
-                const dataBuf = Buffer.isBuffer(data) ? data : Buffer.from(String(data || ""));
+                let dataBuf;
+                if (Buffer.isBuffer(data)) dataBuf = data;
+                else if (data instanceof Uint8Array) dataBuf = Buffer.from(data);
+                else if (typeof data === "string") dataBuf = Buffer.from(data, "binary"); // already-decoded payload
+                else if (data == null) dataBuf = Buffer.alloc(0);
+                else dataBuf = Buffer.from(String(data), "utf8");
+                if (!dataBuf.length) {
+                    throw new Error(`userbot ${label}: empty callback data`);
+                }
                 return await withTimeout(
                     client.invoke(new Api.messages.GetBotCallbackAnswer({
                         peer: searchTarget,
@@ -1591,11 +1635,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     }
                     if (!refreshed) break;
                     // stop if page content didn't change (infinite next loops)
-                    const beforeKeys = folders.map((f) => f.dateStr).sort().join("|");
-                    const afterKeys = extractFolderDatesFromMessage(refreshed).map((f) => f.dateStr).sort().join("|");
-                    if (beforeKeys && afterKeys && beforeKeys === afterKeys && page > 0) {
-                        log.log("userbot menu page content unchanged after next — stopping scan");
-                        break;
+                    const beforeKeys = folders.map((f) => f.dateStr || f.dataStr).sort().join("|");
+                    const afterKeys = extractFolderDatesFromMessage(refreshed).map((f) => f.dateStr || f.dataStr).sort().join("|");
+                    if (beforeKeys && afterKeys && beforeKeys === afterKeys) {
+                        // Only stop if we already have at least one page of dates — otherwise keep trying.
+                        if (byDate.size > 0 && page > 0) {
+                            log.log("userbot menu page content unchanged after next — stopping scan");
+                            break;
+                        }
                     }
                     current = refreshed;
                     page += 1;
@@ -1730,7 +1777,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     if (hitFolder) {
                         folderBtn = {
                             text: hitFolder.text || dateStr,
-                            data: hitFolder.data || folder.data,
+                            data: hitFolder.data || folder.data, // Buffer
                             messageId: menuForClick.id,
                         };
                     } else {
@@ -1742,7 +1789,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                 if (buttonMatchesDate(btn, folder.date)) {
                                     folderBtn = {
                                         text: String(btn.text || dateStr),
-                                        data: buttonDataString(btn) || folder.data,
+                                        data: buttonDataBuffer(btn) || folder.data,
                                         messageId: menuForClick.id,
                                     };
                                     break outerBtn;
@@ -1753,7 +1800,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     if (folderBtn) break;
                     // use pre-known data as last resort on first page try
                     if (pageTry === 0 && folder.data) {
-                        folderBtn = { text: folder.text || dateStr, data: folder.data, messageId: menuForClick.id };
+                        const data = Buffer.isBuffer(folder.data)
+                            ? folder.data
+                            : (typeof folder.data === "string"
+                                ? Buffer.from(folder.data, "utf8")
+                                : buttonDataBuffer({ data: folder.data }));
+                        folderBtn = { text: folder.text || dateStr, data, messageId: menuForClick.id };
                         break;
                     }
                     const next = findNavButton(menuForClick, "next");
@@ -1847,7 +1899,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                     dataStr.includes("hist:") ||
                                     /hist|full|history|dump|скачать|download/i.test(textStr)
                                 ) {
-                                    histBtn = { text: textStr, data: dataStr };
+                                    histBtn = { text: textStr, data: buttonDataBuffer(btn) || Buffer.from(dataStr, "utf8") };
                                     folderView = candidateMsg;
                                     break;
                                 }

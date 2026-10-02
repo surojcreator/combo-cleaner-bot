@@ -134,9 +134,20 @@ function startServer(webhookHandler) {
             downloads.handleDownloadRequest(req, res);
             return;
         }
-        if (req.url === "/" || req.url === "/healthz") {
+        if (req.url === "/" || req.url === "/healthz" || req.url === "/status") {
+            const userbotReady = Boolean(botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady());
+            const payload = TOKEN
+                ? [
+                    "ok",
+                    `bot=@${botMeta.botUsername || "?"}`,
+                    `transport=${botMeta.search && botMeta.search.transport || "?"}`,
+                    `userbotConfigured=${Boolean(botMeta.userbotConfigured)}`,
+                    `userbotReady=${userbotReady}`,
+                    `searcher=@${(botMeta.search && botMeta.search.botUsername) || "DumpNews14Bot"}`,
+                ].join(" ")
+                : "standing_by_for_bot_token";
             res.writeHead(200, { "Content-Type": "text/plain" });
-            res.end(TOKEN ? "ok\n" : "standing_by_for_bot_token\n");
+            res.end(payload + "\n");
             return;
         }
         res.writeHead(404, { "Content-Type": "text/plain" });

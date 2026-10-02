@@ -3199,6 +3199,12 @@ function ulpErrorHeader(kind, transport = "bot") {
                     ? "The account transport isn't connected yet. Log in once, restart, then tap Run again \u2014 ULP never needs bot-to-bot when your account is online."
                     : "ULP search needs your Telegram account (MTProto) because third-party searchers keep bot-to-bot locked.",
             };
+        case "userbot_error":
+            return {
+                emoji: "\uD83D\uDD27",
+                title: "ACCOUNT SEARCH FAILED",
+                detail: "Your MTProto account talked to the searcher, but the run hit an error. Open @DumpNews14Bot once from that account, then try /ulp again.",
+            };
         default:
             return {
                 emoji: "\uD83D\uDCA5",
@@ -3217,14 +3223,23 @@ function ulpErrorHeader(kind, transport = "bot") {
 function renderUlpBlocked(info = {}) {
     info = info || {};
     const transport = info.transport === "userbot" ? "userbot" : "bot";
-    const header = ulpErrorHeader(info.kind, transport);
+    let kind = info.kind || "other";
+    // Account path should never present the bot-to-bot lock title — that
+    // misleads operators who already have TELEGRAM_SESSION configured.
+    if (transport === "userbot" && kind === "bot_to_bot_disabled") {
+        kind = info.userbotConfigured ? "userbot_error" : "userbot_not_ready";
+    }
+    if (info.userbotConfigured && kind === "bot_to_bot_disabled") {
+        kind = "userbot_error";
+    }
+    const header = ulpErrorHeader(kind, transport);
     const own = info.ownBot ? mentionOf(info.ownBot) : "this bot";
     const steps = Array.isArray(info.steps) ? info.steps : [];
-    const kind = info.kind || "other";
     // Bot-to-bot is almost never fixable for third-party searchers — lead with
     // the account bypass. Same story when the userbot path was chosen but isn't live.
     const preferUserbotSetup =
         transport === "userbot" ||
+        Boolean(info.userbotConfigured) ||
         kind === "bot_to_bot_disabled" ||
         kind === "userbot_not_ready" ||
         kind === "userbot_auth" ||

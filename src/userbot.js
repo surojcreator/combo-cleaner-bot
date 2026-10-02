@@ -775,16 +775,35 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             }
         }
 
-        try {
-            await withTimeout(
-                client.forwardMessages(targetPeer, { messages: [msg.id], fromPeer: searcherEntity }),
-                timeoutMs,
-                "userbot forwardMessages",
-            );
-            return "forward";
-        } catch (err) {
-            log.log(`forward blocked (${err && err.message ? err.message : err}) - copying instead`);
+        // teleproto/gramJS need integer message ids (BigInt → Number) and a
+        // resolvable fromPeer. MESSAGE_ID_INVALID is almost always a type/peer
+        // mismatch here — never fail the search just because the optional
+        // forward into the bot conversation couldn't be done.
+        const msgId = Number(msg.id);
+        const fromPeer = searcherEntity || cfg.searcher || searcherId;
+        let forwarded = false;
+        if (Number.isFinite(msgId) && msgId > 0) {
+            const forwardAttempts = [
+                { messages: [msg], fromPeer },
+                { messages: [msgId], fromPeer },
+                { messages: [msgId], fromPeer: cfg.searcher },
+            ];
+            for (const attempt of forwardAttempts) {
+                try {
+                    await withTimeout(
+                        client.forwardMessages(targetPeer, attempt),
+                        timeoutMs,
+                        "userbot forwardMessages",
+                    );
+                    forwarded = true;
+                    break;
+                } catch (err) {
+                    log.log(`forward attempt failed (${err && err.message ? err.message : err})`);
+                }
+            }
         }
+        if (forwarded) return "forward";
+        log.log("forward blocked - copying media/text instead");
 
         const media = msg.media;
         if (media) {

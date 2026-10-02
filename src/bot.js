@@ -196,7 +196,7 @@ function renderSaveError(err) {
             "",
             `\u2022 Confirm ${B("@bullxgod")} is still a member of this exact group`,
             `\u2022 Open the group once from that account so it appears in its chat list`,
-            `\u2022 Forward the file again, then reply with ${CODE("/save@ulpsorter69bot")}`,
+            `\u2022 Forward the file again, then reply with ${CODE("/save")}`,
         ].join("\n");
     }
     if (raw.includes("MESSAGE_NOT_VISIBLE")) {
@@ -206,7 +206,7 @@ function renderSaveError(err) {
             `The group is visible, but the MTProto account cannot fetch that replied message.`,
             "",
             `Forward the original file into the group again, then reply directly to the new message with`,
-            CODE("/save@ulpsorter69bot"),
+            CODE("/save"),
         ].join("\n");
     }
     if (raw.includes("REPLIED_MESSAGE_HAS_NO_MEDIA")) {
@@ -7120,7 +7120,15 @@ async function sendHtml(ctx, text, extra = {}) {
             }
         }
         console.error("sendHtml failed:", err.message);
-        return null;
+        // Last-resort plain reply so ULP cards still open for the requester
+        // even when HTML/emoji entities trip Telegram.
+        try {
+            const plain = String(text || "").replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
+            return await ctx.reply(plain.slice(0, 3500), { disable_web_page_preview: true, ...(extra || {}) });
+        } catch (plainErr) {
+            console.error("sendHtml plain fallback failed:", plainErr && plainErr.message ? plainErr.message : plainErr);
+            return null;
+        }
     }
 }
 
@@ -7222,13 +7230,34 @@ async function deliverCombinedAndResetBatch(ctx) {
         const activeDays = (store && store.getUlpDays && store.getUlpDays(chatId)) || (userUlpDays && userUlpDays.get(chatId)) || 5;
         const customDomains = (store && store.getCustomDomains && store.getCustomDomains(chatId)) || [];
         if (lines.length > 0) {
-            await sendCombined(ctx, true);
-            store.clear(chatId);
-            await safeReply(
-                ctx,
-                `${tgEmoji("🧹")} Batch automatically cleaned and reset. Ready for next search!`,
-                ulpPostSearchKeyboard(activeDays, customDomains)
-            );
+            let deliveredOk = false;
+            try {
+                await sendCombined(ctx, true);
+                deliveredOk = true;
+            } catch (sendErr) {
+                console.error("deliverCombined sendCombined error:", sendErr && sendErr.message ? sendErr.message : sendErr);
+                // Keep the batch if Telegram refuse the upload so the user can
+                // still tap "Get combined file" / use the direct link later.
+            }
+            if (deliveredOk) {
+                store.clear(chatId);
+                await safeReply(
+                    ctx,
+                    `${tgEmoji("🧹")} Batch automatically cleaned and reset. Ready for next search!`,
+                    ulpPostSearchKeyboard(activeDays, customDomains)
+                );
+            } else {
+                await safeReply(
+                    ctx,
+                    [
+                        `${tgEmoji("⚠️")}  ${B("SEARCH FINISHED — DELIVERY STALLED")}`,
+                        RULE,
+                        `Credentials are in your batch (${lines.length.toLocaleString("en-US")} lines) but Telegram blocked the auto-send.`,
+                        `Tap ${B("📦 Get Combined File")} or open your Server Vault to download.`,
+                    ].join("\n"),
+                    ulpPostSearchKeyboard(activeDays, customDomains)
+                ).catch(() => {});
+            }
         } else {
             await safeReply(
                 ctx,
@@ -7799,8 +7828,15 @@ async function beginUlpRun(ctx, params) {
 
         searchbot.finishRun(chatId, "done");
         if (card) {
-            const resultCount = (searchbot.getRun(chatId) || {}).results?.length || 0;
-            const text = renderUlpDone({ query, scope, count: resultCount });
+            const runSnap = searchbot.getRun(chatId) || {};
+            const resultCount = (runSnap.results && runSnap.results.length) || 0;
+            const lineCount = store.getLines(chatId).length;
+            const text = renderUlpDone({
+                query,
+                scope,
+                count: resultCount || (lineCount > 0 ? 1 : 0),
+                daysProcessed: (dayRes && dayRes.daysProcessed) || 0,
+            });
             await safeEdit(
                 ctx,
                 card.message_id,
@@ -7808,6 +7844,8 @@ async function beginUlpRun(ctx, params) {
                 ulpKeyboard("done"),
             );
         }
+        // Always try to deliver — lines may exist even when forward into the
+        // bot conversation failed (ingestion runs via onResult independently).
         await deliverCombinedAndResetBatch(ctx);
         return;
     } else {
@@ -7959,8 +7997,15 @@ async function beginUlpRun(ctx, params) {
         });
     } else {
         const reason = result.error && (result.error.description || result.error.errorMessage || result.error.message);
+        // Never surface the "BOT-TO-BOT IS OFF" card on the account path — that
+        // title only applies to Bot API private bot↔bot sends. Userbot failures
+        // map to session/auth/flood/other so the user sees the real fix.
+        let kind = result.kind || "other";
+        if (transport.kind === "userbot" && kind === "bot_to_bot_disabled") {
+            kind = "userbot_error";
+        }
         text = renderUlpBlocked({
-            kind: result.kind || "other",
+            kind,
             searcherBot: effectiveSearchOptions.botUsername,
             ownBot: meta.botUsername || null,
             steps,

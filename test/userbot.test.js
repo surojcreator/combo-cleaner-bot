@@ -234,18 +234,24 @@ test("searchDayByDay sends /start first, selects date folder, then writes domain
     const date1 = "21.09.2026";
     const date2 = "20.09.2026";
 
-    const mockMenuDay1 = {
+    // Inventory-first flow needs both dump dates visible on the root menu.
+    const mockRootMenu = {
         id: ++msgCounter,
         out: false,
         replyMarkup: {
             rows: [
-                { buttons: [{ text: `📅 ${date1}`, data: Buffer.from(`folder:${date1}:0`) }] },
+                {
+                    buttons: [
+                        { text: `📅 ${date1}`, data: Buffer.from(`folder:${date1}:0`) },
+                        { text: `📅 ${date2}`, data: Buffer.from(`folder:${date2}:0`) },
+                    ],
+                },
             ],
         },
     };
 
     const mockFolderViewDay1 = {
-        id: mockMenuDay1.id,
+        id: mockRootMenu.id,
         out: false,
         replyMarkup: {
             rows: [
@@ -254,18 +260,8 @@ test("searchDayByDay sends /start first, selects date folder, then writes domain
         },
     };
 
-    const mockMenuDay2 = {
-        id: ++msgCounter,
-        out: false,
-        replyMarkup: {
-            rows: [
-                { buttons: [{ text: `📅 ${date2}`, data: Buffer.from(`folder:${date2}:0`) }] },
-            ],
-        },
-    };
-
     const mockFolderViewDay2 = {
-        id: mockMenuDay2.id,
+        id: mockRootMenu.id,
         out: false,
         replyMarkup: {
             rows: [
@@ -274,40 +270,37 @@ test("searchDayByDay sends /start first, selects date folder, then writes domain
         },
     };
 
-    let currentDay = 1;
-    let folderOpened = false;
+    let activeFolder = null; // date string currently open
 
     const mockClient = {
         async sendMessage(target, { message }) {
             actions.push({ type: "sendMessage", message });
+            if (message === "/start") activeFolder = null;
             return { id: ++msgCounter, out: true, message };
         },
         async getMessages(target, opts = {}) {
             if (opts.ids && opts.ids.length) {
-                if (currentDay === 1 && folderOpened) return [mockFolderViewDay1];
-                if (currentDay === 2 && folderOpened) return [mockFolderViewDay2];
-                return currentDay === 1 ? [mockMenuDay1] : [mockMenuDay2];
+                if (activeFolder === date1) return [mockFolderViewDay1];
+                if (activeFolder === date2) return [mockFolderViewDay2];
+                return [mockRootMenu];
             }
-            if (folderOpened) {
+            if (activeFolder) {
                 const dumpDoc = {
                     id: ++msgCounter,
                     out: false,
                     media: { document: { size: 1024 } },
                     document: { size: 1024 },
                 };
-                return [dumpDoc, currentDay === 1 ? mockFolderViewDay1 : mockFolderViewDay2];
+                return [dumpDoc, activeFolder === date1 ? mockFolderViewDay1 : mockFolderViewDay2];
             }
-            return currentDay === 1 ? [mockMenuDay1] : [mockMenuDay2];
+            return [mockRootMenu];
         },
         async invoke(req) {
             const dataStr = req.data ? req.data.toString() : "";
             actions.push({ type: "callback", data: dataStr });
-            if (dataStr.startsWith("folder:")) {
-                folderOpened = true;
-            } else if (dataStr.startsWith("hist:")) {
-                currentDay = 2;
-                folderOpened = false;
-            }
+            if (dataStr.startsWith(`folder:${date1}`)) activeFolder = date1;
+            else if (dataStr.startsWith(`folder:${date2}`)) activeFolder = date2;
+            else if (dataStr.startsWith("hist:")) activeFolder = null; // back to root after dump request
             return true;
         },
         async getInputEntity() { return { id: 999 }; },
@@ -330,39 +323,26 @@ test("searchDayByDay sends /start first, selects date folder, then writes domain
 
     assert.equal(res.status, "done");
 
-    // Sequence checks:
-    // 1. First sendMessage must be "/start"
+    // Improved flow: /start once → domain once → folder/hist per day (no re-/start).
+    const starts = actions.filter((a) => a.type === "sendMessage" && a.message === "/start");
+    assert.equal(starts.length, 1, "/start should be sent exactly once for the whole run");
     assert.equal(actions[0].type, "sendMessage");
     assert.equal(actions[0].message, "/start");
 
-    // 2. Second action must be selecting the date folder
-    assert.equal(actions[1].type, "callback");
-    assert.equal(actions[1].data, `folder:${date1}:0`);
-
-    // 3. Third action must be writing the domain query
-    assert.equal(actions[2].type, "sendMessage");
-    assert.equal(actions[2].message, "netflix.com");
-
-    // 4. Fourth action is clicking hist
-    assert.equal(actions[3].type, "callback");
-    assert.equal(actions[3].data, `hist:${date1}:0`);
-
-    // Day 2 checks:
-    // 5. Day 2 starts with "/start"
-    assert.equal(actions[4].type, "sendMessage");
-    assert.equal(actions[4].message, "/start");
-
-    // 6. Day 2 selects date 2
-    assert.equal(actions[5].type, "callback");
-    assert.equal(actions[5].data, `folder:${date2}:0`);
-
-    // 7. Day 2 clicks hist (domain is NOT sent again!)
-    assert.equal(actions[6].type, "callback");
-    assert.equal(actions[6].data, `hist:${date2}:0`);
-
-    // Domain is ONLY sent once in the whole run
     const domainSends = actions.filter((a) => a.type === "sendMessage" && a.message === "netflix.com");
-    assert.equal(domainSends.length, 1, "Domain query should only be sent for the first time");
+    assert.equal(domainSends.length, 1, "Domain query should only be sent once");
+
+    const folderClicks = actions.filter((a) => a.type === "callback" && String(a.data || "").startsWith("folder:"));
+    const histClicks = actions.filter((a) => a.type === "callback" && String(a.data || "").startsWith("hist:"));
+    assert.ok(folderClicks.some((a) => a.data === `folder:${date1}:0`), "expected day1 folder click");
+    assert.ok(folderClicks.some((a) => a.data === `folder:${date2}:0`), "expected day2 folder click");
+    assert.ok(histClicks.some((a) => a.data === `hist:${date1}:0`), "expected day1 hist click");
+    assert.ok(histClicks.some((a) => a.data === `hist:${date2}:0`), "expected day2 hist click");
+
+    // Domain is set before walking days (or once on first folder) — never repeated mid-run after hist pairs.
+    const firstDomainIdx = actions.findIndex((a) => a.type === "sendMessage" && a.message === "netflix.com");
+    const lastStartIdx = actions.findIndex((a) => a.type === "sendMessage" && a.message === "/start");
+    assert.ok(firstDomainIdx > lastStartIdx, "domain should come after the single /start");
 });
 
 test("searchDayByDay navigates pagination loop when date folder is on page 2", async () => {
@@ -457,17 +437,24 @@ test("searchDayByDay navigates pagination loop when date folder is on page 2", a
 
     assert.equal(res.status, "done");
 
-    // Action sequence:
-    // 1. sendMessage: "/start"
-    // 2. callback: "menu:page:1" (navigated to page 2!)
-    // 3. callback: "folder:15.09.2026:0" (selected date on page 2!)
-    // 4. sendMessage: "paypal.com" (domain sent after date selected!)
-    // 5. callback: "hist:15.09.2026:0"
+    // Inventory scan pages forward to discover dates, then processes the target folder.
     assert.equal(actions[0].message, "/start");
-    assert.equal(actions[1].data, "menu:page:1");
-    assert.equal(actions[2].data, `folder:${targetDate}:0`);
-    assert.equal(actions[3].message, "paypal.com");
-    assert.equal(actions[4].data, `hist:${targetDate}:0`);
+    assert.ok(
+        actions.some((a) => a.type === "callback" && a.data === "menu:page:1"),
+        "expected pagination to page 2 during inventory/search",
+    );
+    assert.ok(
+        actions.some((a) => a.type === "callback" && a.data === `folder:${targetDate}:0`),
+        "expected folder click for target date on page 2",
+    );
+    assert.ok(
+        actions.some((a) => a.type === "sendMessage" && a.message === "paypal.com"),
+        "expected domain query once",
+    );
+    assert.ok(
+        actions.some((a) => a.type === "callback" && a.data === `hist:${targetDate}:0`),
+        "expected hist/download click",
+    );
 });
 
 test("searchDayByDay invokes forwardResult without error when chatId is specified", async () => {

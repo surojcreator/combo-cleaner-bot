@@ -1608,7 +1608,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 daysCount = 5,
                 startDate = null,
                 chatId = null,
-                stepDelayMs = 15000,
+                stepDelayMs = 3500,
                 shouldStop = () => false,
                 onStatus = () => {},
                 sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1616,8 +1616,8 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
             const totalDays = Math.max(1, Math.min(90, Number(daysCount) || 5));
             const searchTarget = searcherEntity || cfg.searcher;
-            // Hard pacing on the dump bot: default 15s between actions (override via SEARCH_STEP_DELAY_MS).
-            const clickGapMs = Math.max(1000, Number(stepDelayMs) || 15000);
+            // Pacing on the dump bot: default 3.5s between actions (override via SEARCH_STEP_DELAY_MS).
+            const clickGapMs = Math.max(800, Number(stepDelayMs) || 3500);
             const seenResultIds = new Set();
             let domainSent = false;
             let daysProcessed = 0;
@@ -1657,7 +1657,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 }
                 if (!dataBuf || !dataBuf.length) throw new Error(`userbot ${label}: empty callback data`);
 
-                // 15s (clickGapMs) between every click on the dump bot.
+                // clickGapMs between every click on the dump bot.
                 await paceDumpBot(label);
                 if (shouldStop()) throw new Error("stopped");
 
@@ -1733,7 +1733,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                 ? `Sending /start (${reason})…`
                                 : `Retrying /start (attempt ${startAttempt + 1})…`,
                         });
-                        // /start counts as a dump-bot action — keep the 15s gap
+                        // /start counts as a dump-bot action — keep the pace gap
                         await paceDumpBot("/start");
                         if (shouldStop()) return null;
                         sentStart = await withTimeout(
@@ -1908,9 +1908,45 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             };
 
             /**
-             * After a day finishes (results returned), ALWAYS send /start for a clean menu.
-             * Then hop forward with → until targetPage (1-based) if needed.
-             * Dump bots often leave you stuck in folder/result views; Back is unreliable.
+             * Fast path: click Back on the live folder markup to return to the date list
+             * on the same page. Returns menu msg or null if Back is missing / failed.
+             */
+            const tryReturnViaBack = async (targetPage = 1) => {
+                try {
+                    const latest = await client.getMessages(searchTarget, { limit: 10 });
+                    if (!Array.isArray(latest)) return null;
+                    for (const m of latest) {
+                        if (!m || m.out || !m.replyMarkup || !m.replyMarkup.rows) continue;
+                        // Already back on a date list?
+                        if (extractFolderDatesFromMessage(m).length > 0) {
+                            const ind = readPageIndicator(m);
+                            if (!targetPage || !ind || ind.page === targetPage) return m;
+                            return m;
+                        }
+                        const back = findNavButton(m, "back");
+                        if (!back || !back.data) continue;
+                        try {
+                            await clickLive(m.id, back.data, "back");
+                        } catch (e) {
+                            log.error("userbot back click error:", e && e.message ? e.message : e);
+                            continue;
+                        }
+                        await sleep(600);
+                        const after = (await refreshMsg(m.id)) || (await findMenu(0));
+                        if (after && extractFolderDatesFromMessage(after).length > 0) {
+                            log.log(`userbot Back restored page ${pageLabelOf(after)}`);
+                            return after;
+                        }
+                    }
+                } catch (e) {
+                    log.error("userbot tryReturnViaBack error:", e && e.message ? e.message : e);
+                }
+                return null;
+            };
+
+            /**
+             * Hard reset: ALWAYS send /start for a clean menu, then hop → to targetPage.
+             * Used when Back fails or markup is lost.
              */
             const restartMenuAtPage = async (targetPage = 1, reason = "after day results") => {
                 let menu = await openRootMenu(reason);
@@ -2091,7 +2127,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     const menu = await restartMenuAtPage(stayPage, `after failed ${dateStr}`).catch(() => null);
                     return { ok: false, menuMsg: menu || current, page: stayPage };
                 }
-                await sleep(1500);
+                await sleep(700);
                 if (shouldStop()) {
                     const menu = await restartMenuAtPage(1, "stopped").catch(() => null);
                     return { ok: false, menuMsg: menu || current, page: stayPage };
@@ -2201,15 +2237,16 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     daysProcessed += 1;
 
                     let foundDoc = false;
-                    for (let waitAttempt = 0; waitAttempt < 10; waitAttempt++) {
+                    // Fast poll for dump results — bail as soon as file/combos land
+                    for (let waitAttempt = 0; waitAttempt < 6; waitAttempt++) {
                         if (shouldStop()) break;
-                        await sleep(waitAttempt === 0 ? 2000 : 1200);
+                        await sleep(waitAttempt === 0 ? 900 : 700);
                         const got = await ingestIncoming(dateStr, dayIdx);
-                        if (got.foundDoc) { foundDoc = true; await sleep(600); break; }
-                        if (got.foundAny && waitAttempt >= 3) break;
+                        if (got.foundDoc) { foundDoc = true; break; }
+                        if (got.foundAny && waitAttempt >= 2) break;
                     }
                     if (!foundDoc) {
-                        await sleep(800);
+                        await sleep(400);
                         await ingestIncoming(dateStr, dayIdx);
                     }
                 } else {
@@ -2218,16 +2255,19 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     daysProcessed += 1;
                 }
 
-                // CRITICAL: after results return, always /start again for a clean date menu.
-                // Do not rely on Back — dump bots leave you in folder/result views.
+                // Prefer Back to the same page (fast). Only /start if Back fails.
                 onStatus({
                     day: dateStr,
                     attempt: daysProcessed,
                     totalDays,
-                    step: `${progressPrefix} — results in; /start for next day…`,
+                    step: `${progressPrefix} — results in; return to date list…`,
                 });
-                log.log(`userbot day ${dateStr} done — /start again (stay near page ${stayPage})`);
-                const restored = await restartMenuAtPage(stayPage, `after ${dateStr} results`);
+                log.log(`userbot day ${dateStr} done — return to list (page ${stayPage})`);
+                let restored = await tryReturnViaBack(stayPage);
+                if (!restored || extractFolderDatesFromMessage(restored).length === 0) {
+                    log.log(`userbot Back failed after ${dateStr} — /start + hop to page ${stayPage}`);
+                    restored = await restartMenuAtPage(stayPage, `after ${dateStr} results`);
+                }
                 return {
                     ok: true,
                     menuMsg: restored || current || menuMsg,

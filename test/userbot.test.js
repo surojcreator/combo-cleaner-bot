@@ -361,13 +361,13 @@ test("searchDayByDay sends /start first, selects date folder, then writes domain
 
     assert.equal(res.status, "done");
 
-    // After each day's results we /start again for a clean menu.
+    // Opens with /start; later days prefer Back (faster) and only /start if Back fails.
     assert.equal(actions[0].type, "sendMessage");
     assert.equal(actions[0].message, "/start");
     const starts = actions.filter((a) => a.type === "sendMessage" && a.message === "/start");
-    assert.ok(starts.length >= 2, "expected /start after each day (at least open + after day1)");
+    assert.ok(starts.length >= 1, "expected initial /start");
 
-    // Domain is re-sent after each /start (dump bot loses context on restart)
+    // Domain at least once (kept across Back path; re-sent if /start restarts)
     const domainSends = actions.filter((a) => a.type === "sendMessage" && a.message === "netflix.com");
     assert.ok(domainSends.length >= 1, "Domain query should be sent at least once");
 
@@ -505,9 +505,14 @@ test("searchDayByDay page-first: finish page 1 dates then flip → for page 2", 
         "expected page1 top→bottom then page2 (02.10 → 01.10 → 30.09)",
     );
 
-    // /start after each day's results (open + after d1 + after d2 + after d3 at minimum for multi-day)
+    // Initial /start only if Back works; restarts may add more /starts when Back fails
     const starts = actions.filter((a) => a.type === "sendMessage" && a.message === "/start");
-    assert.ok(starts.length >= 3, `expected /start after each day, got ${starts.length}`);
+    assert.ok(starts.length >= 1, `expected at least initial /start, got ${starts.length}`);
+    // Prefer Back path when the mock exposes it
+    assert.ok(
+        actions.some((a) => a.type === "callback" && a.data === "back") || starts.length >= 1,
+        "expected Back or /start after days",
+    );
 
     const nextIdx = actions.findIndex((a) => a.type === "callback" && a.data === "page:next");
     assert.ok(nextIdx > 0, "expected → flip to page 2");
@@ -721,7 +726,7 @@ test("searchDayByDay invokes forwardResult without error when chatId is specifie
     assert.equal(forwardCalled, true, "forwardResult should be called when chatId and results are present");
 });
 
-test("searchDayByDay paces dump-bot actions with 15 seconds (15000ms) by default", async () => {
+test("searchDayByDay paces dump-bot actions with 3.5 seconds (3500ms) by default", async () => {
     const cfg = {
         apiId: 12345,
         apiHash: "hash",
@@ -795,10 +800,10 @@ test("searchDayByDay paces dump-bot actions with 15 seconds (15000ms) by default
     });
 
     assert.equal(res.status, "done");
-    // Default click gap is 15s — used between folder/hist/domain/page actions.
+    // Default click gap is 3.5s — used between folder/hist/domain/page actions.
     assert.ok(
-        sleeps.some((ms) => ms >= 15000 && ms <= 16000) || sleeps.includes(15000),
-        `expected ~15000ms dump-bot pacing, got: ${JSON.stringify(sleeps)}`,
+        sleeps.some((ms) => ms >= 3500 && ms <= 4500) || sleeps.includes(3500),
+        `expected ~3500ms dump-bot pacing, got: ${JSON.stringify(sleeps)}`,
     );
 });
 

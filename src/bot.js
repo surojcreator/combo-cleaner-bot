@@ -397,10 +397,15 @@ function createBot(token, meta = {}) {
 
     const handleStartHelp = async (ctx) => {
         userPromptState.delete(ctx.chat.id);
+        if (meta && meta.botUsername) lastBotUsername = String(meta.botUsername);
         const batch = store.getStats(ctx.chat.id);
         await safeChatAction(ctx, "typing");
-        await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard(batch));
+        const help = renderHelp(meta.botUsername, batch, searchOptions.botUsername);
+        const hint = renderAnimatedEmojiOwnerHint();
+        const body = hint ? `${hint}\n────────────────────────────\n${help}` : help;
+        await safeReply(ctx, body, mainKeyboard(batch));
     };
+
 
     bot.start(handleStartHelp);
     bot.help(handleStartHelp);
@@ -6355,6 +6360,9 @@ function createBot(token, meta = {}) {
 let botApiCustomEmojiRejected = false;
 /** Timestamp until which animated custom emoji is paused after a rejection. */
 let botApiCustomEmojiRejectedUntil = 0;
+/** Last Telegram error that disabled custom emoji (for /start guidance). */
+let botApiCustomEmojiRejectReason = "";
+let lastBotUsername = "";
 /** How long to pause animated emoji after Telegram rejects a custom emoji ID. */
 const CUSTOM_EMOJI_REJECT_COOLDOWN_MS = 60 * 1000;
 
@@ -6370,9 +6378,15 @@ const CUSTOM_EMOJI_REJECTED_RE = /custom_emoji|document_invalid/i;
 // per-message formatting issue, not evidence that any custom emoji is invalid.
 const PARSE_ENTITY_ERROR_RE = /can't parse entit/i;
 
-function setBotApiCustomEmojiRejected(val) {
+function setBotApiCustomEmojiRejected(val, reason = "") {
     botApiCustomEmojiRejected = Boolean(val);
     botApiCustomEmojiRejectedUntil = val ? Date.now() + CUSTOM_EMOJI_REJECT_COOLDOWN_MS : 0;
+    if (val) {
+        botApiCustomEmojiRejectReason = String(reason || "").slice(0, 240);
+        console.warn("Custom emoji disabled temporarily:", botApiCustomEmojiRejectReason || "(no reason)");
+    } else {
+        botApiCustomEmojiRejectReason = "";
+    }
 }
 
 function isBotApiCustomEmojiRejected() {
@@ -6389,6 +6403,38 @@ function isBotApiCustomEmojiRejected() {
 function clearBotApiCustomEmojiRejection() {
     botApiCustomEmojiRejected = false;
     botApiCustomEmojiRejectedUntil = 0;
+    botApiCustomEmojiRejectReason = "";
+}
+
+/**
+ * Guidance for animated custom emoji. Telegram Bot API only allows custom
+ * emoji entities / button icons when the bot OWNER has Premium (or Fragment).
+ */
+function renderAnimatedEmojiOwnerHint() {
+    let animatedOn = true;
+    try {
+        const mod = require("./messages");
+        if (typeof mod.animatedEmojisEnabled === "function") animatedOn = mod.animatedEmojisEnabled();
+    } catch (_) {}
+    if (!animatedOn) return "";
+    const botName = lastBotUsername || "this bot";
+    if (!isBotApiCustomEmojiRejected()) {
+        return [
+            "✨  <b>Animated emoji note</b>",
+            "Telegram only animates custom emoji from bots when the <b>bot owner account</b> has <b>Telegram Premium</b> (or Fragment).",
+            "Turn Premium on for the account that owns this bot in @BotFather, then send /start again.",
+            "Until then you still see normal emoji — not animated custom ones.",
+        ].join("\n");
+    }
+    const reason = botApiCustomEmojiRejectReason
+        ? ("\n<i>" + String(botApiCustomEmojiRejectReason).replace(/[<>]/g, "") + "</i>")
+        : "";
+    return [
+        "⚠️  <b>Animated custom emoji blocked by Telegram</b>",
+        "Packs are synced, but Telegram refused custom emoji for this bot." + reason,
+        "Enable <b>Telegram Premium</b> on the account that owns @" + botName + ", then /start again.",
+        "Without owner Premium, bots can only use plain emoji.",
+    ].join("\n");
 }
 
 /**
@@ -6504,7 +6550,7 @@ async function safeReply(ctx, text, extra = {}) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
             let fallbackText = sendText;
             if (fallbackText && fallbackText.includes("<tg-emoji")) {
                 fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -6574,7 +6620,7 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
         }
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
             let fallbackText = editText;
             if (fallbackText && fallbackText.includes("<tg-emoji")) {
                 fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -6793,7 +6839,7 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
             const fallbackExtra = stripButtonEmojis(extra);
             if (fallbackExtra && fallbackExtra.caption && fallbackExtra.caption.includes("<tg-emoji")) {
                 fallbackExtra.caption = fallbackExtra.caption.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -7099,7 +7145,7 @@ async function sendHtml(ctx, text, extra = {}) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
             let fallbackText = text;
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -7162,7 +7208,7 @@ async function sendHtmlTo(telegram, chatId, text) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
             let fallbackText = text;
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -9101,6 +9147,7 @@ module.exports = {
     setBotApiCustomEmojiRejected,
     isBotApiCustomEmojiRejected,
     clearBotApiCustomEmojiRejection,
+    renderAnimatedEmojiOwnerHint,
     safeReply,
     safeEdit,
     safeSendDocument,

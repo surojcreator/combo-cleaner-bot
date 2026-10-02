@@ -282,6 +282,41 @@ async function main() {
     }
     botMeta.botUsername = me.username;
     console.log(`Bot started as @${me.username} (id ${me.id})`);
+    // Probe whether Telegram allows custom emoji for this bot (owner Premium /
+    // Fragment). If not, safeReply will stay on plain unicode and /start explains why.
+    try {
+        const { setBotApiCustomEmojiRejected, clearBotApiCustomEmojiRejection } = require("./bot");
+        const { getCustomEmojis, animatedEmojisEnabled } = require("./messages");
+        if (animatedEmojisEnabled && animatedEmojisEnabled()) {
+            const map = getCustomEmojis ? getCustomEmojis() : {};
+            const sampleId = map["🚀"] || map.rocket || Object.values(map)[0];
+            if (sampleId) {
+                const probe = `<tg-emoji emoji-id="${String(sampleId)}">🚀</tg-emoji> probe`;
+                // send to a non-existent chat to get entity validation? Telegram validates
+                // parse entities before chat existence in some cases — use getMe-only:
+                // copyMessage not useful. Try sendMessage to bot itself → fails chat.
+                // Instead: call savePreparedInlineMessage is overkill.
+                // Soft-validate by parsing API: edit is no-op. Use:
+                await bot.telegram.sendMessage(me.id, probe, { parse_mode: "HTML" }).then(() => {
+                    if (typeof clearBotApiCustomEmojiRejection === "function") clearBotApiCustomEmojiRejection();
+                    console.log("Custom emoji probe: accepted by Telegram (owner Premium/Fragment OK).");
+                }).catch((err) => {
+                    const msg = String((err && err.message) || err || "");
+                    if (/custom_emoji|document_invalid|can't parse entities|ENTITY/i.test(msg)) {
+                        if (typeof setBotApiCustomEmojiRejected === "function") setBotApiCustomEmojiRejected(true, msg);
+                        console.warn("Custom emoji probe: REJECTED —", msg);
+                        console.warn("Enable Telegram Premium on the bot owner account for animated emoji.");
+                    } else {
+                        // e.g. chat not found / blocked — not an emoji problem
+                        console.log("Custom emoji probe skipped (send to self not allowed):", msg.slice(0, 120));
+                    }
+                });
+            }
+        }
+    } catch (probeErr) {
+        console.warn("Custom emoji probe error:", probeErr && probeErr.message ? probeErr.message : probeErr);
+    }
+
     await connectUserbot();
     if (botMeta.userbot && typeof botMeta.userbot.setBotUsername === "function") {
         botMeta.userbot.setBotUsername(me.username);

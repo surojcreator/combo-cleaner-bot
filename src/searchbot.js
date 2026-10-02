@@ -40,8 +40,8 @@ const SCOPE_ALIASES = {
 const DEFAULT_SEARCH_BOT = "DumpNews14Bot";
 const DEFAULT_HIST_TEMPLATE = "hist:full:{scope}";
 
-/** "wait 14 seconds before each try". */
-const DEFAULT_STEP_DELAY_MS = 14000;
+/** "wait 15 seconds before each try / dump-bot click". */
+const DEFAULT_STEP_DELAY_MS = 15000;
 
 /** How long to wait for the searcher bot to answer before retrying. */
 const DEFAULT_RESULT_WAIT_MS = 20000;

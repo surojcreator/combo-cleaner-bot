@@ -1488,7 +1488,7 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 daysCount = 5,
                 startDate = null,
                 chatId = null,
-                stepDelayMs = 14000,
+                stepDelayMs = 15000,
                 shouldStop = () => false,
                 onStatus = () => {},
                 sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -1496,10 +1496,33 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
 
             const totalDays = Math.max(1, Math.min(90, Number(daysCount) || 5));
             const searchTarget = searcherEntity || cfg.searcher;
+            // Hard pacing on the dump bot: default 15s between actions (override via SEARCH_STEP_DELAY_MS).
+            const clickGapMs = Math.max(1000, Number(stepDelayMs) || 15000);
             const seenResultIds = new Set();
             let domainSent = false;
             let daysProcessed = 0;
             let resultsFound = 0;
+            let lastDumpActionAt = 0;
+
+            /** Wait until clickGapMs has elapsed since the last dump-bot action. */
+            const paceDumpBot = async (label = "action") => {
+                const now = Date.now();
+                const elapsed = now - lastDumpActionAt;
+                if (lastDumpActionAt > 0 && elapsed < clickGapMs) {
+                    const wait = clickGapMs - elapsed;
+                    onStatus({
+                        day: "pace",
+                        attempt: daysProcessed + 1,
+                        totalDays,
+                        step: `Waiting ${(wait / 1000).toFixed(0)}s before next dump-bot ${label}…`,
+                    });
+                    await sleep(wait);
+                }
+            };
+
+            const markDumpAction = () => {
+                lastDumpActionAt = Date.now();
+            };
 
             const clickLive = async (msgId, data, label = "click") => {
                 // CRITICAL: pass the exact bytes Telegram attached to the button on
@@ -1513,7 +1536,12 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     dataBuf = Buffer.from(data, "utf8");
                 }
                 if (!dataBuf || !dataBuf.length) throw new Error(`userbot ${label}: empty callback data`);
-                return await withTimeout(
+
+                // 15s (clickGapMs) between every click on the dump bot.
+                await paceDumpBot(label);
+                if (shouldStop()) throw new Error("stopped");
+
+                const res = await withTimeout(
                     client.invoke(new Api.messages.GetBotCallbackAnswer({
                         peer: searchTarget,
                         msgId: Number(msgId),
@@ -1522,6 +1550,8 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                     timeoutMs,
                     `userbot ${label}`,
                 );
+                markDumpAction();
+                return res;
             };
 
             const extractLiveData = (btn) => {
@@ -1682,11 +1712,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                 for (let qTry = 0; qTry < 3; qTry++) {
                     if (shouldStop()) return;
                     try {
+                        // Same 15s gap as button clicks — dump bot is rate-sensitive.
+                        await paceDumpBot("domain query");
+                        if (shouldStop()) return;
                         await withTimeout(
                             client.sendMessage(searchTarget, { message: query }),
                             timeoutMs,
                             "userbot send query",
                         );
+                        markDumpAction();
                         domainSent = true;
                         break;
                     } catch (qErr) {
@@ -1694,7 +1728,6 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         await sleep(1200);
                     }
                 }
-                await sleep(Math.max(800, Math.min(stepDelayMs, 2000)));
             };
 
             const ingestIncoming = async (dateStr, dayIdx) => {
@@ -1974,13 +2007,15 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         consecutiveMisses = 0;
                     }
                     if (dayIdx < planned.length - 1) {
+                        // Day-to-day gap is handled by clickLive/paceDumpBot (15s between actions).
+                        // Extra short breathe so UI status updates cleanly.
                         onStatus({
                             day: formatDateDmy(planned[dayIdx]),
                             attempt: dayIdx + 1,
                             totalDays: planned.length,
-                            step: "Pacing before next day…",
+                            step: `Next day in ~${Math.round(clickGapMs / 1000)}s…`,
                         });
-                        await sleep(Math.max(500, Number(stepDelayMs) || 14000));
+                        await paceDumpBot("next day");
                     }
                 }
 

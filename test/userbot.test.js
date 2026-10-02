@@ -34,25 +34,46 @@ test("classifyUserbotError maps MTProto failures to relay kinds", () => {
 });
 
 test("pickTransport prefers the connected account, else the Bot API", () => {
-    const ctx = { telegram: { sendMessage: async () => true } };
-    const searchOptions = { botUsername: "DumpNews14Bot", transport: "auto" };
+    const prevSession = process.env.TELEGRAM_SESSION;
+    const prevId = process.env.TELEGRAM_API_ID;
+    const prevHash = process.env.TELEGRAM_API_HASH;
+    delete process.env.TELEGRAM_SESSION;
+    delete process.env.TELEGRAM_API_ID;
+    delete process.env.TELEGRAM_API_HASH;
+    try {
+        const ctx = { telegram: { sendMessage: async () => true } };
+        const searchOptions = { botUsername: "DumpNews14Bot", transport: "auto" };
 
-    const ready = { isReady: () => true, send: async (t) => ({ message_id: 1, chat: { id: 7 } }), classify: () => "other" };
-    assert.equal(pickTransport({ userbot: ready }, searchOptions, ctx).kind, "userbot");
+        const ready = { isReady: () => true, send: async (t) => ({ message_id: 1, chat: { id: 7 } }), classify: () => "other" };
+        assert.equal(pickTransport({ userbot: ready }, searchOptions, ctx).kind, "userbot");
 
-    // auto + configured-but-down peer: stay on userbot path so we never hit bot-to-bot disabled
-    const down = { isReady: () => false, send: async () => true, classify: () => "other" };
-    const autoDown = pickTransport({ userbot: down, userbotConfigured: true }, searchOptions, ctx);
-    assert.equal(autoDown.kind, "userbot");
-    assert.equal(autoDown.userbot, null);
-    assert.equal(autoDown.classify(new Error("x")), "userbot_not_ready");
+        // auto + configured-but-down peer: stay on userbot path so we never hit bot-to-bot disabled
+        const down = { isReady: () => false, send: async () => true, classify: () => "other" };
+        const autoDown = pickTransport({ userbot: down, userbotConfigured: true }, searchOptions, ctx);
+        assert.equal(autoDown.kind, "userbot");
+        assert.equal(autoDown.userbot, null);
+        assert.equal(autoDown.classify(new Error("x")), "userbot_not_ready");
 
-    // auto with nothing configured falls back to Bot API
-    assert.equal(pickTransport({}, searchOptions, ctx).kind, "bot");
+        // auto with nothing configured falls back to Bot API
+        assert.equal(pickTransport({}, searchOptions, ctx).kind, "bot");
 
-    const forcedDown = pickTransport({ userbot: down }, { botUsername: "DumpNews14Bot", transport: "userbot" }, ctx);
-    assert.equal(forcedDown.kind, "userbot");
-    assert.equal(forcedDown.classify(new Error("x")), "userbot_not_ready");
+        // env session alone also forces userbot path
+        process.env.TELEGRAM_SESSION = "1fake";
+        const envForced = pickTransport({}, searchOptions, ctx);
+        assert.equal(envForced.kind, "userbot");
+        delete process.env.TELEGRAM_SESSION;
+
+        const forcedDown = pickTransport({ userbot: down }, { botUsername: "DumpNews14Bot", transport: "userbot" }, ctx);
+        assert.equal(forcedDown.kind, "userbot");
+        assert.equal(forcedDown.classify(new Error("x")), "userbot_not_ready");
+    } finally {
+        if (prevSession !== undefined) process.env.TELEGRAM_SESSION = prevSession;
+        else delete process.env.TELEGRAM_SESSION;
+        if (prevId !== undefined) process.env.TELEGRAM_API_ID = prevId;
+        else delete process.env.TELEGRAM_API_ID;
+        if (prevHash !== undefined) process.env.TELEGRAM_API_HASH = prevHash;
+        else delete process.env.TELEGRAM_API_HASH;
+    }
 });
 
 test("isSearcherForward spots results shared by the bypass", () => {

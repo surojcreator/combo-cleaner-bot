@@ -49,11 +49,20 @@ const botMeta = { search: searchbot.loadOptions() };
 // credentials never stop the bot itself - the /ulp command falls back to the
 // plain Bot API and says exactly what to fix.
 const userbotConfig = userbot.loadConfig();
-botMeta.search.transport = userbotConfig.transport;
+// Prefer the account bypass whenever credentials exist. Third-party search bots
+// almost never enable bot-to-bot, so "auto" with a session would still be a trap
+// if anything reset transport — force userbot when configured.
+botMeta.search.transport = userbot.isConfigured(userbotConfig)
+    ? (userbotConfig.transport === "bot" ? "bot" : "userbot")
+    : (userbotConfig.transport || "auto");
 // Tell the relay whether account credentials exist — even before the MTProto
 // client finishes connecting — so /ulp never falls into USER_BOT_TO_BOT_DISABLED
 // just because the peer is still warming up.
 botMeta.userbotConfigured = userbot.isConfigured(userbotConfig);
+console.log(
+    `ULP transport preference: ${botMeta.search.transport}` +
+    ` (userbotConfigured=${botMeta.userbotConfigured})`
+);
 
 const bot = createBot(TOKEN || "123456:STANDBY_TOKEN", botMeta);
 

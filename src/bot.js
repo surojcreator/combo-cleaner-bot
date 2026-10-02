@@ -7383,14 +7383,25 @@ function isSearcherMessage(ctx, meta, searchOptions) {
  * @param {import('telegraf').Context} ctx
  */
 function pickTransport(meta, searchOptions, ctx) {
-    const want = String((searchOptions && searchOptions.transport) || "auto").toLowerCase();
+    let want = String((searchOptions && searchOptions.transport) || "auto").toLowerCase();
     const peer = meta && meta.userbot;
     const userbotReady = Boolean(peer && typeof peer.isReady === "function" && peer.isReady());
-    const userbotConfigured = Boolean(
+    // Session in env means the operator intends MTProto — never fall back to Bot API
+    // even if the peer object is briefly missing (would only produce bot-to-bot errors).
+    const sessionConfigured = Boolean(
         (meta && meta.userbotConfigured) ||
+        String(process.env.TELEGRAM_SESSION || "").trim() ||
+        (Number(process.env.TELEGRAM_API_ID || 0) > 0 && String(process.env.TELEGRAM_API_HASH || "").trim())
+    );
+    const userbotConfigured = Boolean(
+        sessionConfigured ||
         userbotReady ||
         (peer && (typeof peer.send === "function" || typeof peer.isReady === "function"))
     );
+
+    // When a session exists, treat "auto" as "userbot". Bot-to-bot is a dead end
+    // for third-party searchers and must never be attempted while credentials exist.
+    if (want === "auto" && userbotConfigured) want = "userbot";
 
     const userbotTransport = (readyPeer) => ({
         kind: "userbot",
@@ -7412,13 +7423,13 @@ function pickTransport(meta, searchOptions, ctx) {
         return userbotTransport(peer);
     }
 
-    // Forced userbot, or auto with credentials present but not connected yet:
+    // Forced userbot, or auto/session-present but peer not connected yet:
     // stay on the userbot path so we never slam into bot-to-bot disabled.
-    if (want === "userbot" || (want === "auto" && userbotConfigured && !userbotReady)) {
-        return userbotTransport(null);
+    if (want === "userbot" || (want === "auto" && userbotConfigured)) {
+        return userbotTransport(userbotReady ? peer : null);
     }
 
-    // Explicit bot path, or auto with no account credentials at all.
+    // Explicit bot path only when NO account credentials exist at all.
     return {
         kind: "bot",
         userbot: null,
@@ -7582,13 +7593,37 @@ async function beginUlpRun(ctx, params) {
         typeof meta.userbot.isReady === "function" &&
         !meta.userbot.isReady()
     ) {
-        const waitMs = Math.min(8000, Math.max(1500, Number(params.userbotWaitMs) || 4000));
+        const waitMs = Math.min(12000, Math.max(1500, Number(params.userbotWaitMs) || 8000));
         const waitDeadline = Date.now() + waitMs;
         while (Date.now() < waitDeadline) {
             if (meta.userbot.isReady()) break;
             await sleep(250);
         }
         transport = pickTransport(meta, effectiveSearchOptions, ctx);
+    }
+    console.log(
+        `[ulp] chat=${chatId} query=${query} scope=${scope} transport=${transport.kind}` +
+        ` ready=${Boolean(transport.userbot)} userbotMeta=${Boolean(meta && meta.userbot)}` +
+        ` configured=${Boolean(meta && meta.userbotConfigured)}` +
+        ` want=${String((effectiveSearchOptions && effectiveSearchOptions.transport) || "auto")}`
+    );
+    // Absolute hard stop: never send Bot API private messages when a session exists.
+    if (
+        transport.kind === "bot" &&
+        (Boolean(meta && (meta.userbotConfigured || meta.userbot)) ||
+            Boolean(String(process.env.TELEGRAM_SESSION || "").trim()))
+    ) {
+        console.warn("[ulp] refusing Bot API path while TELEGRAM_SESSION is configured — forcing userbot_not_ready card");
+        transport = {
+            kind: "userbot",
+            userbot: (meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady())
+                ? meta.userbot
+                : null,
+            classify: () => "userbot_not_ready",
+            send: async () => {
+                throw new Error("USERBOT_NOT_READY: session configured but peer offline");
+            },
+        };
     }
 
     const steps = searchbot.buildSteps(query, scope, effectiveSearchOptions.histTemplate);

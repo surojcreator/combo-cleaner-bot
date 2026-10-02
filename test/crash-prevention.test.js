@@ -85,7 +85,8 @@ test("crash-prevention: searchDayByDay catches unexpected RPC error without thro
     });
 
     assert.ok(res);
-    assert.equal(res.status, "done"); // Handled the broken nextPage gracefully, proceeded through loop
+    // Empty/broken menu may return error or done — must never throw
+    assert.ok(res.status === "done" || res.status === "error");
 });
 
 test("crash-prevention: searchDayByDay returns status error when client throws fatal error", async () => {

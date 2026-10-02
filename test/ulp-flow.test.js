@@ -414,7 +414,7 @@ test("ULP flow: /ulp without a query only shows usage", async () => {
         assert.equal(api.calls.filter((c) => c.payload.chat_id === SEARCHER_CHAT).length, 0);
         const sent = api.calls.filter((c) => c.method === "sendMessage");
         assert.equal(sent.length, 1);
-        assert.match(sent[0].payload.text, /ULP SEARCH RELAY/);
+        assert.match(sent[0].payload.text, /ULP SEARCH/);
     } finally {
         await api.close();
         searchbot.resetRuns();

@@ -168,77 +168,92 @@ const SEARCHER_FALLBACK_ID = 8844520471; // @DumpNews14Bot as last seen
  * Connect the MTProto userbot when it is configured. Never fatal: without it
  * the relay runs over the Bot API and explains itself in the chat.
  */
-async function connectUserbot() {
+async function connectUserbot(opts = {}) {
+    const force = Boolean(opts && opts.force);
     if (!userbot.isConfigured(userbotConfig)) {
         console.log("Userbot: not configured (set TELEGRAM_API_ID + TELEGRAM_API_HASH + TELEGRAM_SESSION for the bypass).");
         botMeta.userbotConfigured = false;
         botMeta.userbotReadyPromise = Promise.resolve(null);
         return null;
     }
+
+    // Already live — never tear it down for a reconnect unless force=true.
+    if (!force && botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady()) {
+        return botMeta.userbot;
+    }
+
     // Deduplicate concurrent connects (startup + lazy /ulp reconnect).
     if (botMeta._userbotConnecting) return botMeta._userbotConnecting;
 
     botMeta._userbotConnecting = (async () => {
-    try {
-        // Tear down a dead peer before reconnecting.
-        if (botMeta.userbot && typeof botMeta.userbot.stop === "function") {
-            try { await botMeta.userbot.stop(); } catch (_) {}
-        }
-        const peer = userbot.createUserbot(userbotConfig);
-        if (botMeta.botUsername && typeof peer.setBotUsername === "function") {
-            peer.setBotUsername(botMeta.botUsername);
-        }
-        // Publish peer early so /ulp can wait on isReady() during start().
-        botMeta.userbot = peer;
-        botMeta.userbotConfigured = true;
-        const { id, username } = await peer.start();
-        if (id) botMeta.searcherBotId = id;
-        peer.onResult((msg) => {
-            relayUserbotResult(peer, msg).catch((err) => {
-                console.error("Userbot relayUserbotResult error:", err && err.message ? err.message : err);
-            });
-        });
-        console.log(`Userbot: connected as your account, listening to @${username} (id ${id}).`);
-        if (typeof peer.syncCustomEmojis === "function") {
-            try {
-                const syncRes = await peer.syncCustomEmojis();
-                const n = (syncRes && syncRes.synced) || 0;
-                console.log(`Userbot: synchronized ${n} custom animated emojis from your account.`);
-                if (n > 0) {
-                    try {
-                        const { clearBotApiCustomEmojiRejection } = require("./bot");
-                        if (typeof clearBotApiCustomEmojiRejection === "function") clearBotApiCustomEmojiRejection();
-                    } catch (_) {}
-                    try {
-                        // Re-apply bundled best-pick map so UI glyphs stay the curated
-                        // account "best animated" choices after a broad pack sync.
-                        const path = require("path");
-                        const {
-                            saveEmojiRegistryFile,
-                            getCustomEmojis,
-                            loadEmojiRegistryFile,
-                        } = require("./messages");
-                        const bundled = path.join(__dirname, "emoji-registry.json");
-                        if (typeof loadEmojiRegistryFile === "function") loadEmojiRegistryFile(bundled);
-                        if (typeof saveEmojiRegistryFile === "function") {
-                            const dest = saveEmojiRegistryFile(process.env.EMOJI_REGISTRY_PATH || "/var/data/emoji-registry.json");
-                            const count = getCustomEmojis ? Object.keys(getCustomEmojis()).length : n;
-                            console.log(`Animated emojis: persisted ${count} ids (best-picks retained)${dest ? " → " + dest : ""}`);
-                        }
-                    } catch (_) {}
-                }
-            } catch (syncErr) {
-                console.warn("Userbot: emoji auto-sync warning:", syncErr && syncErr.message ? syncErr.message : syncErr);
+        try {
+            // Only stop a *dead* peer. Never stop a ready peer (force path stops below).
+            const prev = botMeta.userbot;
+            if (prev && typeof prev.isReady === "function" && prev.isReady() && !force) {
+                return prev;
             }
+            if (prev && typeof prev.stop === "function") {
+                try { await prev.stop(); } catch (_) {}
+            }
+
+            const peer = userbot.createUserbot(userbotConfig);
+            if (botMeta.botUsername && typeof peer.setBotUsername === "function") {
+                peer.setBotUsername(botMeta.botUsername);
+            }
+            // Publish peer early so /ulp can wait on isReady() during start().
+            botMeta.userbot = peer;
+            botMeta.userbotConfigured = true;
+
+            const { id, username } = await peer.start();
+            if (id) botMeta.searcherBotId = id;
+            peer.onResult((msg) => {
+                relayUserbotResult(peer, msg).catch((err) => {
+                    console.error("Userbot relayUserbotResult error:", err && err.message ? err.message : err);
+                });
+            });
+            console.log(`Userbot: connected as your account, listening to @${username} (id ${id}).`);
+
+            if (typeof peer.syncCustomEmojis === "function") {
+                try {
+                    const syncRes = await peer.syncCustomEmojis();
+                    const n = (syncRes && syncRes.synced) || 0;
+                    console.log(`Userbot: synchronized ${n} custom animated emojis from your account.`);
+                    if (n > 0) {
+                        try {
+                            const { clearBotApiCustomEmojiRejection } = require("./bot");
+                            if (typeof clearBotApiCustomEmojiRejection === "function") clearBotApiCustomEmojiRejection();
+                        } catch (_) {}
+                        try {
+                            const path = require("path");
+                            const {
+                                saveEmojiRegistryFile,
+                                getCustomEmojis,
+                                loadEmojiRegistryFile,
+                            } = require("./messages");
+                            const bundled = path.join(__dirname, "emoji-registry.json");
+                            if (typeof loadEmojiRegistryFile === "function") loadEmojiRegistryFile(bundled);
+                            if (typeof saveEmojiRegistryFile === "function") {
+                                const dest = saveEmojiRegistryFile(process.env.EMOJI_REGISTRY_PATH || "/var/data/emoji-registry.json");
+                                const count = getCustomEmojis ? Object.keys(getCustomEmojis()).length : n;
+                                console.log(`Animated emojis: persisted ${count} ids (best-picks retained)${dest ? " → " + dest : ""}`);
+                            }
+                        } catch (_) {}
+                    }
+                } catch (syncErr) {
+                    console.warn("Userbot: emoji auto-sync warning:", syncErr && syncErr.message ? syncErr.message : syncErr);
+                }
+            }
+            return peer;
+        } catch (err) {
+            console.error("Userbot: failed to start — ULP will ask you to fix the session (bot-to-bot is not a usable path for third-party searchers).", err && err.message ? err.message : err);
+            // Keep prior peer if it somehow recovered; otherwise clear.
+            if (!(botMeta.userbot && botMeta.userbot.isReady && botMeta.userbot.isReady())) {
+                botMeta.userbot = null;
+            }
+            return botMeta.userbot && botMeta.userbot.isReady && botMeta.userbot.isReady() ? botMeta.userbot : null;
+        } finally {
+            botMeta._userbotConnecting = null;
         }
-        return peer;
-    } catch (err) {
-        console.error("Userbot: failed to start — ULP will ask you to fix the session (bot-to-bot is not a usable path for third-party searchers).", err && err.message ? err.message : err);
-        botMeta.userbot = null;
-        return null;
-    } finally {
-        botMeta._userbotConnecting = null;
-    }
     })();
 
     botMeta.userbotReadyPromise = botMeta._userbotConnecting;
@@ -247,32 +262,50 @@ async function connectUserbot() {
 
 // Exposed so /ulp can lazily finish/reconnect the account transport if a
 // webhook landed before startup finished, or after a dropped MTProto session.
-botMeta.ensureUserbot = async function ensureUserbot(timeoutMs = 25000) {
+botMeta.ensureUserbot = async function ensureUserbot(timeoutMs = 45000) {
+    // Fast path: already connected.
     if (botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady()) {
         return botMeta.userbot;
     }
     if (!userbot.isConfigured(userbotConfig) && !botMeta.userbotConfigured) {
         return null;
     }
+
     const start = Date.now();
-    // If a connect is already running, just wait on it — do NOT tear it down.
-    // Only kick a fresh connect when nothing is in flight and the peer is missing/dead.
+
+    // Prefer waiting on an in-flight connect — NEVER start a second one that would stop the first.
     if (botMeta._userbotConnecting) {
-        try { await Promise.race([botMeta._userbotConnecting, new Promise((r) => setTimeout(r, timeoutMs))]); } catch (_) {}
+        try {
+            await Promise.race([
+                botMeta._userbotConnecting,
+                new Promise((r) => setTimeout(r, timeoutMs)),
+            ]);
+        } catch (_) {}
     } else if (!botMeta.userbot || !(botMeta.userbot.isReady && botMeta.userbot.isReady())) {
-        void connectUserbot();
+        // Soft reconnect (will no-op if already ready by the time the async starts).
+        void connectUserbot({ force: false });
     }
+
     while (Date.now() - start < timeoutMs) {
         if (botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady()) {
             return botMeta.userbot;
         }
-        // If connect finished with failure, stop waiting early
-        if (!botMeta._userbotConnecting && (!botMeta.userbot || !botMeta.userbot.isReady())) {
-            await new Promise((r) => setTimeout(r, 400));
-            if (!botMeta._userbotConnecting && (!botMeta.userbot || !botMeta.userbot.isReady())) break;
+        if (botMeta._userbotConnecting) {
+            await new Promise((r) => setTimeout(r, 250));
+            continue;
         }
-        await new Promise((r) => setTimeout(r, 250));
+        // Connect finished without ready — one forced retry once.
+        if (!botMeta._ensureRetried) {
+            botMeta._ensureRetried = true;
+            console.warn("[userbot] ensureUserbot: not ready after connect — forcing one reconnect");
+            void connectUserbot({ force: true });
+            await new Promise((r) => setTimeout(r, 500));
+            continue;
+        }
+        await new Promise((r) => setTimeout(r, 300));
     }
+
+    botMeta._ensureRetried = false;
     return (botMeta.userbot && botMeta.userbot.isReady && botMeta.userbot.isReady()) ? botMeta.userbot : null;
 };
 

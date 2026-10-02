@@ -7703,44 +7703,44 @@ async function beginUlpRun(ctx, params) {
     }
 
     // Choose how the query reaches the searcher: the account transport
-    // (MTProto bypass, needs no other bot's cooperation) or the plain Bot API.
-    // Wait/reconnect whenever a session is configured but the peer is not live yet
-    // (webhook can land during startup, or MTProto can drop after AUTH_KEY issues).
+    // (MTProto bypass). ALWAYS ensure the peer is live before deciding — do not
+    // show ACCOUNT BYPASS OFFLINE when the session exists and connect just needs a moment.
     const sessionConfigured = Boolean(
         (meta && meta.userbotConfigured) ||
         String(process.env.TELEGRAM_SESSION || "").trim()
     );
-    let transport = pickTransport(meta, effectiveSearchOptions, ctx);
-    if (transport.kind === "userbot" && !transport.userbot && sessionConfigured) {
-        const waitMs = Math.min(30000, Math.max(3000, Number(params.userbotWaitMs) || 20000));
-        console.log(`[ulp] userbot not ready yet — waiting up to ${waitMs}ms (ensure/reconnect)…`);
-        try {
-            if (meta && typeof meta.ensureUserbot === "function") {
-                await meta.ensureUserbot(waitMs);
-            } else if (meta && meta.userbotReadyPromise) {
-                await Promise.race([
-                    meta.userbotReadyPromise,
-                    sleep(waitMs),
-                ]);
-            } else {
-                const waitDeadline = Date.now() + waitMs;
-                while (Date.now() < waitDeadline) {
-                    if (meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady()) break;
-                    await sleep(250);
+
+    if (sessionConfigured) {
+        const waitMs = Math.min(60000, Math.max(5000, Number(params.userbotWaitMs) || 45000));
+        const alreadyReady = Boolean(meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady());
+        if (!alreadyReady) {
+            console.log(`[ulp] ensuring userbot is ready (wait up to ${waitMs}ms)…`);
+            // Acknowledge the user immediately so they don't think the bot died.
+            try {
+                if (ctx && typeof ctx.replyWithChatAction === "function") {
+                    await ctx.replyWithChatAction("typing").catch(() => {});
                 }
+            } catch (_) {}
+            try {
+                if (meta && typeof meta.ensureUserbot === "function") {
+                    await meta.ensureUserbot(waitMs);
+                } else if (meta && meta.userbotReadyPromise) {
+                    await Promise.race([meta.userbotReadyPromise, sleep(waitMs)]);
+                } else {
+                    const waitDeadline = Date.now() + waitMs;
+                    while (Date.now() < waitDeadline) {
+                        if (meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady()) break;
+                        await sleep(250);
+                    }
+                }
+            } catch (waitErr) {
+                console.warn("[ulp] ensureUserbot wait error:", waitErr && waitErr.message ? waitErr.message : waitErr);
             }
-        } catch (waitErr) {
-            console.warn("[ulp] ensureUserbot wait error:", waitErr && waitErr.message ? waitErr.message : waitErr);
         }
-        transport = pickTransport(meta, effectiveSearchOptions, ctx);
     }
-    console.log(
-        `[ulp] chat=${chatId} query=${query} scope=${scope} transport=${transport.kind}` +
-        ` ready=${Boolean(transport.userbot)} userbotMeta=${Boolean(meta && meta.userbot)}` +
-        ` configured=${Boolean(meta && meta.userbotConfigured)}` +
-        ` want=${String((effectiveSearchOptions && effectiveSearchOptions.transport) || "auto")}` +
-        ` isReady=${Boolean(meta && meta.userbot && meta.userbot.isReady && meta.userbot.isReady())}`
-    );
+
+    let transport = pickTransport(meta, effectiveSearchOptions, ctx);
+
     // Absolute hard stop: never send Bot API private messages when a session exists.
     if (transport.kind === "bot" && sessionConfigured) {
         console.warn("[ulp] refusing Bot API path while TELEGRAM_SESSION is configured — forcing userbot path");
@@ -7750,6 +7750,22 @@ async function beginUlpRun(ctx, params) {
             ctx,
         );
     }
+
+    // Final ensure pass if still no ready peer.
+    if (transport.kind === "userbot" && !transport.userbot && sessionConfigured && meta && typeof meta.ensureUserbot === "function") {
+        console.log("[ulp] second ensureUserbot pass…");
+        await meta.ensureUserbot(20000).catch(() => null);
+        transport = pickTransport(meta, { ...effectiveSearchOptions, transport: "userbot" }, ctx);
+    }
+
+    console.log(
+        `[ulp] chat=${chatId} query=${query} scope=${scope} transport=${transport.kind}` +
+        ` ready=${Boolean(transport.userbot)} userbotMeta=${Boolean(meta && meta.userbot)}` +
+        ` configured=${Boolean(meta && meta.userbotConfigured)}` +
+        ` want=${String((effectiveSearchOptions && effectiveSearchOptions.transport) || "auto")}` +
+        ` isReady=${Boolean(meta && meta.userbot && meta.userbot.isReady && meta.userbot.isReady())}` +
+        ` searcherId=${meta && meta.userbot && meta.userbot.searcherId ? meta.userbot.searcherId : "-"}`
+    );
 
     const steps = searchbot.buildSteps(query, scope, effectiveSearchOptions.histTemplate);
     const run = searchbot.startRun(chatId, { query, scope, windowMs: calculatedWindowMs });

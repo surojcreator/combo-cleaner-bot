@@ -1000,7 +1000,14 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
             resultSink = sink;
         },
         isReady() {
-            return ready;
+            // ready flag is set after successful start(); also treat a connected client as ready
+            // so a dropped internal flag doesn't strand ULP behind ACCOUNT BYPASS OFFLINE.
+            if (ready && client) return true;
+            try {
+                if (client && typeof client.connected === "boolean") return Boolean(client.connected);
+                if (client && client._sender && client._sender._connection) return true;
+            } catch (_) {}
+            return Boolean(ready);
         },
         classify: classifyUserbotError,
 

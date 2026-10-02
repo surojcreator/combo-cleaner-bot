@@ -403,6 +403,9 @@ async function main() {
         console.error("Fatal startup error: Could not reach Telegram API after 5 attempts. Check your connection or BOT_TOKEN.");
         process.exit(1);
     }
+    // Telegraf only auto-fills botInfo inside handleUpdate/launch. Seed it now so
+    // the first webhook update (and command matching) never waits on getMe.
+    bot.botInfo = me;
     botMeta.botUsername = me.username;
     console.log(`Bot started as @${me.username} (id ${me.id})`);
     // Probe whether Telegram allows custom emoji for this bot (owner Premium /
@@ -453,16 +456,62 @@ async function main() {
 
     let launched = false;
     if (PUBLIC_URL) {
-        // Webhook mode: stable path without bot token (avoids : vs %3A 404 mismatch).
+        // Webhook mode: stable path. DO NOT use telegraf.webhookCallback path filter —
+        // it 403s on any tiny path mismatch and Telegram then marks the bot dead.
+        // We accept the POST ourselves and hand the update to handleUpdate.
         const webhookUrl = `${PUBLIC_URL}${WEBHOOK_PATH}`;
-        const webhookHandler = bot.webhookCallback(WEBHOOK_PATH);
+        const webhookHandler = async (req, res) => {
+            if (String(req.method || "").toUpperCase() !== "POST") {
+                res.writeHead(405, { "Content-Type": "text/plain" });
+                res.end("method not allowed\n");
+                return;
+            }
+            let body = "";
+            try {
+                for await (const chunk of req) body += String(chunk);
+                const update = body ? JSON.parse(body) : null;
+                if (!update || typeof update !== "object") {
+                    res.writeHead(400, { "Content-Type": "text/plain" });
+                    res.end("bad update\n");
+                    return;
+                }
+                const kind =
+                    (update.message && (update.message.text || update.message.caption || "message")) ||
+                    (update.callback_query && `cb:${update.callback_query.data || "?"}`) ||
+                    (update.edited_message && "edited_message") ||
+                    Object.keys(update).filter((k) => k !== "update_id").join(",") ||
+                    "?";
+                console.log(`[webhook] update_id=${update.update_id} kind=${String(kind).slice(0, 80)}`);
+                await bot.handleUpdate(update, res);
+                if (res.writableEnded === false) {
+                    res.statusCode = 200;
+                    res.end();
+                }
+            } catch (err) {
+                console.error("[webhook] handler error:", err && err.message ? err.message : err);
+                if (res.writableEnded === false) {
+                    try {
+                        res.writeHead(500, { "Content-Type": "text/plain" });
+                        res.end("error\n");
+                    } catch (_) {}
+                }
+            }
+        };
         startServer(webhookHandler);
         await bot.telegram.setWebhook(webhookUrl, {
             drop_pending_updates: true,
             max_connections: 40,
+            allowed_updates: [
+                "message",
+                "edited_message",
+                "callback_query",
+                "channel_post",
+                "edited_channel_post",
+                "my_chat_member",
+                "chat_member",
+            ],
         });
         console.log(`Webhook set to ${webhookUrl}`);
-        // Verify Telegram can reach us (helps catch 404 path bugs early)
         try {
             const info = await bot.telegram.getWebhookInfo();
             console.log(

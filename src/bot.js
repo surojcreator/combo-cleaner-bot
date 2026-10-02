@@ -307,7 +307,10 @@ function createBot(token, meta = {}) {
     bot.use(async (ctx, next) => {
         const updateId = ctx.update && ctx.update.update_id;
         if (updateId != null) {
-            if (seenUpdateIds.has(updateId)) return;
+            if (seenUpdateIds.has(updateId)) {
+                console.log(`[bot] drop duplicate update_id=${updateId}`);
+                return;
+            }
             seenUpdateIds.add(updateId);
             if (seenUpdateIds.size > 5000) {
                 const first = seenUpdateIds.values().next().value;
@@ -319,6 +322,15 @@ function createBot(token, meta = {}) {
         if (ctx.from && myBotId && Number(ctx.from.id) === Number(myBotId)) {
             return;
         }
+        try {
+            const chatId = ctx.chat && ctx.chat.id;
+            const text = (ctx.message && (ctx.message.text || ctx.message.caption)) || "";
+            const cb = ctx.callbackQuery && ctx.callbackQuery.data;
+            console.log(
+                `[bot] handle update_id=${updateId} chat=${chatId || "-"} ` +
+                (cb ? `cb=${String(cb).slice(0, 60)}` : `text=${JSON.stringify(String(text).slice(0, 60))}`)
+            );
+        } catch (_) {}
         if (!ctx.update.message && ctx.update.channel_post) {
             ctx.update.message = ctx.update.channel_post;
         }

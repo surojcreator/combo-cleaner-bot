@@ -7704,22 +7704,33 @@ async function beginUlpRun(ctx, params) {
 
     // Choose how the query reaches the searcher: the account transport
     // (MTProto bypass, needs no other bot's cooperation) or the plain Bot API.
-    // If the account is configured but still connecting, give it a short window
-    // so we don't fall into USER_BOT_TO_BOT_DISABLED on a cold start.
+    // Wait/reconnect whenever a session is configured but the peer is not live yet
+    // (webhook can land during startup, or MTProto can drop after AUTH_KEY issues).
+    const sessionConfigured = Boolean(
+        (meta && meta.userbotConfigured) ||
+        String(process.env.TELEGRAM_SESSION || "").trim()
+    );
     let transport = pickTransport(meta, effectiveSearchOptions, ctx);
-    if (
-        transport.kind === "userbot" &&
-        !transport.userbot &&
-        meta &&
-        meta.userbot &&
-        typeof meta.userbot.isReady === "function" &&
-        !meta.userbot.isReady()
-    ) {
-        const waitMs = Math.min(12000, Math.max(1500, Number(params.userbotWaitMs) || 8000));
-        const waitDeadline = Date.now() + waitMs;
-        while (Date.now() < waitDeadline) {
-            if (meta.userbot.isReady()) break;
-            await sleep(250);
+    if (transport.kind === "userbot" && !transport.userbot && sessionConfigured) {
+        const waitMs = Math.min(30000, Math.max(3000, Number(params.userbotWaitMs) || 20000));
+        console.log(`[ulp] userbot not ready yet — waiting up to ${waitMs}ms (ensure/reconnect)…`);
+        try {
+            if (meta && typeof meta.ensureUserbot === "function") {
+                await meta.ensureUserbot(waitMs);
+            } else if (meta && meta.userbotReadyPromise) {
+                await Promise.race([
+                    meta.userbotReadyPromise,
+                    sleep(waitMs),
+                ]);
+            } else {
+                const waitDeadline = Date.now() + waitMs;
+                while (Date.now() < waitDeadline) {
+                    if (meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady()) break;
+                    await sleep(250);
+                }
+            }
+        } catch (waitErr) {
+            console.warn("[ulp] ensureUserbot wait error:", waitErr && waitErr.message ? waitErr.message : waitErr);
         }
         transport = pickTransport(meta, effectiveSearchOptions, ctx);
     }
@@ -7727,25 +7738,17 @@ async function beginUlpRun(ctx, params) {
         `[ulp] chat=${chatId} query=${query} scope=${scope} transport=${transport.kind}` +
         ` ready=${Boolean(transport.userbot)} userbotMeta=${Boolean(meta && meta.userbot)}` +
         ` configured=${Boolean(meta && meta.userbotConfigured)}` +
-        ` want=${String((effectiveSearchOptions && effectiveSearchOptions.transport) || "auto")}`
+        ` want=${String((effectiveSearchOptions && effectiveSearchOptions.transport) || "auto")}` +
+        ` isReady=${Boolean(meta && meta.userbot && meta.userbot.isReady && meta.userbot.isReady())}`
     );
     // Absolute hard stop: never send Bot API private messages when a session exists.
-    if (
-        transport.kind === "bot" &&
-        (Boolean(meta && (meta.userbotConfigured || meta.userbot)) ||
-            Boolean(String(process.env.TELEGRAM_SESSION || "").trim()))
-    ) {
-        console.warn("[ulp] refusing Bot API path while TELEGRAM_SESSION is configured — forcing userbot_not_ready card");
-        transport = {
-            kind: "userbot",
-            userbot: (meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady())
-                ? meta.userbot
-                : null,
-            classify: () => "userbot_not_ready",
-            send: async () => {
-                throw new Error("USERBOT_NOT_READY: session configured but peer offline");
-            },
-        };
+    if (transport.kind === "bot" && sessionConfigured) {
+        console.warn("[ulp] refusing Bot API path while TELEGRAM_SESSION is configured — forcing userbot path");
+        transport = pickTransport(
+            { ...meta, userbotConfigured: true },
+            { ...effectiveSearchOptions, transport: "userbot" },
+            ctx,
+        );
     }
 
     const steps = searchbot.buildSteps(query, scope, effectiveSearchOptions.histTemplate);

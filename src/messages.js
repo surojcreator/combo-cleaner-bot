@@ -3367,9 +3367,9 @@ function ulpErrorHeader(kind, transport = "bot") {
         case "userbot_not_ready":
             return {
                 emoji: "\uD83E\uDD16",
-                title: "ACCOUNT BYPASS NEEDED",
+                title: "ACCOUNT BYPASS OFFLINE",
                 detail: transport === "userbot"
-                    ? "The account transport isn't connected yet. Log in once, restart, then tap Run again \u2014 ULP never needs bot-to-bot when your account is online."
+                    ? "Your MTProto session is configured, but the account transport is still connecting or dropped. Wait ~15s and tap Run again \u2014 no BotFather / bot-to-bot needed. If it keeps failing, re-run userbot login and update TELEGRAM_SESSION."
                     : "ULP search needs your Telegram account (MTProto) because third-party searchers keep bot-to-bot locked.",
             };
         case "userbot_error":

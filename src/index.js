@@ -171,13 +171,26 @@ const SEARCHER_FALLBACK_ID = 8844520471; // @DumpNews14Bot as last seen
 async function connectUserbot() {
     if (!userbot.isConfigured(userbotConfig)) {
         console.log("Userbot: not configured (set TELEGRAM_API_ID + TELEGRAM_API_HASH + TELEGRAM_SESSION for the bypass).");
-        return;
+        botMeta.userbotConfigured = false;
+        botMeta.userbotReadyPromise = Promise.resolve(null);
+        return null;
     }
+    // Deduplicate concurrent connects (startup + lazy /ulp reconnect).
+    if (botMeta._userbotConnecting) return botMeta._userbotConnecting;
+
+    botMeta._userbotConnecting = (async () => {
     try {
+        // Tear down a dead peer before reconnecting.
+        if (botMeta.userbot && typeof botMeta.userbot.stop === "function") {
+            try { await botMeta.userbot.stop(); } catch (_) {}
+        }
         const peer = userbot.createUserbot(userbotConfig);
         if (botMeta.botUsername && typeof peer.setBotUsername === "function") {
             peer.setBotUsername(botMeta.botUsername);
         }
+        // Publish peer early so /ulp can wait on isReady() during start().
+        botMeta.userbot = peer;
+        botMeta.userbotConfigured = true;
         const { id, username } = await peer.start();
         if (id) botMeta.searcherBotId = id;
         peer.onResult((msg) => {
@@ -185,8 +198,6 @@ async function connectUserbot() {
                 console.error("Userbot relayUserbotResult error:", err && err.message ? err.message : err);
             });
         });
-        botMeta.userbot = peer;
-        botMeta.userbotConfigured = true;
         console.log(`Userbot: connected as your account, listening to @${username} (id ${id}).`);
         if (typeof peer.syncCustomEmojis === "function") {
             try {
@@ -220,10 +231,50 @@ async function connectUserbot() {
                 console.warn("Userbot: emoji auto-sync warning:", syncErr && syncErr.message ? syncErr.message : syncErr);
             }
         }
+        return peer;
     } catch (err) {
         console.error("Userbot: failed to start — ULP will ask you to fix the session (bot-to-bot is not a usable path for third-party searchers).", err && err.message ? err.message : err);
+        botMeta.userbot = null;
+        return null;
+    } finally {
+        botMeta._userbotConnecting = null;
     }
+    })();
+
+    botMeta.userbotReadyPromise = botMeta._userbotConnecting;
+    return botMeta._userbotConnecting;
 }
+
+// Exposed so /ulp can lazily finish/reconnect the account transport if a
+// webhook landed before startup finished, or after a dropped MTProto session.
+botMeta.ensureUserbot = async function ensureUserbot(timeoutMs = 25000) {
+    if (botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady()) {
+        return botMeta.userbot;
+    }
+    if (!userbot.isConfigured(userbotConfig) && !botMeta.userbotConfigured) {
+        return null;
+    }
+    const start = Date.now();
+    // If a connect is already running, just wait on it — do NOT tear it down.
+    // Only kick a fresh connect when nothing is in flight and the peer is missing/dead.
+    if (botMeta._userbotConnecting) {
+        try { await Promise.race([botMeta._userbotConnecting, new Promise((r) => setTimeout(r, timeoutMs))]); } catch (_) {}
+    } else if (!botMeta.userbot || !(botMeta.userbot.isReady && botMeta.userbot.isReady())) {
+        void connectUserbot();
+    }
+    while (Date.now() - start < timeoutMs) {
+        if (botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady()) {
+            return botMeta.userbot;
+        }
+        // If connect finished with failure, stop waiting early
+        if (!botMeta._userbotConnecting && (!botMeta.userbot || !botMeta.userbot.isReady())) {
+            await new Promise((r) => setTimeout(r, 400));
+            if (!botMeta._userbotConnecting && (!botMeta.userbot || !botMeta.userbot.isReady())) break;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+    }
+    return (botMeta.userbot && botMeta.userbot.isReady && botMeta.userbot.isReady()) ? botMeta.userbot : null;
+};
 
 const relayedUserbotMsgKeys = new Set();
 

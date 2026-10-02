@@ -199,11 +199,20 @@ async function connectUserbot() {
                         if (typeof clearBotApiCustomEmojiRejection === "function") clearBotApiCustomEmojiRejection();
                     } catch (_) {}
                     try {
-                        const { saveEmojiRegistryFile, getCustomEmojis } = require("./messages");
+                        // Re-apply bundled best-pick map so UI glyphs stay the curated
+                        // account "best animated" choices after a broad pack sync.
+                        const path = require("path");
+                        const {
+                            saveEmojiRegistryFile,
+                            getCustomEmojis,
+                            loadEmojiRegistryFile,
+                        } = require("./messages");
+                        const bundled = path.join(__dirname, "emoji-registry.json");
+                        if (typeof loadEmojiRegistryFile === "function") loadEmojiRegistryFile(bundled);
                         if (typeof saveEmojiRegistryFile === "function") {
-                            const path = saveEmojiRegistryFile(process.env.EMOJI_REGISTRY_PATH || "/var/data/emoji-registry.json");
+                            const dest = saveEmojiRegistryFile(process.env.EMOJI_REGISTRY_PATH || "/var/data/emoji-registry.json");
                             const count = getCustomEmojis ? Object.keys(getCustomEmojis()).length : n;
-                            console.log(`Animated emojis: persisted ${count} ids${path ? " → " + path : ""}`);
+                            console.log(`Animated emojis: persisted ${count} ids (best-picks retained)${dest ? " → " + dest : ""}`);
                         }
                     } catch (_) {}
                 }

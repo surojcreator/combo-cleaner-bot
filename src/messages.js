@@ -502,19 +502,22 @@ function saveEmojiRegistryFile(filePath) {
  */
 function seedAnimatedEmojis() {
     const path = require("path");
-    // Bundled registry first (full UI coverage), then volume/env supplements
-    // so a stale /var/data file cannot hide newer defaults after a deploy.
-    const candidates = [
-        path.join(__dirname, "emoji-registry.json"),
-        path.join(__dirname, "..", "data", "emoji-registry.json"),
-        path.join(process.cwd(), "data", "emoji-registry.json"),
+    // 1) Volume / env first (extra glyphs from last userbot sync)
+    // 2) Bundled "best picks" LAST so curated account packs win for UI glyphs
+    //    and a stale /var/data file cannot override a newer deploy.
+    const extras = [
         process.env.EMOJI_REGISTRY_PATH,
         "/var/data/emoji-registry.json",
     ].filter(Boolean);
+    const preferred = [
+        path.join(__dirname, "emoji-registry.json"),
+        path.join(__dirname, "..", "data", "emoji-registry.json"),
+        path.join(process.cwd(), "data", "emoji-registry.json"),
+    ];
     let loaded = 0;
     const seen = new Set();
-    for (const file of candidates) {
-        if (seen.has(file)) continue;
+    for (const file of [...extras, ...preferred]) {
+        if (!file || seen.has(file)) continue;
         seen.add(file);
         const n = loadEmojiRegistryFile(file);
         if (n > 0) {

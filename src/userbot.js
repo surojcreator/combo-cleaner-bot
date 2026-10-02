@@ -1115,12 +1115,20 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
         isReady() {
             // ready flag is set after successful start(); also treat a connected client as ready
             // so a dropped internal flag doesn't strand ULP behind ACCOUNT BYPASS OFFLINE.
-            if (ready && client) return true;
+            if (!client) return false;
             try {
-                if (client && typeof client.connected === "boolean") return Boolean(client.connected);
-                if (client && client._sender && client._sender._connection) return true;
+                if (typeof client.connected === "boolean" && client.connected === false) {
+                    // Live disconnect — clear sticky ready so ensureUserbot reconnects
+                    if (ready) ready = false;
+                    return false;
+                }
             } catch (_) {}
-            return Boolean(ready);
+            if (ready) return true;
+            try {
+                if (typeof client.connected === "boolean") return Boolean(client.connected);
+                if (client._sender && client._sender._connection) return true;
+            } catch (_) {}
+            return false;
         },
         classify: classifyUserbotError,
 

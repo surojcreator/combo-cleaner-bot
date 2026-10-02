@@ -7731,20 +7731,25 @@ async function beginUlpRun(ctx, params) {
     // show ACCOUNT BYPASS OFFLINE when the session exists and connect just needs a moment.
     const sessionConfigured = Boolean(
         (meta && meta.userbotConfigured) ||
-        String(process.env.TELEGRAM_SESSION || "").trim()
+        String(process.env.TELEGRAM_SESSION || "").trim() ||
+        (Number(process.env.TELEGRAM_API_ID || 0) > 0 && String(process.env.TELEGRAM_API_HASH || "").trim())
     );
 
+    const peerIsReady = () => Boolean(
+        meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady()
+    );
+
+    // Always soft-ensure when session is configured (even if we think it's ready —
+    // race after deploys can leave meta.userbot briefly null while MTProto is up).
     if (sessionConfigured) {
-        const waitMs = Math.min(60000, Math.max(5000, Number(params.userbotWaitMs) || 45000));
-        const alreadyReady = Boolean(meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady());
-        if (!alreadyReady) {
+        const waitMs = Math.min(90000, Math.max(15000, Number(params.userbotWaitMs) || 60000));
+        try {
+            if (ctx && typeof ctx.replyWithChatAction === "function") {
+                await ctx.replyWithChatAction("typing").catch(() => {});
+            }
+        } catch (_) {}
+        if (!peerIsReady()) {
             console.log(`[ulp] ensuring userbot is ready (wait up to ${waitMs}ms)…`);
-            // Acknowledge the user immediately so they don't think the bot died.
-            try {
-                if (ctx && typeof ctx.replyWithChatAction === "function") {
-                    await ctx.replyWithChatAction("typing").catch(() => {});
-                }
-            } catch (_) {}
             try {
                 if (meta && typeof meta.ensureUserbot === "function") {
                     await meta.ensureUserbot(waitMs);
@@ -7752,14 +7757,18 @@ async function beginUlpRun(ctx, params) {
                     await Promise.race([meta.userbotReadyPromise, sleep(waitMs)]);
                 } else {
                     const waitDeadline = Date.now() + waitMs;
-                    while (Date.now() < waitDeadline) {
-                        if (meta && meta.userbot && typeof meta.userbot.isReady === "function" && meta.userbot.isReady()) break;
-                        await sleep(250);
+                    while (Date.now() < waitDeadline && !peerIsReady()) {
+                        await sleep(300);
                     }
                 }
             } catch (waitErr) {
                 console.warn("[ulp] ensureUserbot wait error:", waitErr && waitErr.message ? waitErr.message : waitErr);
             }
+        }
+        // One more hard reconnect if still down (session exists — never give up after one miss).
+        if (!peerIsReady() && meta && typeof meta.ensureUserbot === "function" && !params._userbotHardRetried) {
+            console.warn("[ulp] peer still not ready — hard ensure retry…");
+            await meta.ensureUserbot(Math.min(45000, waitMs)).catch(() => null);
         }
     }
 
@@ -7778,8 +7787,21 @@ async function beginUlpRun(ctx, params) {
     // Final ensure pass if still no ready peer.
     if (transport.kind === "userbot" && !transport.userbot && sessionConfigured && meta && typeof meta.ensureUserbot === "function") {
         console.log("[ulp] second ensureUserbot pass…");
-        await meta.ensureUserbot(20000).catch(() => null);
-        transport = pickTransport(meta, { ...effectiveSearchOptions, transport: "userbot" }, ctx);
+        await meta.ensureUserbot(45000).catch(() => null);
+        transport = pickTransport(
+            { ...meta, userbotConfigured: true },
+            { ...effectiveSearchOptions, transport: "userbot" },
+            ctx,
+        );
+    }
+
+    // If meta.userbot is ready but pickTransport missed it, force bind.
+    if (sessionConfigured && peerIsReady() && (!transport.userbot || transport.kind !== "userbot")) {
+        transport = pickTransport(
+            { ...meta, userbotConfigured: true },
+            { ...effectiveSearchOptions, transport: "userbot" },
+            ctx,
+        );
     }
 
     console.log(
@@ -7787,7 +7809,7 @@ async function beginUlpRun(ctx, params) {
         ` ready=${Boolean(transport.userbot)} userbotMeta=${Boolean(meta && meta.userbot)}` +
         ` configured=${Boolean(meta && meta.userbotConfigured)}` +
         ` want=${String((effectiveSearchOptions && effectiveSearchOptions.transport) || "auto")}` +
-        ` isReady=${Boolean(meta && meta.userbot && meta.userbot.isReady && meta.userbot.isReady())}` +
+        ` isReady=${peerIsReady()}` +
         ` searcherId=${meta && meta.userbot && meta.userbot.searcherId ? meta.userbot.searcherId : "-"}`
     );
 
@@ -7800,10 +7822,48 @@ async function beginUlpRun(ctx, params) {
         searchbot.rememberOwner(transport.userbot.searcherId, chatId);
     }
 
-    // Userbot path selected but peer isn't live yet — surface a clear setup
-    // card instead of throwing USERBOT_NOT_READY mid-search (and instead of
-    // the misleading "bot-to-bot is off" message).
+    // Userbot path selected but peer isn't live yet.
+    // If session is configured: auto-retry once in background instead of permanent OFFLINE card.
     if (transport.kind === "userbot" && !transport.userbot) {
+        if (sessionConfigured && !params._userbotOfflineRetried) {
+            searchbot.finishRun(chatId, "done");
+            const waitCard = [
+                `🤖  ${B("ACCOUNT BYPASS CONNECTING…")}`,
+                RULE,
+                `Session is on the server — reconnecting your account now.`,
+                `${I("This usually takes a few seconds after a deploy. Starting search automatically…")}`,
+            ].join("\n");
+            let waitMsgId = cardMessageId || null;
+            if (waitMsgId) {
+                await safeEdit(ctx, waitMsgId, waitCard, ulpKeyboard(scope)).catch(() => {});
+            } else {
+                const m = await safeReply(ctx, waitCard, ulpKeyboard(scope));
+                waitMsgId = m && m.message_id ? m.message_id : null;
+            }
+            // Background retry — do not block webhook; user gets the search when peer is up.
+            void (async () => {
+                try {
+                    if (meta && typeof meta.ensureUserbot === "function") {
+                        await meta.ensureUserbot(60000);
+                    }
+                    await sleep(1500);
+                    ulpStartedAt.set(chatId, 0);
+                    await beginUlpRun(ctx, {
+                        ...params,
+                        cardMessageId: waitMsgId,
+                        skipCooldown: true,
+                        forceTransport: "userbot",
+                        _userbotOfflineRetried: true,
+                        _userbotHardRetried: true,
+                        userbotWaitMs: 60000,
+                    });
+                } catch (retryErr) {
+                    console.error("[ulp] offline auto-retry failed:", retryErr && retryErr.message ? retryErr.message : retryErr);
+                }
+            })();
+            return;
+        }
+
         const blockedText = renderUlpBlocked({
             kind: "userbot_not_ready",
             searcherBot: effectiveSearchOptions.botUsername,
@@ -7811,7 +7871,7 @@ async function beginUlpRun(ctx, params) {
             steps,
             stepDelayMs: effectiveSearchOptions.stepDelayMs,
             transport: "userbot",
-            userbotConfigured: Boolean(meta && (meta.userbotConfigured || meta.userbot)),
+            userbotConfigured: Boolean(meta && (meta.userbotConfigured || meta.userbot || sessionConfigured)),
         });
         searchbot.finishRun(chatId, "done");
         if (cardMessageId) {

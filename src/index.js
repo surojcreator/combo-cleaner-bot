@@ -292,7 +292,7 @@ async function connectUserbot(opts = {}) {
 
 // Exposed so /ulp can lazily finish/reconnect the account transport if a
 // webhook landed before startup finished, or after a dropped MTProto session.
-botMeta.ensureUserbot = async function ensureUserbot(timeoutMs = 45000) {
+botMeta.ensureUserbot = async function ensureUserbot(timeoutMs = 60000) {
     // Fast path: already connected.
     if (botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady()) {
         return botMeta.userbot;
@@ -301,42 +301,56 @@ botMeta.ensureUserbot = async function ensureUserbot(timeoutMs = 45000) {
         return null;
     }
 
+    botMeta.userbotConfigured = true;
     const start = Date.now();
+    const budget = Math.max(5000, Number(timeoutMs) || 60000);
 
     // Prefer waiting on an in-flight connect — NEVER start a second one that would stop the first.
     if (botMeta._userbotConnecting) {
         try {
             await Promise.race([
                 botMeta._userbotConnecting,
-                new Promise((r) => setTimeout(r, timeoutMs)),
+                new Promise((r) => setTimeout(r, budget)),
             ]);
         } catch (_) {}
     } else if (!botMeta.userbot || !(botMeta.userbot.isReady && botMeta.userbot.isReady())) {
-        // Soft reconnect (will no-op if already ready by the time the async starts).
-        void connectUserbot({ force: false });
+        // Soft reconnect — await it so callers don't race ahead of start().
+        try {
+            await Promise.race([
+                connectUserbot({ force: false }),
+                new Promise((r) => setTimeout(r, Math.min(budget, 30000))),
+            ]);
+        } catch (_) {}
     }
 
-    while (Date.now() - start < timeoutMs) {
+    while (Date.now() - start < budget) {
         if (botMeta.userbot && typeof botMeta.userbot.isReady === "function" && botMeta.userbot.isReady()) {
+            botMeta._ensureRetried = false;
             return botMeta.userbot;
         }
         if (botMeta._userbotConnecting) {
-            await new Promise((r) => setTimeout(r, 250));
+            await new Promise((r) => setTimeout(r, 300));
             continue;
         }
-        // Connect finished without ready — one forced retry once.
+        // Connect finished without ready — forced retry (awaited).
         if (!botMeta._ensureRetried) {
             botMeta._ensureRetried = true;
             console.warn("[userbot] ensureUserbot: not ready after connect — forcing one reconnect");
-            void connectUserbot({ force: true });
-            await new Promise((r) => setTimeout(r, 500));
+            try {
+                await Promise.race([
+                    connectUserbot({ force: true }),
+                    new Promise((r) => setTimeout(r, Math.min(budget - (Date.now() - start), 25000))),
+                ]);
+            } catch (_) {}
             continue;
         }
-        await new Promise((r) => setTimeout(r, 300));
+        await new Promise((r) => setTimeout(r, 400));
     }
 
     botMeta._ensureRetried = false;
-    return (botMeta.userbot && botMeta.userbot.isReady && botMeta.userbot.isReady()) ? botMeta.userbot : null;
+    const ok = botMeta.userbot && botMeta.userbot.isReady && botMeta.userbot.isReady();
+    console.log(`[userbot] ensureUserbot finished ready=${Boolean(ok)} after ${Date.now() - start}ms`);
+    return ok ? botMeta.userbot : null;
 };
 
 const relayedUserbotMsgKeys = new Set();
@@ -443,14 +457,22 @@ async function main() {
         console.warn("Custom emoji probe error:", probeErr && probeErr.message ? probeErr.message : probeErr);
     }
 
+    // Connect userbot BEFORE webhook so early /ulp messages never hit ACCOUNT BYPASS OFFLINE.
     await connectUserbot();
     if (botMeta.userbot && typeof botMeta.userbot.setBotUsername === "function") {
         botMeta.userbot.setBotUsername(me.username);
     }
+    // Extra settle: make sure isReady() is true before accepting traffic
+    if (botMeta.userbotConfigured) {
+        const readyPeer = await botMeta.ensureUserbot(30000).catch(() => null);
+        console.log(
+            `Userbot settle: ready=${Boolean(readyPeer && readyPeer.isReady && readyPeer.isReady())}`
+        );
+    }
     console.log(
         `ULP relay -> @${botMeta.search.botUsername} · ${botMeta.search.stepDelayMs}ms before every try · ` +
             `${botMeta.search.maxTries} tries · hist template "${botMeta.search.histTemplate}" · ` +
-            `transport ${botMeta.search.transport} (${botMeta.userbot ? "account bypass ON" : "Bot API only"})`,
+            `transport ${botMeta.search.transport} (${botMeta.userbot && botMeta.userbot.isReady && botMeta.userbot.isReady() ? "account bypass ON" : "Bot API only / connecting"})`,
     );
     await registerCommands();
 

@@ -4811,6 +4811,28 @@ function createBot(token, meta = {}) {
     bot.command("emojis", emojisHandler);
     bot.command("packs", emojisHandler);
     bot.command("features", emojisHandler);
+    bot.command(["emojistatus", "emoji"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        if (meta && meta.botUsername) lastBotUsername = String(meta.botUsername);
+        try {
+            const { getCustomEmojis, animatedEmojisEnabled } = require("./messages");
+            const packCount = Object.keys((getCustomEmojis && getCustomEmojis()) || {}).length;
+            const on = animatedEmojisEnabled ? animatedEmojisEnabled() : true;
+            const rejected = isBotApiCustomEmojiRejected();
+            const lines = [
+                "✨  <b>EMOJI STATUS</b>",
+                "• Animated flag: <b>" + (on ? "ON" : "OFF") + "</b>",
+                "• Synced IDs: <b>" + packCount + "</b>",
+                "• Telegram custom-emoji gate: <b>" + (rejected ? "BLOCKED" : "not blocked yet") + "</b>",
+                "",
+                renderAnimatedEmojiOwnerHint() || "Owner Premium required for animation.",
+            ];
+            await safeReply(ctx, lines.join("\n"), mainKeyboard(store.getStats(ctx.chat.id)));
+        } catch (err) {
+            await safeReply(ctx, "Emoji status error: " + (err && err.message ? err.message : err));
+        }
+    });
+
 
     bot.action("emojis:view", async (ctx) => {
         await ctx.answerCbQuery("💎 Animated Emojis").catch(() => {});
@@ -6412,29 +6434,35 @@ function clearBotApiCustomEmojiRejection() {
  */
 function renderAnimatedEmojiOwnerHint() {
     let animatedOn = true;
+    let packCount = 0;
     try {
         const mod = require("./messages");
         if (typeof mod.animatedEmojisEnabled === "function") animatedOn = mod.animatedEmojisEnabled();
+        if (typeof mod.getCustomEmojis === "function") packCount = Object.keys(mod.getCustomEmojis() || {}).length;
     } catch (_) {}
     if (!animatedOn) return "";
     const botName = lastBotUsername || "this bot";
-    if (!isBotApiCustomEmojiRejected()) {
-        return [
-            "✨  <b>Animated emoji note</b>",
-            "Telegram only animates custom emoji from bots when the <b>bot owner account</b> has <b>Telegram Premium</b> (or Fragment).",
-            "Turn Premium on for the account that owns this bot in @BotFather, then send /start again.",
-            "Until then you still see normal emoji — not animated custom ones.",
-        ].join("\n");
+    const rejected = isBotApiCustomEmojiRejected();
+    const lines = [
+        rejected
+            ? "⚠️  <b>ANIMATED EMOJIS BLOCKED BY TELEGRAM</b>"
+            : "✨  <b>HOW TO GET ANIMATED EMOJIS ON /start</b>",
+        "Telegram Bot API rule (not a bug in this bot):",
+        "Custom animated emoji in <b>bot messages & buttons</b> only work if the <b>bot owner</b> has <b>Telegram Premium</b> (or bought a username on Fragment).",
+        "",
+        "<b>Do this:</b>",
+        "1️⃣ Open Telegram on the account that <b>created</b> @" + botName + " in @BotFather",
+        "2️⃣ Turn on <b>Telegram Premium</b> for that account",
+        "3️⃣ Come back here and send /start again",
+        "",
+        packCount
+            ? ("Registry ready: <b>" + packCount + "</b> custom emoji IDs synced — waiting on owner Premium.")
+            : "Tip: after Premium, send /emojis sync to refresh packs.",
+    ];
+    if (rejected && botApiCustomEmojiRejectReason) {
+        lines.push("<i>" + String(botApiCustomEmojiRejectReason).replace(/[<>]/g, "").slice(0, 180) + "</i>");
     }
-    const reason = botApiCustomEmojiRejectReason
-        ? ("\n<i>" + String(botApiCustomEmojiRejectReason).replace(/[<>]/g, "") + "</i>")
-        : "";
-    return [
-        "⚠️  <b>Animated custom emoji blocked by Telegram</b>",
-        "Packs are synced, but Telegram refused custom emoji for this bot." + reason,
-        "Enable <b>Telegram Premium</b> on the account that owns @" + botName + ", then /start again.",
-        "Without owner Premium, bots can only use plain emoji.",
-    ].join("\n");
+    return lines.join("\n");
 }
 
 /**

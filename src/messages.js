@@ -576,38 +576,98 @@ function attachButtonEmoji(btn) {
     const text = btn.text;
     if (!text || typeof text !== "string") return btn;
 
+    // Always drop telegraf-only fields so the Bot API payload is clean.
+    if ("hide" in btn) delete btn.hide;
+
     // Animation off → plain unicode labels only.
     if (!animatedEmojisEnabled() || customAnimatedEmojis.size === 0) {
         if (btn.icon_custom_emoji_id) delete btn.icon_custom_emoji_id;
+        if (btn.plain_emoji) {
+            // Ensure unicode is present after a previous animated strip.
+            if (!text.includes(btn.plain_emoji)) btn.text = `${btn.plain_emoji} ${text}`.trim();
+            delete btn.plain_emoji;
+        }
         return btn;
     }
 
     let id = btn.icon_custom_emoji_id ? String(btn.icon_custom_emoji_id) : null;
+    let leading = null;
     // Leading emoji run (ZWJ / FE0F safe).
     const match = text.match(/^((?:[\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\uFE0F|\u200D)+)\s*/u);
-    if (!id && match) {
-        const leading = match[1].trim();
-        id =
-            customAnimatedEmojis.get(leading) ||
-            (EMOJI_KEY_MAP[leading] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[leading]) : null) ||
-            customAnimatedEmojis.get(leading.replace(/\uFE0F/g, ""));
+    if (match) {
+        leading = match[1].trim();
+        if (!id) {
+            id =
+                customAnimatedEmojis.get(leading) ||
+                (EMOJI_KEY_MAP[leading] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[leading]) : null) ||
+                customAnimatedEmojis.get(leading.replace(/\uFE0F/g, ""));
+        }
     }
     if (!id) {
         for (const [sym, name] of Object.entries(EMOJI_KEY_MAP)) {
             if (text.includes(sym)) {
                 id = customAnimatedEmojis.get(sym) || customAnimatedEmojis.get(name);
-                if (id) break;
+                if (id) { leading = leading || sym; break; }
             }
         }
     }
     if (id) {
         btn.icon_custom_emoji_id = String(id);
-        // Keep the unicode glyph in the label as a fallback so buttons never
-        // render blank if the custom icon pack isn't available to the viewer.
+        // Telegram Bot API: icon_custom_emoji_id draws the animated icon to the
+        // LEFT of the label. Keep plain unicode out of `text` so you only see
+        // the animated icon (not custom + normal). Save plain_emoji so a failed
+        // custom-icon send can restore unicode in stripButtonEmojis.
+        if (leading && text.startsWith(leading)) {
+            btn.plain_emoji = leading;
+            const rest = text.slice(leading.length).replace(/^\s+/, "");
+            if (rest) btn.text = rest;
+        }
     } else if (btn.icon_custom_emoji_id) {
         delete btn.icon_custom_emoji_id;
     }
     return btn;
+}
+
+/**
+ * Produce a clean Bot API reply_markup (or Markup) with hide/plain_emoji stripped
+ * from every button, keeping icon_custom_emoji_id for Telegram.
+ * @param {any} extra
+ */
+function sanitizeReplyMarkup(extra) {
+    if (!extra || typeof extra !== "object") return extra;
+    const root = extra.reply_markup ? extra : null;
+    const markup = extra.reply_markup || extra;
+    if (!markup || typeof markup !== "object") return extra;
+    const kb = markup.inline_keyboard || markup.keyboard;
+    if (!Array.isArray(kb)) return extra;
+
+    const cleanRows = kb.map((row) => {
+        if (!Array.isArray(row)) return row;
+        return row.map((btn) => {
+            if (!btn || typeof btn !== "object") return btn;
+            const out = { ...btn };
+            delete out.hide;
+            delete out.plain_emoji;
+            // Keep only defined Bot API fields
+            if (out.icon_custom_emoji_id != null) {
+                out.icon_custom_emoji_id = String(out.icon_custom_emoji_id);
+            }
+            return out;
+        });
+    });
+
+    if (markup.inline_keyboard) {
+        const cleaned = { ...markup, inline_keyboard: cleanRows };
+        if (extra.reply_markup) return { ...extra, reply_markup: cleaned };
+        // Markup class-like: prefer returning a plain object Telegraf accepts
+        return { reply_markup: cleaned };
+    }
+    if (markup.keyboard) {
+        const cleaned = { ...markup, keyboard: cleanRows };
+        if (extra.reply_markup) return { ...extra, reply_markup: cleaned };
+        return { reply_markup: cleaned };
+    }
+    return extra;
 }
 
 const callbackPayloadMap = new Map();
@@ -3695,6 +3755,7 @@ module.exports = {
     confirmDomainDeleteKeyboard,
     createInlineKeyboard,
     attachButtonEmoji,
+    sanitizeReplyMarkup,
     loadDefaultCustomEmojis,
     resetDefaultCustomEmojis,
     DEFAULT_CUSTOM_ANIMATED_EMOJIS,

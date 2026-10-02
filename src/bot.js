@@ -95,6 +95,7 @@ const {
     sitesKeyboard,
     confirmDomainDeleteKeyboard,
     createInlineKeyboard,
+    sanitizeReplyMarkup,
     tgEmoji,
     B,
     I,
@@ -6397,39 +6398,45 @@ function clearBotApiCustomEmojiRejection() {
  */
 function stripButtonEmojis(extra) {
     if (!extra || typeof extra !== "object") return extra;
+    const restoreBtn = (btn) => {
+        if (!btn || typeof btn !== "object") return btn;
+        const copy = { ...btn };
+        const plain = copy.plain_emoji;
+        if (copy.icon_custom_emoji_id) delete copy.icon_custom_emoji_id;
+        if (plain) {
+            const t = String(copy.text || "");
+            if (!t.includes(plain)) copy.text = `${plain} ${t}`.trim();
+            delete copy.plain_emoji;
+        }
+        delete copy.hide;
+        return copy;
+    };
     let clean = { ...extra };
     if (clean.reply_markup && clean.reply_markup.inline_keyboard) {
         clean.reply_markup = {
             ...clean.reply_markup,
             inline_keyboard: clean.reply_markup.inline_keyboard.map((row) =>
-                Array.isArray(row)
-                    ? row.map((btn) => {
-                          if (btn && typeof btn === "object" && btn.icon_custom_emoji_id) {
-                              const copy = { ...btn };
-                              delete copy.icon_custom_emoji_id;
-                              return copy;
-                          }
-                          return btn;
-                      })
-                    : row
+                Array.isArray(row) ? row.map(restoreBtn) : row
             ),
         };
     }
     if (clean.inline_keyboard && Array.isArray(clean.inline_keyboard)) {
         clean.inline_keyboard = clean.inline_keyboard.map((row) =>
-            Array.isArray(row)
-                ? row.map((btn) => {
-                      if (btn && typeof btn === "object" && btn.icon_custom_emoji_id) {
-                          const copy = { ...btn };
-                          delete copy.icon_custom_emoji_id;
-                          return copy;
-                      }
-                      return btn;
-                  })
-                : row
+            Array.isArray(row) ? row.map(restoreBtn) : row
         );
     }
     return clean;
+}
+
+/** Apply clean Bot API markup (drops telegraf `hide`, keeps animated icons). */
+function withCleanMarkup(extra) {
+    if (!extra) return extra;
+    try {
+        if (typeof sanitizeReplyMarkup === "function") {
+            return sanitizeReplyMarkup(extra);
+        }
+    } catch (_) {}
+    return extra;
 }
 
 const TELEGRAM_MSG_LIMIT = 4000;
@@ -6481,12 +6488,11 @@ async function safeReply(ctx, text, extra = {}) {
     if (sendText.length > TELEGRAM_MSG_LIMIT) {
         sendText = sendText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… [TRUNCATED]";
     }
-    let sendExtra = extra;
+    let sendExtra = emojiBlocked ? stripButtonEmojis(extra) : withCleanMarkup(extra);
     if (emojiBlocked) {
         if (sendText && sendText.includes("<tg-emoji")) {
             sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
         }
-        sendExtra = stripButtonEmojis(extra);
     }
     try {
         return await ctx.reply(sendText, {
@@ -6549,12 +6555,11 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
     if (editText.length > TELEGRAM_MSG_LIMIT) {
         editText = editText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… [TRUNCATED]";
     }
-    let editExtra = extra;
+    let editExtra = emojiBlocked ? stripButtonEmojis(extra) : withCleanMarkup(extra);
     if (emojiBlocked) {
         if (editText && editText.includes("<tg-emoji")) {
             editText = editText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
         }
-        editExtra = stripButtonEmojis(extra);
     }
     try {
         await ctx.telegram.editMessageText(ctx.chat.id, messageId, undefined, editText, {
@@ -7078,12 +7083,11 @@ async function sendHtml(ctx, text, extra = {}) {
     if (!emojiBlocked && typeof sendText === "string") {
         sendText = ensureAnimatedEmojis(sendText);
     }
-    let sendExtra = extra;
+    let sendExtra = emojiBlocked ? stripButtonEmojis(extra) : withCleanMarkup(extra);
     if (emojiBlocked) {
         if (sendText && sendText.includes("<tg-emoji")) {
             sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
         }
-        sendExtra = stripButtonEmojis(extra);
     }
     try {
         return await ctx.reply(sendText, {

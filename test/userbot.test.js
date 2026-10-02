@@ -618,7 +618,7 @@ test("searchDayByDay paces dump-bot actions with 15 seconds (15000ms) by default
     assert.equal(res.status, "done");
     // Default click gap is 15s — used between folder/hist/domain/page actions.
     assert.ok(
-        sleeps.some((ms) => ms >= 14000 && ms <= 16000) || sleeps.includes(15000),
+        sleeps.some((ms) => ms >= 15000 && ms <= 16000) || sleeps.includes(15000),
         `expected ~15000ms dump-bot pacing, got: ${JSON.stringify(sleeps)}`,
     );
 });

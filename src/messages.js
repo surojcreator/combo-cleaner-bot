@@ -573,11 +573,38 @@ function clearCustomEmojis() {
  */
 function attachButtonEmoji(btn) {
     if (!btn || typeof btn !== "object") return btn;
-    // Always keep the plain unicode glyph in the label so buttons never go
-    // icon-less. Bot API `icon_custom_emoji_id` is optional polish and often
-    // renders blank for recipients without that pack — do not strip text.
-    // Strip any previously attached custom icon id (legacy path).
-    if (btn.icon_custom_emoji_id) {
+    const text = btn.text;
+    if (!text || typeof text !== "string") return btn;
+
+    // Animation off → plain unicode labels only.
+    if (!animatedEmojisEnabled() || customAnimatedEmojis.size === 0) {
+        if (btn.icon_custom_emoji_id) delete btn.icon_custom_emoji_id;
+        return btn;
+    }
+
+    let id = btn.icon_custom_emoji_id ? String(btn.icon_custom_emoji_id) : null;
+    // Leading emoji run (ZWJ / FE0F safe).
+    const match = text.match(/^((?:[\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\uFE0F|\u200D)+)\s*/u);
+    if (!id && match) {
+        const leading = match[1].trim();
+        id =
+            customAnimatedEmojis.get(leading) ||
+            (EMOJI_KEY_MAP[leading] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[leading]) : null) ||
+            customAnimatedEmojis.get(leading.replace(/\uFE0F/g, ""));
+    }
+    if (!id) {
+        for (const [sym, name] of Object.entries(EMOJI_KEY_MAP)) {
+            if (text.includes(sym)) {
+                id = customAnimatedEmojis.get(sym) || customAnimatedEmojis.get(name);
+                if (id) break;
+            }
+        }
+    }
+    if (id) {
+        btn.icon_custom_emoji_id = String(id);
+        // Keep the unicode glyph in the label as a fallback so buttons never
+        // render blank if the custom icon pack isn't available to the viewer.
+    } else if (btn.icon_custom_emoji_id) {
         delete btn.icon_custom_emoji_id;
     }
     return btn;
@@ -686,8 +713,13 @@ function createInlineKeyboard(rows) {
  * @returns {string} HTML string with <tg-emoji> or fallback unicode
  */
 function animatedEmojisEnabled() {
-    const v = String(process.env.ANIMATED_EMOJIS || "0").trim().toLowerCase();
-    return v === "1" || v === "true" || v === "yes" || v === "on";
+    // Default ON so the UI ships with animated custom emojis. Set
+    // ANIMATED_EMOJIS=0 to force plain unicode only.
+    const raw = process.env.ANIMATED_EMOJIS;
+    if (raw === undefined || raw === null || String(raw).trim() === "") return true;
+    const v = String(raw).trim().toLowerCase();
+    if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+    return true;
 }
 
 /**

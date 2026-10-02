@@ -6355,7 +6355,7 @@ let botApiCustomEmojiRejected = false;
 /** Timestamp until which animated custom emoji is paused after a rejection. */
 let botApiCustomEmojiRejectedUntil = 0;
 /** How long to pause animated emoji after Telegram rejects a custom emoji ID. */
-const CUSTOM_EMOJI_REJECT_COOLDOWN_MS = 30 * 60 * 1000;
+const CUSTOM_EMOJI_REJECT_COOLDOWN_MS = 60 * 1000;
 
 // Matches only Telegram API errors that specifically indicate an invalid or
 // unrecognized custom emoji document. Deliberately narrow: a generic 400

@@ -432,15 +432,17 @@ function registerCustomEmojis(mapping) {
 
 /**
  * Load default animated emojis into the registry so every emoji is animated by default.
+ * Defaults are opt-in: fake sequential IDs trip Telegram's DOCUMENT_INVALID and
+ * permanently disable animated emojis for the process. Prefer real IDs from the
+ * userbot (`/emojis sync`) or CUSTOM_ANIMATED_EMOJIS env.
+ *
+ * Set LOAD_DEFAULT_ANIMATED_EMOJIS=1 to force-load the built-in map (tests only).
  */
 function loadDefaultCustomEmojis() {
     registerCustomEmojis(DEFAULT_CUSTOM_ANIMATED_EMOJIS);
 }
 
-// Populate default animated emojis on startup
-loadDefaultCustomEmojis();
-
-// Optional seed from environment variable CUSTOM_ANIMATED_EMOJIS
+// Optional seed from environment: real custom emoji document IDs the bot may use.
 try {
     if (process.env.CUSTOM_ANIMATED_EMOJIS) {
         const parsed = JSON.parse(process.env.CUSTOM_ANIMATED_EMOJIS);
@@ -449,6 +451,11 @@ try {
         }
     }
 } catch (_) {}
+
+// Opt-in defaults for local tests / previews that mock the Bot API.
+if (process.env.LOAD_DEFAULT_ANIMATED_EMOJIS === "1" || process.env.LOAD_DEFAULT_ANIMATED_EMOJIS === "true") {
+    loadDefaultCustomEmojis();
+}
 
 /**
  * Reset custom animated emojis back to built-in defaults.
@@ -482,32 +489,28 @@ function clearCustomEmojis() {
 function attachButtonEmoji(btn) {
     if (!btn || typeof btn !== "object") return btn;
     if (btn.icon_custom_emoji_id) return btn;
+    // No registered custom IDs → leave button text as plain unicode emoji.
+    if (customAnimatedEmojis.size === 0) return btn;
     const text = btn.text;
     if (!text || typeof text !== "string") return btn;
 
     let id = null;
 
-    // Check for leading emoji
+    // Check for leading emoji — only attach a real registered document ID.
     const match = text.match(/^((?:[\uD800-\uDBFF][\uDC00-\uDFFF]|\p{Extended_Pictographic}|\uFE0F|\u200D)+)\s*/u);
     if (match) {
         const sym = match[1].trim();
         id =
             customAnimatedEmojis.get(sym) ||
             (EMOJI_KEY_MAP[sym] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[sym]) : null) ||
-            customAnimatedEmojis.get(sym.replace(/\uFE0F/g, "")) ||
-            DEFAULT_CUSTOM_ANIMATED_EMOJIS[sym] ||
-            (EMOJI_KEY_MAP[sym] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[sym]] : null);
+            customAnimatedEmojis.get(sym.replace(/\uFE0F/g, ""));
     }
 
     if (!id) {
-        // Search text for any recognized emoji
+        // Search text for any recognized emoji that has a registered custom ID
         for (const [sym, name] of Object.entries(EMOJI_KEY_MAP)) {
             if (text.includes(sym)) {
-                id =
-                    customAnimatedEmojis.get(sym) ||
-                    customAnimatedEmojis.get(name) ||
-                    DEFAULT_CUSTOM_ANIMATED_EMOJIS[sym] ||
-                    DEFAULT_CUSTOM_ANIMATED_EMOJIS[name];
+                id = customAnimatedEmojis.get(sym) || customAnimatedEmojis.get(name);
                 if (id) break;
             }
         }
@@ -628,17 +631,15 @@ function tgEmoji(symbol, nameKey) {
         customAnimatedEmojis.get(symbol) ||
         (nameKey ? customAnimatedEmojis.get(nameKey) : null) ||
         customAnimatedEmojis.get(key);
-    if (!id && customAnimatedEmojis.size > 0) {
+    // Only use IDs that were explicitly registered (userbot sync or CUSTOM_ANIMATED_EMOJIS).
+    // Never fall back to DEFAULT_CUSTOM_ANIMATED_EMOJIS here — those are placeholder
+    // sequential IDs that Telegram rejects with DOCUMENT_INVALID, which used to
+    // permanently kill animated emoji for the whole process.
+    if (!id && typeof symbol === "string") {
+        const stripped = symbol.replace(/\uFE0F/g, "");
         id =
-            DEFAULT_CUSTOM_ANIMATED_EMOJIS[symbol] ||
-            (EMOJI_KEY_MAP[symbol] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[symbol]] : null) ||
-            DEFAULT_CUSTOM_ANIMATED_EMOJIS[key];
-        if (!id && typeof symbol === "string") {
-            const stripped = symbol.replace(/\uFE0F/g, "");
-            id =
-                DEFAULT_CUSTOM_ANIMATED_EMOJIS[stripped] ||
-                (EMOJI_KEY_MAP[stripped] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[stripped]] : null);
-        }
+            customAnimatedEmojis.get(stripped) ||
+            (EMOJI_KEY_MAP[stripped] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[stripped]) : null);
     }
     if (id) {
         return `${LT}tg-emoji emoji-id="${escapeHtml(id)}"${GT}${symbol}${LT}/tg-emoji${GT}`;
@@ -670,25 +671,20 @@ function ensureAnimatedEmojis(html) {
         if (/^[▰▱█░▒▓├└─│┌┐┘┴┬┼→←↑↓↳◄►▲▼\u2500-\u259F]+$/.test(sym)) {
             return match;
         }
+        // Only wrap with <tg-emoji> when we have a *registered* real document ID.
+        // Keep bare unicode otherwise — stripping unsupported emoji made the UI look broken,
+        // and falling back to fake DEFAULT ids used to trip Telegram DOCUMENT_INVALID permanently.
         let id =
             customAnimatedEmojis.get(sym) ||
-            (EMOJI_KEY_MAP[sym] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[sym]) : null) ||
-            DEFAULT_CUSTOM_ANIMATED_EMOJIS[sym] ||
-            (EMOJI_KEY_MAP[sym] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[sym]] : null);
+            (EMOJI_KEY_MAP[sym] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[sym]) : null);
         if (!id) {
             const stripped = sym.replace(/\uFE0F/g, "");
             id =
                 customAnimatedEmojis.get(stripped) ||
-                (EMOJI_KEY_MAP[stripped] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[stripped]) : null) ||
-                DEFAULT_CUSTOM_ANIMATED_EMOJIS[stripped] ||
-                (EMOJI_KEY_MAP[stripped] ? DEFAULT_CUSTOM_ANIMATED_EMOJIS[EMOJI_KEY_MAP[stripped]] : null);
+                (EMOJI_KEY_MAP[stripped] ? customAnimatedEmojis.get(EMOJI_KEY_MAP[stripped]) : null);
         }
         if (id) {
             return `${LT}tg-emoji emoji-id="${escapeHtml(id)}"${GT}${sym}${LT}/tg-emoji${GT}`;
-        }
-        // If an Extended_Pictographic emoji is unsupported, remove it so no unanimated emoji appears
-        if (/\p{Extended_Pictographic}/u.test(sym)) {
-            return "";
         }
         return match;
     });
@@ -2801,6 +2797,9 @@ function renderUlpStart(info = {}) {
         ? `Last ${daysCount} days from ${info.startDate}`
         : `Last ${daysCount} days (Auto-detecting latest batch)`;
     const startGauge = "▱".repeat(12);
+    const noteLine = info.note
+        ? [`  • ${tgEmoji("✨")} ${B("Status:")}          ${I(escapeHtml(info.note))}`]
+        : [];
     return [
         `${tgEmoji("🚀")}  ${B("ULP SEARCH INITIALIZED")}  ${tgEmoji("⚡️")}`,
         RULE,
@@ -2808,6 +2807,7 @@ function renderUlpStart(info = {}) {
         `  • ${tgEmoji("📅")} ${B("Search Scope:")}   ${B(`Day-by-Day (${dateLabel})`)}`,
         `  • ${tgEmoji("📊")} ${B("Search Progress:")} ${CODE(`[${startGauge}]`)} ${B("0%")} ${I(`(Day 0 of ${daysCount})`)}`,
         ...whoRow,
+        ...noteLine,
         `  • ${tgEmoji("⏳")} ${B("Flood Safety:")}   ${CODE(`${pacingLabel(info.stepDelayMs)} delay`)}`,
         RULE,
         `${I(`Incoming dump files will be auto-downloaded & cleaned into batch ${tgEmoji("⬇️")}`)}`,
@@ -3159,7 +3159,7 @@ function ulpErrorHeader(kind, transport = "bot") {
             return {
                 emoji: "\uD83D\uDEA7",
                 title: "BOT-TO-BOT IS OFF",
-                detail: "Telegram refused the send \u2014 bots may message each other only when both sides switch it on.",
+                detail: "Telegram blocked a bot\u2194bot private message. Third-party searcher bots almost never enable this \u2014 use your own account (MTProto) instead.",
             };
         case "not_started":
             return {
@@ -3194,8 +3194,10 @@ function ulpErrorHeader(kind, transport = "bot") {
         case "userbot_not_ready":
             return {
                 emoji: "\uD83E\uDD16",
-                title: "USERBOT NOT READY",
-                detail: "The account transport isn't connected yet — start it, then try again, or run the relay by hand below.",
+                title: "ACCOUNT BYPASS NEEDED",
+                detail: transport === "userbot"
+                    ? "The account transport isn't connected yet. Log in once, restart, then tap Run again \u2014 ULP never needs bot-to-bot when your account is online."
+                    : "ULP search needs your Telegram account (MTProto) because third-party searchers keep bot-to-bot locked.",
             };
         default:
             return {
@@ -3218,24 +3220,38 @@ function renderUlpBlocked(info = {}) {
     const header = ulpErrorHeader(info.kind, transport);
     const own = info.ownBot ? mentionOf(info.ownBot) : "this bot";
     const steps = Array.isArray(info.steps) ? info.steps : [];
+    const kind = info.kind || "other";
+    // Bot-to-bot is almost never fixable for third-party searchers — lead with
+    // the account bypass. Same story when the userbot path was chosen but isn't live.
+    const preferUserbotSetup =
+        transport === "userbot" ||
+        kind === "bot_to_bot_disabled" ||
+        kind === "userbot_not_ready" ||
+        kind === "userbot_auth" ||
+        kind === "userbot_error";
     const lines = [
         `${tgEmoji(header.emoji)}  ${B(header.title)}`,
         RULE,
         header.detail,
     ];
     if (info.reason) lines.push(`${I(escapeHtml(info.reason))}`);
-    if (transport === "userbot") {
+
+    if (preferUserbotSetup) {
         lines.push(
             "",
-            `${tgEmoji("🔧")}  ${B("Fix the account transport")}`,
-            `  1️⃣ run ${B(CODE("npm run userbot:login"))} and follow the prompts`,
-            `  2️⃣ copy the printed ${B("TELEGRAM_SESSION")} into your env`,
-            `  3️⃣ restart the bot, then tap ${tgEmoji("🔄")} Run again`,
+            `${tgEmoji("🚀")}  ${B("Fix once — use your account (recommended)")}`,
+            `  ${tgEmoji("1️⃣")} Create an app at ${B("my.telegram.org")} → copy ${CODE("api_id")} + ${CODE("api_hash")}`,
+            `  ${tgEmoji("2️⃣")} Put them in ${CODE(".env")}: ${CODE("TELEGRAM_API_ID")} / ${CODE("TELEGRAM_API_HASH")}`,
+            `  ${tgEmoji("3️⃣")} Run ${B(CODE("npm run userbot:login:qr"))} and scan the QR (or ${CODE("npm run userbot:login")})`,
+            `  ${tgEmoji("4️⃣")} Copy ${B("TELEGRAM_SESSION")} into your env and restart`,
+            `  ${tgEmoji("5️⃣")} Tap ${tgEmoji("🔄")} ${B("Run again")} — the card will say ${B("MTProto Account")}`,
+            "",
+            `${tgEmoji("💡")}  ${I("No other bot owner needed. Your account talks to")} ${B(mentionOf(info.searcherBot || "DumpNews14Bot"))} ${I("as you.")}`,
         );
-        if (info.kind !== "userbot_auth" && info.kind !== "userbot_not_ready") {
+        if (kind === "bot_to_bot_disabled") {
             lines.push(
                 "",
-                `${tgEmoji("👤")}  ${B("Remember")}: results only land here once ${B(own)} can use your login`,
+                `${tgEmoji("🔧")}  ${B("Optional (rarely works)")}: enable Bot-to-Bot on ${B(own)} in @BotFather — the other owner must flip it too.`,
             );
         }
     } else {
@@ -3247,7 +3263,7 @@ function renderUlpBlocked(info = {}) {
             `  3️⃣ the owner of ${B(mentionOf(info.searcherBot))} must enable it too`,
             `  4️⃣ tap ${tgEmoji("🔄")} Run again — Telegram allows bot ↔ bot chats only when both agree`,
             "",
-            `${tgEmoji("🤖")}  ${B("Better bypass")}: log in with your own account (${B(CODE("SEARCH_TRANSPORT=userbot"))}),`,
+            `${tgEmoji("🤖")}  ${B("Better bypass")}: log in with your own account (${B(CODE("npm run userbot:login:qr"))}),`,
             `  so the relay talks to ${B(mentionOf(info.searcherBot))} as a user — no owner needed.`,
         );
     }

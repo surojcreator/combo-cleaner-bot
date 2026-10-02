@@ -292,6 +292,7 @@ async function* streamLineBatches(filePath, batchSize, highWaterMark = 4 * 1024 
  */
 function createBot(token, meta = {}) {
     botApiCustomEmojiRejected = false;
+    botApiCustomEmojiRejectedUntil = 0;
     const bot = new Telegraf(token, {
         handlerTimeout: 10 * 60 * 1000,
         // meta.telegram lets tests and local Bot API server users override the
@@ -4770,7 +4771,9 @@ function createBot(token, meta = {}) {
             let count = 0;
             if (peer && typeof peer.syncCustomEmojis === "function") {
                 try {
-                    count = await peer.syncCustomEmojis();
+                    const synced = await peer.syncCustomEmojis();
+                    count = typeof synced === "number" ? synced : (synced && synced.synced) || 0;
+                    if (count > 0) clearBotApiCustomEmojiRejection();
                 } catch {
                     // ignore
                 }
@@ -4783,8 +4786,8 @@ function createBot(token, meta = {}) {
                 }
             }
             const syncNotice = count > 0
-                ? `✨ Successfully synced ${count} custom animated emojis from your account into the bot UI/UX!`
-                : `ℹ️ Account emojis synchronized. Bot native visual palette active!`;
+                ? `${tgEmoji("✨")} Successfully synced ${B(String(count))} custom animated emojis from your account into the bot UI!`
+                : `${tgEmoji("ℹ️")} Account emojis checked. ${I("Install custom emoji packs on the account, then sync again.")}`;
             await safeReply(ctx, `${syncNotice}\n\n${renderEmojiPacks(data)}`, emojisKeyboard());
             return;
         }
@@ -4826,9 +4829,12 @@ function createBot(token, meta = {}) {
     bot.action("emojis:sync", async (ctx) => {
         await ctx.answerCbQuery("🔄 Syncing account emojis…").catch(() => {});
         const peer = meta.userbot || userbot;
+        let syncedCount = 0;
         if (peer && typeof peer.syncCustomEmojis === "function") {
             try {
-                await peer.syncCustomEmojis();
+                const synced = await peer.syncCustomEmojis();
+                syncedCount = typeof synced === "number" ? synced : (synced && synced.synced) || 0;
+                if (syncedCount > 0) clearBotApiCustomEmojiRejection();
             } catch {
                 // ignore
             }
@@ -4841,7 +4847,10 @@ function createBot(token, meta = {}) {
                 // ignore
             }
         }
-        const text = renderEmojiPacks(data);
+        const prefix = syncedCount > 0
+            ? `${tgEmoji("✨")} Synced ${B(String(syncedCount))} animated emojis\n\n`
+            : "";
+        const text = `${prefix}${renderEmojiPacks(data)}`;
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         if (msg) {
             await safeEdit(ctx, msg.message_id, text, emojisKeyboard());
@@ -6343,26 +6352,42 @@ function createBot(token, meta = {}) {
  * @param {object} [extra] additional sendMessage options (e.g. keyboard)
  */
 let botApiCustomEmojiRejected = false;
+/** Timestamp until which animated custom emoji is paused after a rejection. */
+let botApiCustomEmojiRejectedUntil = 0;
+/** How long to pause animated emoji after Telegram rejects a custom emoji ID. */
+const CUSTOM_EMOJI_REJECT_COOLDOWN_MS = 30 * 60 * 1000;
 
 // Matches only Telegram API errors that specifically indicate an invalid or
 // unrecognized custom emoji document. Deliberately narrow: a generic 400
 // (unrelated to emoji, e.g. flood control, chat not found) must never trip
-// this and permanently disable animated emoji for the rest of the process.
+// this and disable animated emoji for the rest of the process.
 const CUSTOM_EMOJI_REJECTED_RE = /custom_emoji|document_invalid/i;
 
 // Matches Telegram's generic "message could not be parsed as HTML" errors
 // (e.g. an unescaped "<" in user-controlled text). Unlike
-// CUSTOM_EMOJI_REJECTED_RE, this never trips the permanent
-// botApiCustomEmojiRejected switch — it's a per-message formatting issue,
-// not evidence that any custom emoji document is invalid.
+// CUSTOM_EMOJI_REJECTED_RE, this never trips the cooldown switch — it's a
+// per-message formatting issue, not evidence that any custom emoji is invalid.
 const PARSE_ENTITY_ERROR_RE = /can't parse entit/i;
 
 function setBotApiCustomEmojiRejected(val) {
     botApiCustomEmojiRejected = Boolean(val);
+    botApiCustomEmojiRejectedUntil = val ? Date.now() + CUSTOM_EMOJI_REJECT_COOLDOWN_MS : 0;
 }
 
 function isBotApiCustomEmojiRejected() {
-    return botApiCustomEmojiRejected;
+    if (!botApiCustomEmojiRejected) return false;
+    if (botApiCustomEmojiRejectedUntil && Date.now() > botApiCustomEmojiRejectedUntil) {
+        botApiCustomEmojiRejected = false;
+        botApiCustomEmojiRejectedUntil = 0;
+        return false;
+    }
+    return true;
+}
+
+/** Re-enable animated emoji after a successful userbot emoji sync. */
+function clearBotApiCustomEmojiRejection() {
+    botApiCustomEmojiRejected = false;
+    botApiCustomEmojiRejectedUntil = 0;
 }
 
 /**
@@ -6448,15 +6473,16 @@ async function safeChatAction(ctx, action = "typing") {
  * @param {object} [extra] additional sendMessage options (e.g. keyboard)
  */
 async function safeReply(ctx, text, extra = {}) {
+    const emojiBlocked = isBotApiCustomEmojiRejected();
     let sendText = typeof text === "string" ? text : String(text || "");
-    if (!botApiCustomEmojiRejected) {
+    if (!emojiBlocked) {
         sendText = ensureAnimatedEmojis(sendText);
     }
     if (sendText.length > TELEGRAM_MSG_LIMIT) {
         sendText = sendText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… [TRUNCATED]";
     }
     let sendExtra = extra;
-    if (botApiCustomEmojiRejected) {
+    if (emojiBlocked) {
         if (sendText && sendText.includes("<tg-emoji")) {
             sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
         }
@@ -6472,7 +6498,7 @@ async function safeReply(ctx, text, extra = {}) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) botApiCustomEmojiRejected = true;
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
             let fallbackText = sendText;
             if (fallbackText && fallbackText.includes("<tg-emoji")) {
                 fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -6515,15 +6541,16 @@ async function safeReply(ctx, text, extra = {}) {
  * @param {object} [extra]
  */
 async function safeEdit(ctx, messageId, text, extra = {}) {
+    const emojiBlocked = isBotApiCustomEmojiRejected();
     let editText = typeof text === "string" ? text : String(text || "");
-    if (!botApiCustomEmojiRejected) {
+    if (!emojiBlocked) {
         editText = ensureAnimatedEmojis(editText);
     }
     if (editText.length > TELEGRAM_MSG_LIMIT) {
         editText = editText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… [TRUNCATED]";
     }
     let editExtra = extra;
-    if (botApiCustomEmojiRejected) {
+    if (emojiBlocked) {
         if (editText && editText.includes("<tg-emoji")) {
             editText = editText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
         }
@@ -6542,7 +6569,7 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
         }
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) botApiCustomEmojiRejected = true;
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
             let fallbackText = editText;
             if (fallbackText && fallbackText.includes("<tg-emoji")) {
                 fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -6719,13 +6746,14 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
         );
     }
     let sendExtra = extra ? { ...extra } : {};
-    if (!botApiCustomEmojiRejected && sendExtra.caption && typeof sendExtra.caption === "string") {
+    const emojiBlocked = isBotApiCustomEmojiRejected();
+    if (!emojiBlocked && sendExtra.caption && typeof sendExtra.caption === "string") {
         sendExtra.caption = ensureAnimatedEmojis(sendExtra.caption);
     }
     if (sendExtra.caption && typeof sendExtra.caption === "string" && sendExtra.caption.length > 1000) {
         sendExtra.caption = sendExtra.caption.slice(0, 950) + "…";
     }
-    if (botApiCustomEmojiRejected) {
+    if (emojiBlocked) {
         sendExtra = stripButtonEmojis(sendExtra);
         if (sendExtra && sendExtra.caption && sendExtra.caption.includes("<tg-emoji")) {
             sendExtra = {
@@ -6760,7 +6788,7 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) botApiCustomEmojiRejected = true;
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
             const fallbackExtra = stripButtonEmojis(extra);
             if (fallbackExtra && fallbackExtra.caption && fallbackExtra.caption.includes("<tg-emoji")) {
                 fallbackExtra.caption = fallbackExtra.caption.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -7045,12 +7073,13 @@ async function sendCombined(ctx, force = false) {
  * @param {object} [extra]
  */
 async function sendHtml(ctx, text, extra = {}) {
+    const emojiBlocked = isBotApiCustomEmojiRejected();
     let sendText = text;
-    if (!botApiCustomEmojiRejected && typeof sendText === "string") {
+    if (!emojiBlocked && typeof sendText === "string") {
         sendText = ensureAnimatedEmojis(sendText);
     }
     let sendExtra = extra;
-    if (botApiCustomEmojiRejected) {
+    if (emojiBlocked) {
         if (sendText && sendText.includes("<tg-emoji")) {
             sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
         }
@@ -7066,7 +7095,7 @@ async function sendHtml(ctx, text, extra = {}) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) botApiCustomEmojiRejected = true;
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
             let fallbackText = text;
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -7102,11 +7131,12 @@ async function sendHtml(ctx, text, extra = {}) {
  * @param {string} text
  */
 async function sendHtmlTo(telegram, chatId, text) {
+    const emojiBlocked = isBotApiCustomEmojiRejected();
     let sendText = text;
-    if (!botApiCustomEmojiRejected && typeof sendText === "string") {
+    if (!emojiBlocked && typeof sendText === "string") {
         sendText = ensureAnimatedEmojis(sendText);
     }
-    if (botApiCustomEmojiRejected) {
+    if (emojiBlocked) {
         if (sendText && sendText.includes("<tg-emoji")) {
             sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
         }
@@ -7120,7 +7150,7 @@ async function sendHtmlTo(telegram, chatId, text) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) botApiCustomEmojiRejected = true;
+            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true);
             let fallbackText = text;
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -7342,36 +7372,53 @@ function isSearcherMessage(ctx, meta, searchOptions) {
  * Pick the transport for a run: the account (MTProto bypass) when it is
  * connected and wanted, otherwise the plain Bot API.
  *
- * @param {{ userbot?: { isReady?: () => boolean, searcherId?: number, send: (text: string) => Promise<any>, classify: (err: any) => string } }} meta
+ * auto mode prefers the user account because third-party searcher bots almost
+ * never enable Bot-to-Bot Communication — USER_BOT_TO_BOT_DISABLED is the
+ * normal case for the Bot API path. When a userbot is configured but still
+ * connecting, we hold that path open instead of silently falling back to the
+ * Bot API (which would just fail with bot-to-bot disabled).
+ *
+ * @param {{ userbot?: { isReady?: () => boolean, searcherId?: number, send: (text: string) => Promise<any>, classify: (err: any) => string }, userbotConfigured?: boolean }} meta
  * @param {{ botUsername: string, transport?: string }} searchOptions
  * @param {import('telegraf').Context} ctx
  */
 function pickTransport(meta, searchOptions, ctx) {
     const want = String((searchOptions && searchOptions.transport) || "auto").toLowerCase();
-    const userbot = meta && meta.userbot;
-    const userbotReady = Boolean(userbot && typeof userbot.isReady === "function" && userbot.isReady());
+    const peer = meta && meta.userbot;
+    const userbotReady = Boolean(peer && typeof peer.isReady === "function" && peer.isReady());
+    const userbotConfigured = Boolean(
+        (meta && meta.userbotConfigured) ||
+        userbotReady ||
+        (peer && (typeof peer.send === "function" || typeof peer.isReady === "function"))
+    );
 
-    if ((want === "userbot" || want === "auto") && userbotReady) {
-        return {
-            kind: "userbot",
-            userbot,
-            classify: (err) => userbot.classify(err),
-            send: (stepOrText) => {
+    const userbotTransport = (readyPeer) => ({
+        kind: "userbot",
+        userbot: readyPeer || null,
+        classify: readyPeer && typeof readyPeer.classify === "function"
+            ? (err) => readyPeer.classify(err)
+            : () => "userbot_not_ready",
+        send: readyPeer
+            ? (stepOrText) => {
                 const text = (stepOrText && typeof stepOrText === "object" && stepOrText.text) ? stepOrText.text : String(stepOrText || "");
-                return userbot.send(text);
-            },
-        };
-    }
-    if (want === "userbot" && !userbotReady) {
-        return {
-            kind: "userbot",
-            userbot: null,
-            classify: () => "userbot_not_ready",
-            send: async () => {
+                return readyPeer.send(text);
+            }
+            : async () => {
                 throw new Error("USERBOT_NOT_READY: start the MTProto userbot first (see README)");
             },
-        };
+    });
+
+    if ((want === "userbot" || want === "auto") && userbotReady) {
+        return userbotTransport(peer);
     }
+
+    // Forced userbot, or auto with credentials present but not connected yet:
+    // stay on the userbot path so we never slam into bot-to-bot disabled.
+    if (want === "userbot" || (want === "auto" && userbotConfigured && !userbotReady)) {
+        return userbotTransport(null);
+    }
+
+    // Explicit bot path, or auto with no account credentials at all.
     return {
         kind: "bot",
         userbot: null,
@@ -7494,8 +7541,14 @@ async function beginUlpRun(ctx, params) {
     const { query, scope, startDate = null, searchOptions, meta, ulpStartedAt, ulpWindows, cardMessageId = null } = params;
     const chatId = ctx.chat.id;
     const sleep = params.sleep || defaultSleep;
-    const daysCount = Math.max(1, Math.min(90, Number(params.daysCount || (userUlpDays && userUlpDays.get(chatId)) || (searchOptions && searchOptions.daysCount) || 5)));
+    // Prefer the explicit daysCount passed by the command handler. Fall back to
+    // the search options default — never touch createBot locals from here so
+    // this helper stays callable from tests without a live bot instance.
+    const daysCount = Math.max(1, Math.min(90, Number(params.daysCount || (searchOptions && searchOptions.daysCount) || 5)));
     const calculatedWindowMs = Math.max(searchOptions.windowMs || 300000, (daysCount * (searchOptions.stepDelayMs + 10000)) + 60000);
+    const effectiveSearchOptions = params.forceTransport
+        ? { ...searchOptions, transport: String(params.forceTransport).toLowerCase() }
+        : searchOptions;
 
     if (searchbot.isRunning(chatId)) {
         await safeReply(ctx, "\u23F3 A search is already running \u2014 tap \uD83D\uDED1 Stop first, or let it finish.");
@@ -7503,7 +7556,7 @@ async function beginUlpRun(ctx, params) {
     }
     const now = Date.now();
     const since = now - (ulpStartedAt.get(chatId) || 0);
-    if (since < ULP_COOLDOWN_MS) {
+    if (!params.skipCooldown && since < ULP_COOLDOWN_MS) {
         await safeReply(
             ctx,
             `\u23F3 Easy there \u2014 give it ${Math.ceil((ULP_COOLDOWN_MS - since) / 1000)}s before the next try.`,
@@ -7518,27 +7571,68 @@ async function beginUlpRun(ctx, params) {
 
     // Choose how the query reaches the searcher: the account transport
     // (MTProto bypass, needs no other bot's cooperation) or the plain Bot API.
-    const transport = pickTransport(meta, searchOptions, ctx);
+    // If the account is configured but still connecting, give it a short window
+    // so we don't fall into USER_BOT_TO_BOT_DISABLED on a cold start.
+    let transport = pickTransport(meta, effectiveSearchOptions, ctx);
+    if (
+        transport.kind === "userbot" &&
+        !transport.userbot &&
+        meta &&
+        meta.userbot &&
+        typeof meta.userbot.isReady === "function" &&
+        !meta.userbot.isReady()
+    ) {
+        const waitMs = Math.min(8000, Math.max(1500, Number(params.userbotWaitMs) || 4000));
+        const waitDeadline = Date.now() + waitMs;
+        while (Date.now() < waitDeadline) {
+            if (meta.userbot.isReady()) break;
+            await sleep(250);
+        }
+        transport = pickTransport(meta, effectiveSearchOptions, ctx);
+    }
 
-    const steps = searchbot.buildSteps(query, scope, searchOptions.histTemplate);
+    const steps = searchbot.buildSteps(query, scope, effectiveSearchOptions.histTemplate);
     const run = searchbot.startRun(chatId, { query, scope, windowMs: calculatedWindowMs });
 
     // In the bypass path the answers arrive through the account, so remember
     // where they belong even before the first send.
-    if (transport.kind === "userbot" && transport.userbot.searcherId) {
+    if (transport.kind === "userbot" && transport.userbot && transport.userbot.searcherId) {
         searchbot.rememberOwner(transport.userbot.searcherId, chatId);
+    }
+
+    // Userbot path selected but peer isn't live yet — surface a clear setup
+    // card instead of throwing USERBOT_NOT_READY mid-search (and instead of
+    // the misleading "bot-to-bot is off" message).
+    if (transport.kind === "userbot" && !transport.userbot) {
+        const blockedText = renderUlpBlocked({
+            kind: "userbot_not_ready",
+            searcherBot: effectiveSearchOptions.botUsername,
+            ownBot: meta && meta.botUsername ? meta.botUsername : null,
+            steps,
+            stepDelayMs: effectiveSearchOptions.stepDelayMs,
+            transport: "userbot",
+            userbotConfigured: Boolean(meta && (meta.userbotConfigured || meta.userbot)),
+        });
+        searchbot.finishRun(chatId, "done");
+        if (cardMessageId) {
+            await safeEdit(ctx, cardMessageId, blockedText, ulpKeyboard(scope));
+        } else {
+            await safeReply(ctx, blockedText, ulpKeyboard(scope));
+        }
+        return;
     }
 
     const cardText = renderUlpStart({
         query,
         scope,
-        searcherBot: searchOptions.botUsername,
+        searcherBot: effectiveSearchOptions.botUsername,
         steps,
-        stepDelayMs: searchOptions.stepDelayMs,
-        maxTries: searchOptions.maxTries,
+        stepDelayMs: effectiveSearchOptions.stepDelayMs,
+        maxTries: effectiveSearchOptions.maxTries,
         transport: transport.kind,
         daysCount,
         startDate: startDate ? userbot.formatDateDmy(startDate) : null,
+        userbotReady: Boolean(transport.kind === "userbot" && transport.userbot),
     });
 
     let card;
@@ -7577,7 +7671,7 @@ async function beginUlpRun(ctx, params) {
     ulpWindows.set(chatId, timer);
 
     let result;
-    if (scope === "day" && transport.kind === "userbot" && typeof transport.userbot.searchDayByDay === "function") {
+    if (scope === "day" && transport.kind === "userbot" && transport.userbot && typeof transport.userbot.searchDayByDay === "function") {
         let dayRes;
         let lastStatusEdit = 0;
         let pendingStatusTimer = null;
@@ -7588,17 +7682,17 @@ async function beginUlpRun(ctx, params) {
                 startDate: startDate || null,
                 chatId,
                 botUsername: meta && meta.botUsername,
-                stepDelayMs: searchOptions.stepDelayMs,
+                stepDelayMs: effectiveSearchOptions.stepDelayMs,
                 shouldStop: () => !searchbot.isRunning(chatId),
                 onStatus: (st) => {
                     if (!card) return;
                     const now = Date.now();
                     const text = renderUlpProgress({
-                        searcherBot: searchOptions.botUsername,
+                        searcherBot: effectiveSearchOptions.botUsername,
                         attempt: st.attempt,
                         maxTries: st.totalDays,
                         sends: [`${st.day}: ${st.step}`],
-                        stepDelayMs: searchOptions.stepDelayMs,
+                        stepDelayMs: effectiveSearchOptions.stepDelayMs,
                         query,
                         stats: store.getStats(chatId),
                     });
@@ -7655,12 +7749,13 @@ async function beginUlpRun(ctx, params) {
             if (card) {
                 const text = renderUlpBlocked({
                     kind: "userbot_error",
-                    searcherBot: searchOptions.botUsername,
+                    searcherBot: effectiveSearchOptions.botUsername,
                     ownBot: meta.botUsername || null,
                     steps: [],
-                    stepDelayMs: searchOptions.stepDelayMs,
+                    stepDelayMs: effectiveSearchOptions.stepDelayMs,
                     reason: dayRes.error || "Userbot encountered an unexpected error during search.",
                     transport: transport.kind,
+                    userbotConfigured: true,
                 });
                 await safeEdit(ctx, card.message_id, text, ulpKeyboard(scope));
             }
@@ -7685,9 +7780,9 @@ async function beginUlpRun(ctx, params) {
             result = await searchbot.runSearch({
                 steps,
                 sleep,
-                stepDelayMs: searchOptions.stepDelayMs,
-                resultWaitMs: searchOptions.resultWaitMs,
-                maxTries: searchOptions.maxTries,
+                stepDelayMs: effectiveSearchOptions.stepDelayMs,
+                resultWaitMs: effectiveSearchOptions.resultWaitMs,
+                maxTries: effectiveSearchOptions.maxTries,
                 classify: transport.classify,
                 send: async (step) => {
                     const sent = await transport.send(step.text);
@@ -7705,15 +7800,15 @@ async function beginUlpRun(ctx, params) {
                         ctx,
                         card.message_id,
                         renderUlpProgress({
-                            searcherBot: searchOptions.botUsername,
+                            searcherBot: effectiveSearchOptions.botUsername,
                             attempt: event.attempt,
-                            maxTries: searchOptions.maxTries,
+                            maxTries: effectiveSearchOptions.maxTries,
                             sends: event.sends,
-                            stepDelayMs: searchOptions.stepDelayMs,
+                            stepDelayMs: effectiveSearchOptions.stepDelayMs,
                             query,
                             stats: store.getStats(chatId),
                         }),
-                        ulpKeyboard(scope, { attempt: event.attempt, maxTries: searchOptions.maxTries }),
+                        ulpKeyboard(scope, { attempt: event.attempt, maxTries: effectiveSearchOptions.maxTries }),
                     ).catch(() => {});
                 },
             });
@@ -7748,28 +7843,96 @@ async function beginUlpRun(ctx, params) {
         return; // the stop button already refreshed the card
     }
 
+    // Bot API hit USER_BOT_TO_BOT_DISABLED — the normal third-party case.
+    // If a userbot peer is available (or can come online), flip transport and
+    // retry once so the user never has to enable bot-to-bot on both sides.
+    if (
+        (result.status === "blocked" || result.status === "error") &&
+        result.kind === "bot_to_bot_disabled" &&
+        transport.kind === "bot" &&
+        String((effectiveSearchOptions && effectiveSearchOptions.transport) || "auto").toLowerCase() !== "bot" &&
+        !params._botToBotRetried
+    ) {
+        const peer = meta && meta.userbot;
+        const peerReady = Boolean(peer && typeof peer.isReady === "function" && peer.isReady());
+        const peerConfigured = Boolean(
+            peerReady ||
+            (meta && meta.userbotConfigured) ||
+            (peer && typeof peer.send === "function")
+        );
+        if (peerConfigured) {
+            if (!peerReady && peer && typeof peer.isReady === "function") {
+                const waitDeadline = Date.now() + Math.min(8000, Number(params.userbotWaitMs) || 4000);
+                while (Date.now() < waitDeadline && !peer.isReady()) {
+                    await sleep(250);
+                }
+            }
+            const retryTransport = pickTransport(
+                { ...meta, userbotConfigured: true },
+                { ...effectiveSearchOptions, transport: "userbot" },
+                ctx,
+            );
+            if (retryTransport.kind === "userbot" && retryTransport.userbot) {
+                if (card) {
+                    await safeEdit(
+                        ctx,
+                        card.message_id,
+                        renderUlpStart({
+                            query,
+                            scope,
+                            searcherBot: effectiveSearchOptions.botUsername,
+                            steps,
+                            stepDelayMs: effectiveSearchOptions.stepDelayMs,
+                            maxTries: effectiveSearchOptions.maxTries,
+                            transport: "userbot",
+                            daysCount,
+                            startDate: startDate ? userbot.formatDateDmy(startDate) : null,
+                            userbotReady: true,
+                            note: "Bot-to-bot blocked — switched to your account automatically",
+                        }),
+                        ulpKeyboard(scope),
+                    ).catch(() => {});
+                }
+                // Re-open the run window for the account bypass path.
+                searchbot.finishRun(chatId, "done");
+                clearUlpWindow(ulpWindows, chatId);
+                // Drop the finished run and start a fresh userbot-backed one
+                // without the cooldown — this is the same user request.
+                ulpStartedAt.set(chatId, 0);
+                return beginUlpRun(ctx, {
+                    ...params,
+                    cardMessageId: card ? card.message_id : cardMessageId,
+                    forceTransport: "userbot",
+                    skipCooldown: true,
+                    _botToBotRetried: true,
+                });
+            }
+        }
+    }
+
     clearUlpWindow(ulpWindows, chatId);
     searchbot.finishRun(chatId, "done");
 
     let text;
     if (result.status === "exhausted") {
         text = renderUlpEmpty({
-            searcherBot: searchOptions.botUsername,
+            searcherBot: effectiveSearchOptions.botUsername,
             query,
             scope,
             attempts: result.attempts,
-            stepDelayMs: searchOptions.stepDelayMs,
+            stepDelayMs: effectiveSearchOptions.stepDelayMs,
         });
     } else {
         const reason = result.error && (result.error.description || result.error.errorMessage || result.error.message);
         text = renderUlpBlocked({
             kind: result.kind || "other",
-            searcherBot: searchOptions.botUsername,
+            searcherBot: effectiveSearchOptions.botUsername,
             ownBot: meta.botUsername || null,
             steps,
-            stepDelayMs: searchOptions.stepDelayMs,
+            stepDelayMs: effectiveSearchOptions.stepDelayMs,
             reason: reason || null,
             transport: transport.kind,
+            userbotConfigured: Boolean(meta && (meta.userbotConfigured || meta.userbot)),
         });
     }
 
@@ -8853,6 +9016,7 @@ module.exports = {
     stripButtonEmojis,
     setBotApiCustomEmojiRejected,
     isBotApiCustomEmojiRejected,
+    clearBotApiCustomEmojiRejection,
     safeReply,
     safeEdit,
     safeSendDocument,

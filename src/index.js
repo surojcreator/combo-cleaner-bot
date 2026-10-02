@@ -50,6 +50,10 @@ const botMeta = { search: searchbot.loadOptions() };
 // plain Bot API and says exactly what to fix.
 const userbotConfig = userbot.loadConfig();
 botMeta.search.transport = userbotConfig.transport;
+// Tell the relay whether account credentials exist — even before the MTProto
+// client finishes connecting — so /ulp never falls into USER_BOT_TO_BOT_DISABLED
+// just because the peer is still warming up.
+botMeta.userbotConfigured = userbot.isConfigured(userbotConfig);
 
 const bot = createBot(TOKEN || "123456:STANDBY_TOKEN", botMeta);
 
@@ -162,17 +166,25 @@ async function connectUserbot() {
             });
         });
         botMeta.userbot = peer;
+        botMeta.userbotConfigured = true;
         console.log(`Userbot: connected as your account, listening to @${username} (id ${id}).`);
         if (typeof peer.syncCustomEmojis === "function") {
             try {
                 const syncRes = await peer.syncCustomEmojis();
-                console.log(`Userbot: synchronized ${syncRes.synced || 0} custom animated emojis from your account.`);
+                const n = (syncRes && syncRes.synced) || 0;
+                console.log(`Userbot: synchronized ${n} custom animated emojis from your account.`);
+                if (n > 0) {
+                    try {
+                        const { clearBotApiCustomEmojiRejection } = require("./bot");
+                        if (typeof clearBotApiCustomEmojiRejection === "function") clearBotApiCustomEmojiRejection();
+                    } catch (_) {}
+                }
             } catch (syncErr) {
                 console.warn("Userbot: emoji auto-sync warning:", syncErr && syncErr.message ? syncErr.message : syncErr);
             }
         }
     } catch (err) {
-        console.error("Userbot: failed to start — relay falls back to the Bot API.", err && err.message ? err.message : err);
+        console.error("Userbot: failed to start — ULP will ask you to fix the session (bot-to-bot is not a usable path for third-party searchers).", err && err.message ? err.message : err);
     }
 }
 

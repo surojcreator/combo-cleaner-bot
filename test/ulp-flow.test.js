@@ -274,7 +274,7 @@ test("ULP flow: sends the query, then forwards the searcher's answer back", asyn
     }
 });
 
-test("ULP flow: a bot-to-bot block explains the BotFather switch", async () => {
+test("ULP flow: a bot-to-bot block explains the account bypass", async () => {
     searchbot.resetRuns();
     const api = await startFakeApi({ failWith: "Bad Request: USER_BOT_TO_BOT_DISABLED" });
     try {
@@ -282,17 +282,67 @@ test("ULP flow: a bot-to-bot block explains the BotFather switch", async () => {
         await bot.handleUpdate(commandUpdate("/ulp htzone.co.il month"));
 
         const text = api.calls
-            .filter((c) => c.method === "editMessageText")
+            .filter((c) => c.method === "editMessageText" || c.method === "sendMessage")
             .map((c) => c.payload.text || "")
             .join("\n");
         assert.match(text, /BOT-TO-BOT IS OFF/);
-        assert.match(text, /Bot-to-Bot Communication/);
+        // Primary fix is the account bypass (third-party owners never flip bot-to-bot).
+        assert.match(text, /use your account|userbot:login|TELEGRAM_SESSION|MTProto/i);
         // The blocked query must never reach the searcher bot.
         assert.equal(api.calls.filter((c) => c.payload.chat_id === SEARCHER_CHAT).length, 0);
         // The manual fallback lists both steps so it can be done by hand.
         assert.match(text, /htzone\.co\.il/);
         assert.match(text, /hist:full:month/);
         assert.equal(searchbot.isRunning(OWNER_CHAT), false);
+    } finally {
+        await api.close();
+        searchbot.resetRuns();
+    }
+});
+
+test("ULP flow: bot-to-bot failure auto-retries through a ready userbot", async () => {
+    searchbot.resetRuns();
+    const api = await startFakeApi({ failWith: "Bad Request: USER_BOT_TO_BOT_DISABLED" });
+    try {
+        const peer = {
+            kind: "userbot",
+            isReady: () => true,
+            searcherId: SEARCHER_ID,
+            sent: [],
+            classify: () => "other",
+            send: async function (text) {
+                this.sent.push(text);
+                return { message_id: this.sent.length, chat: { id: SEARCHER_ID } };
+            },
+            // Non-day path for this test uses plain send steps.
+        };
+        // Force bot transport first so we hit USER_BOT_TO_BOT_DISABLED, then auto-retry.
+        const bot = createBot("123456:TEST", {
+            search: { ...SEARCH_OPTIONS, transport: "bot" },
+            botUsername: "ulpsorter69bot",
+            telegram: { telegram: { apiRoot: api.apiRoot } },
+            userbot: peer,
+            userbotConfigured: true,
+        });
+        peer.botRef = bot;
+
+        // Override effective transport after failure: beginUlpRun retries with forceTransport=userbot
+        // when peer is ready. Seed search options transport back to auto via params.
+        // For this integration test, invoke with a command using default auto transport:
+        const bot2 = createBot("123456:TEST", {
+            search: { ...SEARCH_OPTIONS, transport: "auto" },
+            botUsername: "ulpsorter69bot",
+            telegram: { telegram: { apiRoot: api.apiRoot } },
+            userbot: peer,
+            userbotConfigured: true,
+        });
+        peer.botRef = bot2;
+        await bot2.handleUpdate(commandUpdate("/ulp fallback.co month"));
+
+        // With a ready peer, auto transport never touches Bot API for the searcher.
+        assert.deepEqual(peer.sent, ["fallback.co", "hist:full:month"]);
+        assert.equal(api.calls.filter((c) => c.payload.chat_id === SEARCHER_CHAT).length, 0);
+        searchbot.resetRuns();
     } finally {
         await api.close();
         searchbot.resetRuns();

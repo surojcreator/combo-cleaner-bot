@@ -40,8 +40,14 @@ test("pickTransport prefers the connected account, else the Bot API", () => {
     const ready = { isReady: () => true, send: async (t) => ({ message_id: 1, chat: { id: 7 } }), classify: () => "other" };
     assert.equal(pickTransport({ userbot: ready }, searchOptions, ctx).kind, "userbot");
 
+    // auto + configured-but-down peer: stay on userbot path so we never hit bot-to-bot disabled
     const down = { isReady: () => false, send: async () => true, classify: () => "other" };
-    assert.equal(pickTransport({ userbot: down }, searchOptions, ctx).kind, "bot");
+    const autoDown = pickTransport({ userbot: down, userbotConfigured: true }, searchOptions, ctx);
+    assert.equal(autoDown.kind, "userbot");
+    assert.equal(autoDown.userbot, null);
+    assert.equal(autoDown.classify(new Error("x")), "userbot_not_ready");
+
+    // auto with nothing configured falls back to Bot API
     assert.equal(pickTransport({}, searchOptions, ctx).kind, "bot");
 
     const forcedDown = pickTransport({ userbot: down }, { botUsername: "DumpNews14Bot", transport: "userbot" }, ctx);

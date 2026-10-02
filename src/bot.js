@@ -400,10 +400,11 @@ function createBot(token, meta = {}) {
         if (meta && meta.botUsername) lastBotUsername = String(meta.botUsername);
         const batch = store.getStats(ctx.chat.id);
         await safeChatAction(ctx, "typing");
+        // Keep /start lean: renderHelp already embeds animated <tg-emoji>.
+        // Prepending the long Premium wall added entities and made Telegram more
+        // likely to reject the whole card (while short /emojistatus still worked).
         const help = renderHelp(meta.botUsername, batch, searchOptions.botUsername);
-        const hint = renderAnimatedEmojiOwnerHint();
-        const body = hint ? `${hint}\n────────────────────────────\n${help}` : help;
-        await safeReply(ctx, body, mainKeyboard(batch));
+        await safeReply(ctx, help, mainKeyboard(batch));
     };
 
 
@@ -6558,59 +6559,73 @@ async function safeReply(ctx, text, extra = {}) {
     let sendText = typeof text === "string" ? text : String(text || "");
     if (!emojiBlocked) {
         sendText = ensureAnimatedEmojis(sendText);
+        // Cap <tg-emoji> count so dense screens (/start) are not rejected as a whole.
+        sendText = limitTgEmoji(sendText, 24);
+    } else if (sendText && sendText.includes("<tg-emoji")) {
+        sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
     }
     if (sendText.length > TELEGRAM_MSG_LIMIT) {
         sendText = sendText.slice(0, TELEGRAM_MSG_LIMIT - 50) + "\n\n… [TRUNCATED]";
     }
-    let sendExtra = emojiBlocked ? stripButtonEmojis(extra) : withCleanMarkup(extra);
-    if (emojiBlocked) {
-        if (sendText && sendText.includes("<tg-emoji")) {
-            sendText = sendText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
-        }
-    }
+
+    const attempt = async (html, extraOpts) => ctx.reply(html, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...extraOpts,
+    });
+
+    // Stage A: animated text + animated button icons
     try {
-        return await ctx.reply(sendText, {
-            parse_mode: "HTML",
-            disable_web_page_preview: true,
-            ...sendExtra,
-        });
+        return await attempt(sendText, emojiBlocked ? stripButtonEmojis(extra) : withCleanMarkup(extra));
     } catch (err) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
-        if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
-            let fallbackText = sendText;
-            if (fallbackText && fallbackText.includes("<tg-emoji")) {
-                fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
-            }
-            const fallbackExtra = stripButtonEmojis(extra);
+        const isParseError = PARSE_ENTITY_ERROR_RE.test(msg);
+        if (!isCustomEmojiError && !isParseError) {
+            console.error("safeReply failed:", err.message);
+            return null;
+        }
+        console.warn("safeReply stage-A failed:", msg.slice(0, 180));
+
+        // Stage B: keep animated *message* tags, strip button icons only
+        try {
+            return await attempt(sendText, stripButtonEmojis(extra));
+        } catch (errB) {
+            console.warn("safeReply stage-B failed:", String((errB && errB.message) || errB).slice(0, 180));
+        }
+
+        // Stage C: plain unicode message + plain buttons
+        let fallbackText = sendText;
+        if (fallbackText && fallbackText.includes("<tg-emoji")) {
+            fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
+        }
+        const fallbackExtra = stripButtonEmojis(extra);
+        // Do NOT globally kill animated emoji for one bad payload.
+        if (isCustomEmojiError) botApiCustomEmojiRejectReason = msg.slice(0, 240);
+        try {
+            return await attempt(fallbackText, fallbackExtra);
+        } catch (fallbackErr) {
+            const plainText = fallbackText.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
+            const cleanExtra = { ...fallbackExtra };
+            delete cleanExtra.parse_mode;
             try {
-                return await ctx.reply(fallbackText, {
-                    parse_mode: "HTML",
-                    disable_web_page_preview: true,
-                    ...fallbackExtra,
-                });
-            } catch (fallbackErr) {
-                const plainText = fallbackText.replace(/<[^>]+>/g, "").replace(/[<>]/g, "");
-                const cleanExtra = { ...fallbackExtra };
-                delete cleanExtra.parse_mode;
-                try {
-                    return await ctx.reply(plainText, {
-                        disable_web_page_preview: true,
-                        ...cleanExtra,
-                    });
-                } catch {
-                    delete cleanExtra.reply_markup;
-                    return await ctx.reply(plainText, {
-                        disable_web_page_preview: true,
-                        ...cleanExtra,
-                    }).catch(() => null);
-                }
+                return await ctx.reply(plainText, { disable_web_page_preview: true, ...cleanExtra });
+            } catch {
+                delete cleanExtra.reply_markup;
+                return await ctx.reply(plainText, { disable_web_page_preview: true, ...cleanExtra }).catch(() => null);
             }
         }
-        console.error("safeReply failed:", err.message);
-        return null;
     }
+}
+
+/** Keep at most `max` <tg-emoji> wrappers; unwrap the rest to plain unicode. */
+function limitTgEmoji(html, max = 24) {
+    if (!html || typeof html !== "string" || max <= 0) return html;
+    let count = 0;
+    return html.replace(/<tg-emoji\b[^>]*>(.*?)<\/tg-emoji>/gi, (full, inner) => {
+        count += 1;
+        return count <= max ? full : String(inner || "");
+    });
 }
 
 /**
@@ -6648,7 +6663,7 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
         }
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
+            if (isCustomEmojiError) { botApiCustomEmojiRejectReason = msg.slice(0, 240); /* per-send only — no process-wide kill */ }
             let fallbackText = editText;
             if (fallbackText && fallbackText.includes("<tg-emoji")) {
                 fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -6867,7 +6882,7 @@ async function safeSendDocument(ctx, chatId, payload, extra = {}) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
+            if (isCustomEmojiError) { botApiCustomEmojiRejectReason = msg.slice(0, 240); /* per-send only — no process-wide kill */ }
             const fallbackExtra = stripButtonEmojis(extra);
             if (fallbackExtra && fallbackExtra.caption && fallbackExtra.caption.includes("<tg-emoji")) {
                 fallbackExtra.caption = fallbackExtra.caption.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -7173,7 +7188,7 @@ async function sendHtml(ctx, text, extra = {}) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
+            if (isCustomEmojiError) { botApiCustomEmojiRejectReason = msg.slice(0, 240); /* per-send only — no process-wide kill */ }
             let fallbackText = text;
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
@@ -7236,7 +7251,7 @@ async function sendHtmlTo(telegram, chatId, text) {
         const msg = String((err && err.message) || err || "");
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) setBotApiCustomEmojiRejected(true, msg);
+            if (isCustomEmojiError) { botApiCustomEmojiRejectReason = msg.slice(0, 240); /* per-send only — no process-wide kill */ }
             let fallbackText = text;
             if (text && text.includes("<tg-emoji")) {
                 fallbackText = text.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");

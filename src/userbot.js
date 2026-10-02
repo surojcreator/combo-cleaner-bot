@@ -1196,6 +1196,21 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                         const count = full.documents ? full.documents.length : (s.count || 0);
                         totalEmojis += count;
 
+                        // Prefer pack.emoticon → first document (matches SearchCustomEmoji).
+                        // Attribute.alt alone misses many glyphs and FE0F variants.
+                        if (Array.isArray(full.packs)) {
+                            for (const pack of full.packs) {
+                                const emo = pack && pack.emoticon;
+                                const docs = pack && pack.documents;
+                                if (!emo || !docs || !docs.length) continue;
+                                const rawId = docs[0] && (docs[0].value != null ? docs[0].value : docs[0]);
+                                const id = rawId != null ? String(rawId) : "";
+                                if (!id) continue;
+                                if (!emojiMap[emo]) emojiMap[emo] = id;
+                                const stripped = String(emo).replace(/\uFE0F/g, "");
+                                if (stripped && stripped !== emo && !emojiMap[stripped]) emojiMap[stripped] = id;
+                            }
+                        }
                         if (Array.isArray(full.documents)) {
                             for (const doc of full.documents) {
                                 let alt = "";
@@ -1208,7 +1223,10 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
                                     }
                                 }
                                 if (alt && doc.id) {
-                                    emojiMap[alt] = doc.id.toString();
+                                    const id = doc.id.toString();
+                                    if (!emojiMap[alt]) emojiMap[alt] = id;
+                                    const stripped = String(alt).replace(/\uFE0F/g, "");
+                                    if (stripped && stripped !== alt && !emojiMap[stripped]) emojiMap[stripped] = id;
                                 }
                             }
                         }
@@ -1244,11 +1262,42 @@ function createUserbot(cfg = loadConfig(), opts = {}) {
         async syncCustomEmojis() {
             if (!ready || !client) return { synced: 0, error: "USERBOT_NOT_READY" };
             const { emojiMap, totalEmojis } = await this.getInstalledEmojiPacks();
-            const { registerCustomEmojis } = require("./messages");
-            if (emojiMap && typeof registerCustomEmojis === "function") {
-                registerCustomEmojis(emojiMap);
+            const map = { ...(emojiMap || {}) };
+            // Fill common UI glyphs via SearchCustomEmoji when packs don't cover them.
+            try {
+                const { EMOJI_KEY_MAP } = require("./messages");
+                const wanted = new Set(Object.keys(EMOJI_KEY_MAP || {}));
+                for (const sym of wanted) {
+                    if (!sym || map[sym] || map[String(sym).replace(/\uFE0F/g, "")]) continue;
+                    try {
+                        const r = await withTimeout(
+                            client.invoke(new Api.messages.SearchCustomEmoji({
+                                emoticon: sym,
+                                hash: BigInt(0),
+                            })),
+                            Math.min(timeoutMs, 8000),
+                            "userbot SearchCustomEmoji",
+                        );
+                        const ids = (r && r.documentId) || [];
+                        if (ids.length) {
+                            const raw = ids[0] && (ids[0].value != null ? ids[0].value : ids[0]);
+                            if (raw != null) {
+                                map[sym] = String(raw);
+                                const stripped = String(sym).replace(/\uFE0F/g, "");
+                                if (stripped && !map[stripped]) map[stripped] = String(raw);
+                            }
+                        }
+                    } catch (_) {}
+                }
+            } catch (_) {}
+            const { registerCustomEmojis, saveEmojiRegistryFile } = require("./messages");
+            if (typeof registerCustomEmojis === "function") {
+                registerCustomEmojis(map);
             }
-            return { synced: Object.keys(emojiMap || {}).length, totalEmojis };
+            if (typeof saveEmojiRegistryFile === "function") {
+                saveEmojiRegistryFile(process.env.EMOJI_REGISTRY_PATH || "/var/data/emoji-registry.json");
+            }
+            return { synced: Object.keys(map).length, totalEmojis };
         },
 
         /**

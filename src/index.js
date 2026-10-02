@@ -198,6 +198,14 @@ async function connectUserbot() {
                         const { clearBotApiCustomEmojiRejection } = require("./bot");
                         if (typeof clearBotApiCustomEmojiRejection === "function") clearBotApiCustomEmojiRejection();
                     } catch (_) {}
+                    try {
+                        const { saveEmojiRegistryFile, getCustomEmojis } = require("./messages");
+                        if (typeof saveEmojiRegistryFile === "function") {
+                            const path = saveEmojiRegistryFile(process.env.EMOJI_REGISTRY_PATH || "/var/data/emoji-registry.json");
+                            const count = getCustomEmojis ? Object.keys(getCustomEmojis()).length : n;
+                            console.log(`Animated emojis: persisted ${count} ids${path ? " → " + path : ""}`);
+                        }
+                    } catch (_) {}
                 }
             } catch (syncErr) {
                 console.warn("Userbot: emoji auto-sync warning:", syncErr && syncErr.message ? syncErr.message : syncErr);

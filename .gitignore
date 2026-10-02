@@ -5,3 +5,6 @@ node_modules/
 test_search_slice.txt
 scratch/
 data/
+# Ship validated animated emoji document IDs
+!data/
+!data/emoji-registry.json

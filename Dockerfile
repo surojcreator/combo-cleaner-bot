@@ -10,6 +10,7 @@ RUN npm install --omit=dev
 
 # Copy the rest of the source.
 COPY src ./src
+COPY data ./data
 COPY package.json ./
 
 # Ensure data directories exist

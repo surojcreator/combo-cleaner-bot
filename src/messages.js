@@ -431,31 +431,112 @@ function registerCustomEmojis(mapping) {
 }
 
 /**
- * Load default animated emojis into the registry so every emoji is animated by default.
- * Defaults are opt-in: fake sequential IDs trip Telegram's DOCUMENT_INVALID and
- * permanently disable animated emojis for the process. Prefer real IDs from the
- * userbot (`/emojis sync`) or CUSTOM_ANIMATED_EMOJIS env.
+ * Load default animated emojis into the registry so UI glyphs animate out of the
+ * box. Prefer the validated on-disk registry (real document IDs). The old
+ * sequential DEFAULT_CUSTOM_ANIMATED_EMOJIS map is *never* loaded by default —
+ * those IDs don't match their glyphs and Telegram rejects them with
+ * DOCUMENT_INVALID (which disables animation for the process).
  *
- * Set LOAD_DEFAULT_ANIMATED_EMOJIS=1 to force-load the built-in map (tests only).
+ * Sources (first wins per key, later calls override via registerCustomEmojis):
+ *   1. data/emoji-registry.json (bundled) or /var/data/emoji-registry.json
+ *   2. CUSTOM_ANIMATED_EMOJIS env JSON
+ *   3. userbot `/emojis sync` at runtime
+ *   4. LOAD_DEFAULT_ANIMATED_EMOJIS=1 → legacy DEFAULT map (tests only)
  */
 function loadDefaultCustomEmojis() {
-    registerCustomEmojis(DEFAULT_CUSTOM_ANIMATED_EMOJIS);
+    // Legacy path (tests) only when explicitly requested.
+    if (process.env.LOAD_DEFAULT_ANIMATED_EMOJIS === "1" || process.env.LOAD_DEFAULT_ANIMATED_EMOJIS === "true") {
+        registerCustomEmojis(DEFAULT_CUSTOM_ANIMATED_EMOJIS);
+    }
 }
 
-// Optional seed from environment: real custom emoji document IDs the bot may use.
-try {
-    if (process.env.CUSTOM_ANIMATED_EMOJIS) {
-        const parsed = JSON.parse(process.env.CUSTOM_ANIMATED_EMOJIS);
-        if (parsed && typeof parsed === "object") {
-            registerCustomEmojis(parsed);
+/**
+ * Load a JSON emoji registry from disk. Accepts either `{ map: {...} }` or a
+ * flat `{ "🚀": "id", ... }` object.
+ * @param {string} filePath
+ * @returns {number} entries loaded
+ */
+function loadEmojiRegistryFile(filePath) {
+    try {
+        const fs = require("fs");
+        if (!filePath || !fs.existsSync(filePath)) return 0;
+        const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        const map = (raw && raw.map && typeof raw.map === "object") ? raw.map
+            : (raw && typeof raw === "object" ? raw : null);
+        if (!map) return 0;
+        const before = customAnimatedEmojis.size;
+        registerCustomEmojis(map);
+        return Math.max(0, customAnimatedEmojis.size - before) || Object.keys(map).length;
+    } catch (err) {
+        console.warn("emoji registry load failed:", filePath, err && err.message ? err.message : err);
+        return 0;
+    }
+}
+
+/**
+ * Persist the current registry so Railway restarts keep animated defaults.
+ * @param {string} [filePath]
+ */
+function saveEmojiRegistryFile(filePath) {
+    try {
+        const fs = require("fs");
+        const path = require("path");
+        const target = filePath || process.env.EMOJI_REGISTRY_PATH || "/var/data/emoji-registry.json";
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const map = Object.fromEntries(customAnimatedEmojis);
+        fs.writeFileSync(target, JSON.stringify({
+            updatedAt: new Date().toISOString(),
+            count: Object.keys(map).length,
+            map,
+        }, null, 2));
+        return target;
+    } catch (err) {
+        console.warn("emoji registry save failed:", err && err.message ? err.message : err);
+        return null;
+    }
+}
+
+/**
+ * Seed animated emoji IDs at process start: bundled registry → volume copy → env.
+ * Always runs (so defaults animate without a manual /emojis sync).
+ */
+function seedAnimatedEmojis() {
+    const path = require("path");
+    const candidates = [
+        process.env.EMOJI_REGISTRY_PATH,
+        "/var/data/emoji-registry.json",
+        path.join(__dirname, "emoji-registry.json"),
+        path.join(__dirname, "..", "data", "emoji-registry.json"),
+        path.join(process.cwd(), "data", "emoji-registry.json"),
+    ].filter(Boolean);
+    let loaded = 0;
+    for (const file of candidates) {
+        const n = loadEmojiRegistryFile(file);
+        if (n > 0) {
+            loaded = customAnimatedEmojis.size;
+            console.log(`Animated emojis: loaded ${loaded} ids from ${file}`);
+            break;
         }
     }
-} catch (_) {}
-
-// Opt-in defaults for local tests / previews that mock the Bot API.
-if (process.env.LOAD_DEFAULT_ANIMATED_EMOJIS === "1" || process.env.LOAD_DEFAULT_ANIMATED_EMOJIS === "true") {
-    loadDefaultCustomEmojis();
+    // Env override / supplement
+    try {
+        if (process.env.CUSTOM_ANIMATED_EMOJIS) {
+            const parsed = JSON.parse(process.env.CUSTOM_ANIMATED_EMOJIS);
+            if (parsed && typeof parsed === "object") {
+                registerCustomEmojis(parsed.map && typeof parsed.map === "object" ? parsed.map : parsed);
+                loaded = customAnimatedEmojis.size;
+            }
+        }
+    } catch (_) {}
+    if (process.env.LOAD_DEFAULT_ANIMATED_EMOJIS === "1" || process.env.LOAD_DEFAULT_ANIMATED_EMOJIS === "true") {
+        loadDefaultCustomEmojis();
+        loaded = customAnimatedEmojis.size;
+    }
+    return loaded;
 }
+
+// Seed immediately so first messages animate without waiting for userbot sync.
+seedAnimatedEmojis();
 
 /**
  * Reset custom animated emojis back to built-in defaults.
@@ -3579,6 +3660,9 @@ module.exports = {
     humanSize,
     tgEmoji,
     registerCustomEmojis,
+    loadEmojiRegistryFile,
+    saveEmojiRegistryFile,
+    seedAnimatedEmojis,
     getCustomEmojis,
     clearCustomEmojis,
     emojisKeyboard,

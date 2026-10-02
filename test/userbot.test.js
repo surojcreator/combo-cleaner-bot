@@ -379,7 +379,7 @@ test("searchDayByDay sends /start first, selects date folder, then writes domain
     assert.ok(res.foldersScanned >= 2 || res.daysProcessed >= 1, "expected multi-day progress");
 });
 
-test("searchDayByDay navigates pagination loop when date folder is on page 2", async () => {
+test("searchDayByDay page-first: finish page 1 dates then flip → for page 2", async () => {
     const actions = [];
     const cfg = {
         apiId: 12345,
@@ -390,47 +390,194 @@ test("searchDayByDay navigates pagination loop when date folder is on page 2", a
     };
 
     let msgCounter = 200;
-    const targetDate = "15.09.2026";
+    // Page 1 (top→bottom): 02.10, 01.10 — Base 34 pager 1/5
+    const d1 = "02.10.2026";
+    const d2 = "01.10.2026";
+    // Page 2: 30.09
+    const d3 = "30.09.2026";
 
-    // Page 1 has other dates and a Next page button
-    const page1Msg = {
-        id: ++msgCounter,
+    const makePage = (page, total, dates) => ({
+        id: 201,
         out: false,
         replyMarkup: {
             rows: [
-                { buttons: [{ text: "📅 21.09.2026", data: Buffer.from("folder:21.09.2026:0") }] },
-                { buttons: [{ text: "➡️ Next", data: Buffer.from("menu:page:1") }] },
+                ...dates.map((ds) => ({
+                    buttons: [{ text: `📅 ${ds}`, data: Buffer.from(`folder:${ds}:0`) }],
+                })),
+                {
+                    buttons: [
+                        { text: "←", data: Buffer.from("page:prev") },
+                        { text: `${page}/${total}`, data: Buffer.from("page:info") },
+                        { text: "→", data: Buffer.from("page:next") },
+                    ],
+                },
             ],
         },
+    });
+
+    let currentPage = 1;
+    let activeFolder = null;
+
+    const listMsg = () => {
+        if (currentPage === 1) return makePage(1, 5, [d1, d2]);
+        return makePage(2, 5, [d3]);
     };
 
-    // Page 2 has the target date
-    const page2Msg = {
-        id: page1Msg.id,
+    const folderView = (ds) => ({
+        id: 201,
         out: false,
         replyMarkup: {
             rows: [
-                { buttons: [{ text: `📅 ${targetDate}`, data: Buffer.from(`folder:${targetDate}:0`) }] },
+                { buttons: [{ text: "📦 Full hist", data: Buffer.from(`hist:${ds}:0`) }] },
+                { buttons: [{ text: "🔙 Back", data: Buffer.from("back") }] },
             ],
         },
-    };
-
-    const folderViewMsg = {
-        id: page1Msg.id,
-        out: false,
-        replyMarkup: {
-            rows: [
-                { buttons: [{ text: "📦 Full hist", data: Buffer.from(`hist:${targetDate}:0`) }] },
-            ],
-        },
-    };
-
-    let currentPage = 0;
-    let folderOpened = false;
+    });
 
     const mockClient = {
         async sendMessage(target, { message }) {
             actions.push({ type: "sendMessage", message });
+            if (message === "/start") {
+                currentPage = 1;
+                activeFolder = null;
+            }
+            return { id: ++msgCounter, out: true, message };
+        },
+        async getMessages(target, opts = {}) {
+            if (opts.ids && opts.ids.length) {
+                if (activeFolder) return [folderView(activeFolder)];
+                return [listMsg()];
+            }
+            if (activeFolder) {
+                return [
+                    { id: ++msgCounter, out: false, media: { document: { size: 500 } }, document: { size: 500 } },
+                    folderView(activeFolder),
+                ];
+            }
+            return [listMsg()];
+        },
+        async invoke(req) {
+            const dataStr = req.data ? req.data.toString() : "";
+            actions.push({ type: "callback", data: dataStr });
+            if (dataStr === "page:next") {
+                currentPage = Math.min(5, currentPage + 1);
+                activeFolder = null;
+            } else if (dataStr === "page:prev") {
+                currentPage = Math.max(1, currentPage - 1);
+                activeFolder = null;
+            } else if (dataStr === "back") {
+                activeFolder = null;
+            } else if (dataStr.startsWith("folder:")) {
+                activeFolder = dataStr.split(":")[1];
+            } else if (dataStr.startsWith("hist:")) {
+                // stay in folder until back
+            }
+            return true;
+        },
+        async getInputEntity() { return { id: 999 }; },
+    };
+
+    const ub = userbot.createUserbot(cfg, {
+        client: mockClient,
+        searcherEntity: { id: 888 },
+    });
+
+    const res = await ub.searchDayByDay({
+        query: "paypal.com",
+        daysCount: 3,
+        stepDelayMs: 10,
+        sleep: () => Promise.resolve(),
+    });
+
+    assert.equal(res.status, "done");
+    assert.equal(actions[0].message, "/start");
+
+    // Page-first order: page1 dates BEFORE →, then page2 date
+    const folderOrder = actions
+        .filter((a) => a.type === "callback" && String(a.data || "").startsWith("folder:"))
+        .map((a) => a.data);
+    assert.deepEqual(
+        folderOrder,
+        [`folder:${d1}:0`, `folder:${d2}:0`, `folder:${d3}:0`],
+        "expected page1 top→bottom then page2 (02.10 → 01.10 → 30.09)",
+    );
+
+    const nextIdx = actions.findIndex((a) => a.type === "callback" && a.data === "page:next");
+    assert.ok(nextIdx > 0, "expected → flip to page 2");
+    const lastPage1FolderIdx = actions.findIndex((a) => a.type === "callback" && a.data === `folder:${d2}:0`);
+    assert.ok(nextIdx > lastPage1FolderIdx, "→ must come after finishing page 1 dates");
+
+    assert.ok(actions.some((a) => a.type === "sendMessage" && a.message === "paypal.com"), "domain once");
+    assert.ok(actions.some((a) => a.type === "callback" && a.data === `hist:${d1}:0`));
+    assert.ok(actions.some((a) => a.type === "callback" && a.data === `hist:${d3}:0`));
+    assert.ok(res.daysProcessed >= 3 || res.foldersScanned >= 3);
+});
+
+ test("searchDayByDay flips past filtered page-1 dates to reach older page-2 day", async () => {
+    const actions = [];
+    const cfg = {
+        apiId: 12345,
+        apiHash: "hash",
+        session: "session",
+        searcher: "DumpNews14Bot",
+        transport: "userbot",
+    };
+
+    let msgCounter = 300;
+    const targetDate = "15.09.2026";
+    let currentPage = 0;
+    let folderOpened = false;
+
+    const page1Msg = {
+        id: 301,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: "📅 21.09.2026", data: Buffer.from("folder:21.09.2026:0") }] },
+                {
+                    buttons: [
+                        { text: "←", data: Buffer.from("page:prev") },
+                        { text: "1/2", data: Buffer.from("page:info") },
+                        { text: "→", data: Buffer.from("page:next") },
+                    ],
+                },
+            ],
+        },
+    };
+    const page2Msg = {
+        id: 301,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: `📅 ${targetDate}`, data: Buffer.from(`folder:${targetDate}:0`) }] },
+                {
+                    buttons: [
+                        { text: "←", data: Buffer.from("page:prev") },
+                        { text: "2/2", data: Buffer.from("page:info") },
+                        { text: "→", data: Buffer.from("page:next") },
+                    ],
+                },
+            ],
+        },
+    };
+    const folderViewMsg = {
+        id: 301,
+        out: false,
+        replyMarkup: {
+            rows: [
+                { buttons: [{ text: "📦 Full hist", data: Buffer.from(`hist:${targetDate}:0`) }] },
+                { buttons: [{ text: "🔙 Back", data: Buffer.from("back") }] },
+            ],
+        },
+    };
+
+    const mockClient = {
+        async sendMessage(target, { message }) {
+            actions.push({ type: "sendMessage", message });
+            if (message === "/start") {
+                currentPage = 0;
+                folderOpened = false;
+            }
             return { id: ++msgCounter, out: true, message };
         },
         async getMessages(target, opts = {}) {
@@ -446,8 +593,11 @@ test("searchDayByDay navigates pagination loop when date folder is on page 2", a
         async invoke(req) {
             const dataStr = req.data ? req.data.toString() : "";
             actions.push({ type: "callback", data: dataStr });
-            if (dataStr === "menu:page:1") {
+            if (dataStr === "page:next") {
                 currentPage = 1;
+                folderOpened = false;
+            } else if (dataStr === "back") {
+                folderOpened = false;
             } else if (dataStr.startsWith("folder:")) {
                 folderOpened = true;
             }
@@ -470,25 +620,13 @@ test("searchDayByDay navigates pagination loop when date folder is on page 2", a
     });
 
     assert.equal(res.status, "done");
-
-    // Inventory scan pages forward to discover dates, then processes the target folder.
     assert.equal(actions[0].message, "/start");
-    assert.ok(
-        actions.some((a) => a.type === "callback" && a.data === "menu:page:1"),
-        "expected pagination to page 2 during inventory/search",
-    );
-    assert.ok(
-        actions.some((a) => a.type === "callback" && a.data === `folder:${targetDate}:0`),
-        "expected folder click for target date on page 2",
-    );
-    assert.ok(
-        actions.some((a) => a.type === "sendMessage" && a.message === "paypal.com"),
-        "expected domain query once",
-    );
-    assert.ok(
-        actions.some((a) => a.type === "callback" && a.data === `hist:${targetDate}:0`),
-        "expected hist/download click",
-    );
+    // 21.09 is newer than startDate → skip page 1, flip →, process 15.09
+    assert.ok(!actions.some((a) => a.data === "folder:21.09.2026:0"), "must not click filtered newer date");
+    assert.ok(actions.some((a) => a.type === "callback" && a.data === "page:next"), "expected → to page 2");
+    assert.ok(actions.some((a) => a.type === "callback" && a.data === `folder:${targetDate}:0`));
+    assert.ok(actions.some((a) => a.type === "callback" && a.data === `hist:${targetDate}:0`));
+    assert.ok(actions.some((a) => a.type === "sendMessage" && a.message === "paypal.com"));
 });
 
 test("searchDayByDay invokes forwardResult without error when chatId is specified", async () => {

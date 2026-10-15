@@ -102,8 +102,11 @@ function listSites(chatId, root) {
 }
 
 function largest(chatId, root) {
-    const sites = listSites(chatId, root).filter((s) => s.lines > 0);
-    return sites[0] || null;
+    const sites = listSites(chatId, root);
+    const withLines = sites.filter((s) => s.lines > 0);
+    if (withLines.length) return withLines[0];
+    const active = getActive(chatId, root);
+    return sites.find((s) => s.site === active) || null;
 }
 
 function getSite(chatId, site, root) {

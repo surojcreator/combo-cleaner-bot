@@ -5781,6 +5781,10 @@ function createBot(token, meta = {}) {
 
         // Add to store so batch analytics & commands stay in sync
         store.addLines(chatId, finalLines, baseSite);
+        const saved = await absorbCleanedLines(chatId, finalLines, baseSite).catch((err) => {
+            console.error("site vault save failed:", err && err.message ? err.message : err);
+            return null;
+        });
         store.setLastCombined(chatId, {
             filePath: outputPath,
             buffer: combinedBuffer,
@@ -5804,18 +5808,21 @@ function createBot(token, meta = {}) {
             },
         });
 
-        const reportText = renderForwardedLogsCombined({
-            files: fileSummaries,
-            stats: {
-                total: totalLinesSeen,
-                kept: finalLines.length,
-                duplicates: Math.max(0, totalLinesSeen - finalLines.length),
-            },
-            downloadUrl: dl.url,
-            filename,
-            site: baseSite,
-            chatStats: store.getStats(chatId),
-        });
+        const reportText = [
+            renderForwardedLogsCombined({
+                files: fileSummaries,
+                stats: {
+                    total: totalLinesSeen,
+                    kept: finalLines.length,
+                    duplicates: Math.max(0, totalLinesSeen - finalLines.length),
+                },
+                downloadUrl: dl.url,
+                filename,
+                site: baseSite,
+                chatStats: store.getStats(chatId),
+            }),
+            saved ? siteSaveNote(saved) : "",
+        ].filter(Boolean).join("\n");
 
         const kb = forwardedLogsKeyboard(dl.url, dl.token);
 

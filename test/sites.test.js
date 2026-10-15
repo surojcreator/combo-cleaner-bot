@@ -46,7 +46,7 @@ test("AOL family and webmail domains are recognized as freemail and never return
 
 
 test("siteFromFileName prefers domains, falls back to brand", () => {
-    assert.strictEqual(siteFromFileName("my.site.org_list.txt"), "my.site.org");
+    assert.strictEqual(siteFromFileName("my.site.org_list.txt"), "site.org");
     assert.strictEqual(siteFromFileName("netflix_dump.zip"), "netflix");
     assert.strictEqual(siteFromFileName("combolist.zip"), null);
 });
@@ -108,4 +108,42 @@ test("fake TLDs and IP hosts are not a site", () => {
 test("bracketed and hyphenated filenames still yield the brand", () => {
     assert.strictEqual(siteFromFileName("[NETFLIX] combo.txt"), "netflix");
     assert.strictEqual(detectSite("user@gmail.com:pass", "netflix-combolist.zip"), "netflix");
+});
+
+test("login hosts, CDNs, and email noise do not beat the target site", () => {
+    const raw = [
+        "https://d111.cloudfront.net/app.js",
+        "https://accounts.google.com/o/oauth",
+        "https://login.microsoftonline.com/common",
+        "https://www.netflix.com/login:user:pass",
+        "user1@gmail.com:pass",
+        "user2@yahoo.com:pass",
+        "staff@somecompany.com:pass",
+        "staff2@somecompany.com:pass",
+        "staff3@somecompany.com:pass",
+        "staff4@somecompany.com:pass",
+    ].join("\n");
+    assert.strictEqual(detectSite(raw, "mixed.txt"), "netflix.com");
+});
+
+test("credentials embedded in the URL still name the host", () => {
+    assert.strictEqual(
+        detectSite("https://user:secret@login.htzone.co.il/path:other:pass", "x.txt"),
+        "htzone.co.il",
+    );
+});
+
+test("android packages map to the app site, not the wrapper", () => {
+    assert.strictEqual(
+        detectSite("android://x@com.google.android.youtube/:user:pass", "x.txt"),
+        "youtube.com",
+    );
+    assert.strictEqual(
+        detectSite("android://x@com.spotify.music/:user:pass", "x.txt"),
+        "spotify.com",
+    );
+});
+
+test("a filename domain is the registrable site, not a subdomain or freemail", () => {
+    assert.strictEqual(domainFromFileName("login.netflix.com_gmail.com_dump.txt"), "netflix.com");
 });

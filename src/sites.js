@@ -40,6 +40,33 @@ const MULTI_SUFFIXES = new Set([
 const IPV4_HOST_RE =
     /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
 
+// Hosts that show up in dumps as delivery or login infrastructure, not the
+// website the credentials belong to.
+const INFRA_HOSTS = new Set([
+    "cloudfront.net", "amazonaws.com", "googleusercontent.com", "gstatic.com",
+    "googleapis.com", "akamaihd.net", "akamai.net", "cloudflare.com",
+    "cloudflareinsights.com", "fastly.net", "azureedge.net", "msecnd.net",
+    "doubleclick.net", "googlesyndication.com", "google-analytics.com",
+    "facebook.net", "fbcdn.net", "twimg.com", "ytimg.com", "ggpht.com",
+    "microsoftonline.com", "live.com", "microsoft.com", "windows.net",
+    "google.com", "googleapis.com", "gstatic.com", "apple.com", "icloud.com",
+]);
+
+const ANDROID_SITES = {
+    youtube: "youtube.com",
+    spotify: "spotify.com",
+    netflix: "netflix.com",
+    instagram: "instagram.com",
+    facebook: "facebook.com",
+    whatsapp: "whatsapp.com",
+    tiktok: "tiktok.com",
+    paypal: "paypal.com",
+    amazon: "amazon.com",
+    discord: "discord.com",
+    twitter: "twitter.com",
+    snapchat: "snapchat.com",
+};
+
 const FREEMAIL = new Set([
     "gmail.com",
     "googlemail.com",
@@ -245,8 +272,8 @@ function parseFileName(fileName) {
     // extension can never leak in as a fake domain ("dump.zip").
     const domainBase = stripped.replace(/[_\-\s]+/g, " ");
     const domains = (domainBase.match(DOMAIN_LIKE_RE) || [])
-        .map((d) => d.replace(/^www\./, "").replace(/^\.+|\.+$/g, ""))
-        .filter((d) => d.includes(".") && !isFreemail(d) && d.length >= 4);
+        .map((d) => registrableDomain(d.replace(/^www\./, "").replace(/^\.+|\.+$/g, "")))
+        .filter((d) => d && !isFreemail(d) && !isInfra(d));
     const domain = domains.length
         ? domains.sort((a, b) => b.length - a.length)[0]
         : null;
@@ -284,37 +311,49 @@ function domainFromFileName(fileName) {
  * @param {string} rawText
  * @returns {{ best: string|null, counts: Map<string, number> }}
  */
+function isInfra(domain) {
+    const d = String(domain || "").toLowerCase();
+    if (INFRA_HOSTS.has(d)) return true;
+    const labels = d.split(".");
+    return labels.length > 2 && INFRA_HOSTS.has(labels.slice(-2).join("."));
+}
+
 function hostFromScheme(value) {
     const scheme = value.indexOf("://");
     if (scheme < 0) return null;
     const schemeName = value.slice(0, scheme).replace(/.*[^a-z]/, "");
     let rest = value.slice(scheme + 3);
-    // android://<token>@com.netflix.mediaclient/ — the host is the package,
-    // and it is reversed (com.netflix -> netflix.com).
-    if (schemeName === "android") {
-        const at = rest.indexOf("@");
-        if (at !== -1 && at < 80) rest = rest.slice(at + 1);
-    }
-    rest = rest.split(/[/?#\s|:;]/)[0];
+    // user:pass@host and android://token@package — the host is after the last @.
+    const at = rest.lastIndexOf("@");
+    if (at !== -1 && at < 120) rest = rest.slice(at + 1);
+    rest = rest.split(/[/?#\s|;]/)[0];
+    const colon = rest.indexOf(":");
+    if (colon !== -1) rest = rest.slice(0, colon);
     if (!rest || rest.includes("@")) return null;
     const labels = rest.toLowerCase().split(".").filter(Boolean);
-    if (schemeName === "android" && labels.length >= 3 && (labels[0] === "com" || labels[0] === "org" || labels[0] === "net")) {
-        const flipped = `${labels[1]}.${labels[0]}`;
-        if (registrableDomain(flipped)) return flipped;
+    if (schemeName === "android" && labels.length >= 2) {
+        const app = labels.find((label) => ANDROID_SITES[label]);
+        if (app) return ANDROID_SITES[app];
+        if (labels[0] === "com" || labels[0] === "org" || labels[0] === "net") {
+            const flipped = `${labels[1]}.${labels[0]}`;
+            if (registrableDomain(flipped) && !isInfra(registrableDomain(flipped))) return flipped;
+        }
     }
     return rest;
 }
 
 function scoreDomains(rawText) {
     const counts = new Map();
+    const emailCounts = new Map();
     const text = typeof rawText === "string" ? rawText : String(rawText || "");
     const sample = text.length > 256 * 1024 ? text.slice(0, 256 * 1024) : text;
 
-    const bump = (domain, weight) => {
+    const bump = (domain, weight, kind) => {
         const d = registrableDomain(domain);
         if (!d) return;
-        const prev = counts.get(d) || 0;
-        counts.set(d, prev + (isFreemail(d) ? weight * 0.25 : weight));
+        const map = kind === "email" ? emailCounts : counts;
+        const prev = map.get(d) || 0;
+        map.set(d, prev + (isFreemail(d) ? weight * 0.25 : weight));
     };
 
     let start = 0;
@@ -366,7 +405,7 @@ function scoreDomains(rawText) {
             const at = lower.lastIndexOf("@");
             if (at !== -1) {
                 const tail = lower.slice(at + 1).split(/[\s:|;,]/)[0];
-                if (tail.includes(".")) bump(tail, WEIGHT_EMAIL);
+                if (tail.includes(".")) bump(tail, WEIGHT_EMAIL, "email");
             }
         }
     }
@@ -375,6 +414,8 @@ function scoreDomains(rawText) {
     let bestScore = 0;
     let bestNonFreemail = null;
     let bestNonFreemailScore = 0;
+    let bestTarget = null;
+    let bestTargetScore = 0;
     for (const [domain, score] of counts) {
         if (score > bestScore) {
             best = domain;
@@ -384,8 +425,31 @@ function scoreDomains(rawText) {
             bestNonFreemail = domain;
             bestNonFreemailScore = score;
         }
+        if (!isFreemail(domain) && !isInfra(domain) && score > bestTargetScore) {
+            bestTarget = domain;
+            bestTargetScore = score;
+        }
     }
-    return { best, bestScore, bestNonFreemail, bestNonFreemailScore, counts };
+    let bestEmailTarget = null;
+    let bestEmailScore = 0;
+    for (const [domain, score] of emailCounts) {
+        if (isFreemail(domain) || isInfra(domain)) continue;
+        if (score > bestEmailScore) {
+            bestEmailTarget = domain;
+            bestEmailScore = score;
+        }
+    }
+    return {
+        best,
+        bestScore,
+        bestNonFreemail,
+        bestNonFreemailScore,
+        bestTarget,
+        bestTargetScore,
+        bestEmailTarget,
+        bestEmailScore,
+        counts,
+    };
 }
 
 /**
@@ -408,11 +472,13 @@ function detectSite(rawText, sourceName) {
     const nameHint = nameDomain || siteFromFileName(sourceName || "");
     const nameScore = nameDomain ? WEIGHT_NAME_DOMAIN : nameHint ? WEIGHT_NAME_BRAND : 0;
 
-    const { bestNonFreemail, bestNonFreemailScore } = scoreDomains(rawText || "");
-    const contentBest = bestNonFreemail;
+    const scored = scoreDomains(rawText || "");
+    // A real target site beats login hosts and CDNs even when those score higher.
+    const contentBest = scored.bestTarget || scored.bestEmailTarget || null;
+    const contentScore = scored.bestTarget ? scored.bestTargetScore : (scored.bestEmailScore || 0);
 
-    if (contentBest && bestNonFreemailScore >= nameScore) return contentBest;
-    if (nameHint) return nameHint;
+    if (contentBest && contentScore >= nameScore) return contentBest;
+    if (nameHint && !isInfra(nameHint) && !isFreemail(nameHint)) return nameHint;
     return contentBest;
 }
 

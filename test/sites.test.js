@@ -66,3 +66,46 @@ test("detectSite returns null for junk input", () => {
     assert.strictEqual(detectSite("", ""), null);
     assert.strictEqual(detectSite("garbage lines\nwith no domains", ""), null);
 });
+
+test("subdomains of the same site collapse instead of fragmenting the score", () => {
+    const raw = [
+        "https://login0.netflix.com/path:user:pass",
+        "https://www2.netflix.com/login:user:pass",
+        "https://auth.netflix.com/login:user:pass",
+        "https://help.hulu.com/login:user:pass",
+    ].join("\n");
+    assert.strictEqual(detectSite(raw, "mystery.txt"), "netflix.com");
+});
+
+test("multi-part suffixes stay intact", () => {
+    const raw = "https://www.htzone.co.il/login:u:p\nhttps://shop.htzone.co.il/x:u:p";
+    assert.strictEqual(detectSite(raw, "x.txt"), "htzone.co.il");
+});
+
+test("android package urls reverse to the real site", () => {
+    assert.strictEqual(
+        detectSite("android://token@com.netflix.mediaclient/:user:pass", "x.txt"),
+        "netflix.com",
+    );
+});
+
+test("stealer URL labels and host:port lines count as the site", () => {
+    assert.strictEqual(
+        detectSite("URL: https://auth.netflix.com/login\nUSER: a\nPASS: b", "x.txt"),
+        "netflix.com",
+    );
+    assert.strictEqual(
+        detectSite("login.netflix.com:443:user:pass", "x.txt"),
+        "netflix.com",
+    );
+});
+
+test("fake TLDs and IP hosts are not a site", () => {
+    assert.strictEqual(detectSite("not.a.fake:user:pass\nfoo.notarealtld:u:p", "x.txt"), null);
+    assert.strictEqual(detectSite("https://1.2.3.4/login\n1.2.3.4:user:pass", "x.txt"), null);
+});
+
+test("bracketed and hyphenated filenames still yield the brand", () => {
+    assert.strictEqual(siteFromFileName("[NETFLIX] combo.txt"), "netflix");
+    assert.strictEqual(detectSite("user@gmail.com:pass", "netflix-combolist.zip"), "netflix");
+});

@@ -18,6 +18,28 @@
  */
 
 // Common freemail providers — rarely the site the dump is for.
+// Two-label public suffixes that must not be collapsed (bbc.co.uk -> bbc.co.uk,
+// not co.uk). Common combo-dump ccTLDs only — not a full PSL.
+const MULTI_SUFFIXES = new Set([
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "asn.au",
+    "co.il", "org.il", "ac.il", "net.il", "gov.il", "muni.il",
+    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
+    "com.br", "net.br", "org.br", "gov.br",
+    "com.mx", "gob.mx", "org.mx", "net.mx",
+    "com.tr", "org.tr", "net.tr", "gov.tr",
+    "com.ar", "com.ua", "com.tw", "com.sg", "com.hk",
+    "co.in", "net.in", "org.in", "gen.in",
+    "com.cn", "net.cn", "org.cn", "gov.cn",
+    "com.eg", "com.sa", "com.pk", "com.ng", "com.ph", "com.vn",
+    "com.my", "com.co", "com.pe", "co.za", "org.za", "co.kr", "ne.kr",
+    "com.es", "org.es", "nom.es", "co.id", "go.id", "or.id",
+]);
+
+const IPV4_HOST_RE =
+    /^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$/;
+
 const FREEMAIL = new Set([
     "gmail.com",
     "googlemail.com",
@@ -127,8 +149,60 @@ const WEIGHT_NAME_BRAND = 2; // brand word found in the file name
  */
 function isFreemail(domain) {
     if (typeof domain !== "string") return false;
-    const clean = domain.trim().toLowerCase().replace(/\.+$/, "").split(":")[0];
-    return FREEMAIL.has(clean);
+    const clean = domain.trim().toLowerCase().replace(/\.+$/, "").split(":")[0].replace(/^www\d*\./, "");
+    if (FREEMAIL.has(clean)) return true;
+    // mail.google.com is still the login provider, not the target site.
+    const labels = clean.split(".");
+    if (labels.length > 2 && FREEMAIL.has(labels.slice(1).join("."))) return true;
+    if (labels.length > 3 && FREEMAIL.has(labels.slice(2).join("."))) return true;
+    return false;
+}
+
+let tldSet = null;
+function validTlds() {
+    if (!tldSet) {
+        // Lazy: cleaner requires nothing from sites, so this cannot cycle at load.
+        tldSet = require("./cleaner").VALID_TLDS;
+    }
+    return tldSet;
+}
+
+/**
+ * Collapse a host to the site it actually belongs to.
+ * `login0.netflix.com` and `www2.netflix.com` -> `netflix.com`.
+ * `shop.htzone.co.il` stays `htzone.co.il`. IPs and fake TLDs return null.
+ * @param {string} raw
+ * @returns {string|null}
+ */
+function registrableDomain(raw) {
+    if (!raw || typeof raw !== "string") return null;
+    let host = raw.trim().toLowerCase();
+    if (!host || host.includes("@") || host.includes(" ")) return null;
+    host = host.replace(/^[([{"']+/, "").replace(/[)\\]}'"]+$/, "");
+    host = host.replace(/\.+$/, "");
+    const slash = host.search(/[/?#]/);
+    if (slash !== -1) host = host.slice(0, slash);
+    const colon = host.indexOf(":");
+    if (colon !== -1) host = host.slice(0, colon);
+    host = host.replace(/^(?:www\d*|web|m|mobile|secure|login|auth|accounts?|signin|sign-in|sso|id|my|app|apps|portal)\./, "");
+    if (!host || host.length < 4 || !host.includes(".")) return null;
+    if (IPV4_HOST_RE.test(host)) return null;
+
+    const labels = host.split(".").filter(Boolean);
+    if (labels.length < 2) return null;
+    const tld = labels[labels.length - 1];
+    if (tld.length < 2 || !validTlds().has(tld)) return null;
+    for (let i = 0; i < labels.length - 1; i++) {
+        const label = labels[i];
+        if (!label || label.length > 63 || label.startsWith("-") || label.endsWith("-")) return null;
+        if (!/^[a-z0-9-]+$/.test(label)) return null;
+    }
+
+    const suffix2 = labels.slice(-2).join(".");
+    if (labels.length >= 3 && MULTI_SUFFIXES.has(suffix2)) {
+        return labels.slice(-3).join(".");
+    }
+    return suffix2;
 }
 
 /**
@@ -163,6 +237,7 @@ function parseFileName(fileName) {
     if (!fileName) return { domain: null, brand: null };
     const stripped = String(fileName)
         .replace(/\.(zip|txt|csv|tsv|log|lst|list|dat|json|xml|html?|md)$/i, "")
+        .replace(/[[\](){}]+/g, " ")
         .toLowerCase();
 
     // Domains: KEEP dots, replace other separators, then match domain tokens.
@@ -209,30 +284,92 @@ function domainFromFileName(fileName) {
  * @param {string} rawText
  * @returns {{ best: string|null, counts: Map<string, number> }}
  */
+function hostFromScheme(value) {
+    const scheme = value.indexOf("://");
+    if (scheme < 0) return null;
+    const schemeName = value.slice(0, scheme).replace(/.*[^a-z]/, "");
+    let rest = value.slice(scheme + 3);
+    // android://<token>@com.netflix.mediaclient/ — the host is the package,
+    // and it is reversed (com.netflix -> netflix.com).
+    if (schemeName === "android") {
+        const at = rest.indexOf("@");
+        if (at !== -1 && at < 80) rest = rest.slice(at + 1);
+    }
+    rest = rest.split(/[/?#\s|:;]/)[0];
+    if (!rest || rest.includes("@")) return null;
+    const labels = rest.toLowerCase().split(".").filter(Boolean);
+    if (schemeName === "android" && labels.length >= 3 && (labels[0] === "com" || labels[0] === "org" || labels[0] === "net")) {
+        const flipped = `${labels[1]}.${labels[0]}`;
+        if (registrableDomain(flipped)) return flipped;
+    }
+    return rest;
+}
+
 function scoreDomains(rawText) {
     const counts = new Map();
     const text = typeof rawText === "string" ? rawText : String(rawText || "");
+    const sample = text.length > 256 * 1024 ? text.slice(0, 256 * 1024) : text;
 
     const bump = (domain, weight) => {
-        const d = domain.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
-        if (!/^(?:[a-z0-9-]+\.)+[a-z]{2,}$/.test(d)) return;
-        if (d.length < 4) return;
+        const d = registrableDomain(domain);
+        if (!d) return;
         const prev = counts.get(d) || 0;
         counts.set(d, prev + (isFreemail(d) ? weight * 0.25 : weight));
     };
 
-    // URL domains (strongest content signal).
-    let m;
-    URL_DOMAIN_RE.lastIndex = 0;
-    while ((m = URL_DOMAIN_RE.exec(text)) !== null) bump(m[1], WEIGHT_URL);
+    let start = 0;
+    while (start < sample.length) {
+        let end = sample.indexOf("\n", start);
+        if (end === -1) end = sample.length;
+        let line = sample.slice(start, end);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        start = end + 1;
+        if (!line || line.length < 4) continue;
 
-    // Domains leading lines before a separator ("site.com:user:pass").
-    LINE_LEAD_DOMAIN_RE.lastIndex = 0;
-    while ((m = LINE_LEAD_DOMAIN_RE.exec(text)) !== null) bump(m[1], WEIGHT_LINE_LEAD);
+        const lower = line.toLowerCase();
+        let scoredHost = false;
 
-    // Email domains (weak).
-    EMAIL_DOMAIN_RE.lastIndex = 0;
-    while ((m = EMAIL_DOMAIN_RE.exec(text)) !== null) bump(m[1], WEIGHT_EMAIL);
+        const schemeAt = lower.indexOf("://");
+        if (schemeAt > 0 && schemeAt <= 80) {
+            const tokenStart = Math.max(
+                lower.lastIndexOf(" ", schemeAt),
+                lower.lastIndexOf("|", schemeAt),
+                lower.lastIndexOf(";", schemeAt),
+            ) + 1;
+            bump(hostFromScheme(lower.slice(tokenStart)), WEIGHT_URL);
+            scoredHost = true;
+        }
+
+        // "URL: https://site.com" / "Host: site.com" stealer labels.
+        if (!scoredHost) {
+            const label = lower.match(/^(?:url|uri|host|hostname|site|website|link)\s*[:=|]\s*(.+)$/);
+            if (label) {
+                const value = label[1].trim();
+                const fromScheme = hostFromScheme(value);
+                bump(fromScheme || value.split(/[/?#\s|]/)[0], WEIGHT_URL);
+                scoredHost = true;
+            }
+        }
+
+        // site.com:user:pass or site.com|user|pass, including after a space.
+        if (!scoredHost) {
+            const lead = lower.match(/(?:^|[\s|])((?:[a-z0-9-]+\.)+[a-z]{2,})(?=\s*[:|])/);
+            if (lead) {
+                bump(lead[1], WEIGHT_LINE_LEAD);
+                scoredHost = true;
+            }
+        }
+
+        // Email domains only when the line didn't already name a host. They
+        // are the weak signal and mostly freemail noise.
+        if (!scoredHost) {
+            const at = lower.lastIndexOf("@");
+            if (at !== -1) {
+                const tail = lower.slice(at + 1).split(/[\s:|;,]/)[0];
+                if (tail.includes(".")) bump(tail, WEIGHT_EMAIL);
+            }
+        }
+    }
 
     let best = null;
     let bestScore = 0;
@@ -271,7 +408,7 @@ function detectSite(rawText, sourceName) {
     const nameHint = nameDomain || siteFromFileName(sourceName || "");
     const nameScore = nameDomain ? WEIGHT_NAME_DOMAIN : nameHint ? WEIGHT_NAME_BRAND : 0;
 
-    const { bestNonFreemail, bestNonFreemailScore } = scoreDomains(String(rawText || "").slice(0, 512 * 1024));
+    const { bestNonFreemail, bestNonFreemailScore } = scoreDomains(rawText || "");
     const contentBest = bestNonFreemail;
 
     if (contentBest && bestNonFreemailScore >= nameScore) return contentBest;
@@ -285,4 +422,5 @@ module.exports = {
     domainFromFileName,
     sanitizeSiteSlug,
     isFreemail,
+    registrableDomain,
 };

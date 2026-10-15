@@ -93,7 +93,9 @@ function addLines(chatId, lines, site, options = {}) {
 
     for (const rawLine of safeLines) {
         if (!rawLine || typeof rawLine !== "string") continue;
-        const line = cleanUserPassOnly(rawLine) || rawLine.trim();
+        // Drop lines the cleaner rejects. Falling back to the raw text stored
+        // URL/host:port rows that cleanLine had already decided to discard.
+        const line = cleanUserPassOnly(rawLine);
         if (!line) continue;
         if (chat.lines.size >= maxLines) {
             capped = true;

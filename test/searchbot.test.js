@@ -245,6 +245,35 @@ test("expired runs stop counting results, late answers still get relayed", () =>
     searchbot.resetRuns();
 });
 
+test("a searcher reply is not copied into every other live run", () => {
+    searchbot.resetRuns();
+    searchbot.startRun(7001, {
+        query: "netflix.com",
+        scope: "day",
+        windowMs: 60000,
+        searcherChatId: 111,
+    });
+    searchbot.startRun(7002, {
+        query: "spotify.com",
+        scope: "day",
+        windowMs: 60000,
+        searcherChatId: 222,
+    });
+
+    assert.deepEqual(searchbot.noteResult(111, { messageId: 1 }), [7001]);
+    assert.deepEqual(searchbot.noteResult(222, { messageId: 1 }), [7002]);
+    assert.equal(searchbot.getRun(7001).results.length, 1);
+    assert.equal(searchbot.getRun(7002).results.length, 1);
+    searchbot.resetRuns();
+});
+
+test("untagged runs still receive a shared searcher inbox", () => {
+    searchbot.resetRuns();
+    searchbot.startRun(8001, { query: "x.co", scope: "day", windowMs: 60000 });
+    assert.deepEqual(searchbot.noteResult(8844520471, { messageId: 4 }), [8001]);
+    searchbot.resetRuns();
+});
+
 test("late answers are dropped after the user stops a search", () => {
     searchbot.resetRuns();
     searchbot.startRun(5005, { query: "x.co", scope: "day", windowMs: 600000 });

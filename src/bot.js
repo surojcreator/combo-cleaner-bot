@@ -905,7 +905,7 @@ function createBot(token, meta = {}) {
             if (!lines || lines.length === 0) return;
             for (let k = 0; k < lines.length; k++) {
                 const rawLine = lines[k];
-                const line = cleanUserPassOnly(rawLine) || rawLine;
+                const line = cleanUserPassOnly(rawLine);
                 if (!line) continue;
                 if (seen.has(line)) {
                     totalDupes++;
@@ -995,7 +995,8 @@ function createBot(token, meta = {}) {
                         for (let li = 0; li < lines.length; li++) {
                             const trimmed = lines[li].trim();
                             if (!trimmed) continue;
-                            chunk.push(cleanUserPassOnly(trimmed) || trimmed);
+                            const cleaned = cleanUserPassOnly(trimmed);
+                            if (cleaned) chunk.push(cleaned);
                         }
                         await writeLinesBatch(chunk);
                         await reportProgress({
@@ -6830,7 +6831,9 @@ async function ingestDocument(ctx, doc, options = {}) {
     const nameStem = sanitizeSiteSlug(name.replace(/\.[^.]+$/, ""));
     const site = sanitizeSiteSlug(result.site || "") || nameStem || "cleaned";
 
-    const cleanLines = (result.lines || []).map((l) => cleanUserPassOnly(l) || l);
+    const cleanLines = keepUrl
+        ? (result.lines || []).map((l) => cleanUserPassOnly(l)).filter(Boolean)
+        : (result.lines || []);
     const added = store.addLines(ctx.chat.id, cleanLines, site);
     const chatStats = store.getStats(ctx.chat.id);
 
@@ -7818,7 +7821,16 @@ async function beginUlpRun(ctx, params) {
     );
 
     const steps = searchbot.buildSteps(query, scope, effectiveSearchOptions.histTemplate);
-    const run = searchbot.startRun(chatId, { query, scope, windowMs: calculatedWindowMs });
+    const searcherChatId =
+        transport.kind === "userbot" && transport.userbot && transport.userbot.searcherId
+            ? Number(transport.userbot.searcherId)
+            : (meta && meta.searcherBotId ? Number(meta.searcherBotId) : null);
+    const run = searchbot.startRun(chatId, {
+        query,
+        scope,
+        windowMs: calculatedWindowMs,
+        searcherChatId,
+    });
 
     // In the bypass path the answers arrive through the account, so remember
     // where they belong even before the first send.
@@ -8278,7 +8290,7 @@ async function relaySearcherMessage(ctx, params) {
             const res = extractAndCleanText(msg.text, { keepUrl: false });
             if (res.lines.length > 0) {
                 const site = sanitizeSiteSlug(run.query) || "cleaned";
-                const cleanLines = res.lines.map((l) => cleanUserPassOnly(l) || l);
+                const cleanLines = res.lines;
                 store.addLines(chatId, cleanLines, site, { isTextResponse: true });
             }
         }
@@ -8342,7 +8354,7 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
                     site = sanitizeSiteSlug(result.site) || site;
                 }
                 if (result.lines.length > 0) {
-                    const cleanLines = result.lines.map((l) => cleanUserPassOnly(l) || l);
+                    const cleanLines = result.lines;
                     const added = store.addLines(chatId, cleanLines, site);
                     return { lines: cleanLines.length, added: added.added, duplicates: added.duplicates, site };
                 }
@@ -8355,7 +8367,7 @@ async function ingestUserbotMessage(chatId, msg, peer, query = "") {
                 site = sanitizeSiteSlug(result.site) || site;
             }
             if (result.lines.length > 0) {
-                const cleanLines = result.lines.map((l) => cleanUserPassOnly(l) || l);
+                const cleanLines = result.lines;
                 const added = store.addLines(chatId, cleanLines, site, { isTextResponse: true });
                 return { lines: cleanLines.length, added: added.added, duplicates: added.duplicates, site };
             }
@@ -8507,7 +8519,7 @@ async function ackSharedResult(ctx, params) {
     } else if (textRes.lines.length > 0) {
         if (!isRelayedFromUserbot) {
             const site = sanitizeSiteSlug(query) || "cleaned";
-            const cleanLines = textRes.lines.map((l) => cleanUserPassOnly(l) || l);
+            const cleanLines = textRes.lines;
             store.addLines(chatId, cleanLines, site, { isTextResponse: true });
         }
     }
@@ -9129,7 +9141,7 @@ async function processTextFile(ctx, progress, fullPath, name, size, options = {}
 
         let writeBuffer = "";
         for (let i = 0; i < res.lines.length; i++) {
-            const cleaned = cleanUserPassOnly(res.lines[i]) || res.lines[i];
+            const cleaned = keepUrl ? (cleanUserPassOnly(res.lines[i]) || res.lines[i]) : res.lines[i];
             if (seen.has(cleaned)) {
                 stats.duplicates += 1;
                 continue;
@@ -9246,7 +9258,9 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
     const nameStem = sanitizeSiteSlug(name.replace(/\.[^.]+$/, ""));
     const site = sanitizeSiteSlug(result.site || "") || nameStem || "cleaned";
 
-    const cleanLines = (result.lines || []).map((l) => cleanUserPassOnly(l) || l);
+    const cleanLines = keepUrl
+        ? (result.lines || []).map((l) => cleanUserPassOnly(l)).filter(Boolean)
+        : (result.lines || []);
     const added = store.addLines(ctx.chat.id, cleanLines, site);
     const chatStats = store.getStats(ctx.chat.id);
     const outputPath = processedOutputPath(name, ctx.chat.id);
@@ -9305,5 +9319,3 @@ module.exports = {
     sendHtmlTo,
     safeChatAction,
 };
-
-

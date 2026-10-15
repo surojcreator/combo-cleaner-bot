@@ -356,6 +356,7 @@ function startRun(chatId, opts = {}) {
         chatId: Number(chatId || 0),
         query: (opts && opts.query) || "",
         scope: (opts && opts.scope) || "day",
+        searcherChatId: (opts && opts.searcherChatId != null) ? Number(opts.searcherChatId) : null,
         status: "running",
         startedAt: now,
         updatedAt: now,
@@ -415,7 +416,15 @@ function noteResult(searcherChatId, opts = {}) {
     const kind = (opts && opts.kind) || "text";
     pruneRuns(now);
 
-    const live = [...runs.values()].filter((run) => run.status === "running" && now < run.deadline);
+    // A shared searcher inbox must not fan one reply out to every live
+    // search. A run tagged with a searcher id only receives that searcher's
+    // replies; untagged runs stay eligible so existing callers keep working.
+    const incomingSearcher = Number(searcherChatId) || null;
+    const live = [...runs.values()].filter((run) => {
+        if (run.status !== "running" || now >= run.deadline) return false;
+        if (incomingSearcher && run.searcherChatId && run.searcherChatId !== incomingSearcher) return false;
+        return true;
+    });
     const targets = [];
     for (const run of live) {
         if (run.results.length >= MAX_RESULTS_PER_RUN) continue;

@@ -46,6 +46,37 @@ test("cleaner fixes: extracts single-line key-value stealer labels (USER: ... PA
         cleanLine("URL: https://site.com USER: admin PASS: secret", { keepUrl: true }),
         "https://site.com:admin:secret",
     );
+
+    // Arbitrary key order: PASS before USER
+    assert.equal(cleanLine("PASS: secret123 USER: bob"), "bob:secret123");
+    assert.equal(cleanLine("Pass: 123 | User: bob"), "bob:123");
+    assert.equal(cleanLine("Host: site.com | Pass: 123 | User: bob"), "bob:123");
+    assert.equal(
+        cleanLine("Host: site.com | Pass: 123 | User: bob", { keepUrl: true }),
+        "site.com:bob:123",
+    );
+    assert.equal(
+        cleanLine("URL: https://site.com:8080/path Pass: 123 User: bob", { keepUrl: true }),
+        "https://site.com:8080/path:bob:123",
+    );
+
+    // Flexible delimiters (| , ; tabs) and colons within passwords
+    assert.equal(
+        cleanLine("Host: site.com; Username: john@mail.com; Password: My:Password:123; IP: 10.0.0.1"),
+        "john@mail.com:My:Password:123",
+    );
+    assert.equal(
+        cleanLine("User: admin\tPass: P@ssword!\tDate: 2026-01-01"),
+        "admin:P@ssword!",
+    );
+    assert.equal(
+        cleanLine('Password: "complex_secret_123" | Login: "admin_user"'),
+        "admin_user:complex_secret_123",
+    );
+    assert.equal(
+        cleanLine("user=bob&pass=secret123"),
+        "bob:secret123",
+    );
 });
 
 test("cleaner fixes: strips trailing stealer metadata and browser tags from password", () => {

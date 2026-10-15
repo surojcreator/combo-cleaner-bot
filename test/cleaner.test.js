@@ -304,6 +304,14 @@ test("cleanUserPassOnly strips URLs and domain prefixes returning pure user:pass
     assert.equal(cleanUserPassOnly("   "), null);
     assert.equal(cleanUserPassOnly(null), null);
     assert.equal(cleanUserPassOnly(undefined), null);
+
+    // 6. URL / host:port lines with no extractable login must not come back raw.
+    // Callers store `cleanUserPassOnly(line) || line`, so a raw fallback puts
+    // dropped URL rows into the batch.
+    assert.equal(cleanUserPassOnly("https://site.com:443"), null);
+    assert.equal(cleanUserPassOnly("http://1.2.3.4:8080"), null);
+    assert.equal(cleanUserPassOnly("site.com:8080"), null);
+    assert.equal(cleanUserPassOnly("example.com:user"), null);
 });
 
 test("createSearchMatcher matches case-insensitively and escapes special regex chars", () => {
@@ -400,4 +408,4 @@ test("handles dotted usernames and passwords with dots without false domain dete
     assert.equal(cleanLine("1.2.3.4:443"), null);
 });
 
-
+

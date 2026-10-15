@@ -540,9 +540,21 @@ function createBot(token, meta = {}) {
         }
         const rows = [];
         rows.push([Markup.button.callback("\uD83D\uDCCC Pin a site", "site:ask")]);
+        const recent = sites.filter((site) => site.site !== active).slice(0, 4);
+        for (let i = 0; i < recent.length; i += 2) {
+            const row = [Markup.button.callback(`\uD83D\uDCCC ${recent[i].site}`.slice(0, 32), `site:pin:${recent[i].site}`)];
+            if (recent[i + 1]) {
+                row.push(Markup.button.callback(`\uD83D\uDCCC ${recent[i + 1].site}`.slice(0, 32), `site:pin:${recent[i + 1].site}`));
+            }
+            rows.push(row);
+        }
         sites.slice(0, 8).forEach((site) => {
             rows.push([Markup.button.callback(topLabel(site), `site:view:${site.site}`)]);
         });
+        rows.push([
+            Markup.button.callback("\uD83D\uDD00 Merge everything", "files:merge:all"),
+            Markup.button.callback("\uD83D\uDD0D Search biggest", "lsearch:prompt:biggest"),
+        ]);
         rows.push([Markup.button.callback("\u274C Stop pinning", "site:unpin"), Markup.button.callback("\uD83C\uDFE0 Home", "help")]);
         return { text: lines.join("\n"), keyboard: createInlineKeyboard(rows) };
     }
@@ -591,9 +603,15 @@ function createBot(token, meta = {}) {
             `Example: ${CODE("htzone.co.il")}`,
             I("Send cancel to go back."),
         ].join("\n");
-        const keyboard = createInlineKeyboard([
-            [Markup.button.callback("\u274C Cancel", "site:list")],
-        ]);
+        const recent = siteVault.listSites(ctx.chat.id, siteSaveRoot()).slice(0, 4);
+        const rows = [];
+        for (let i = 0; i < recent.length; i += 2) {
+            const row = [Markup.button.callback(recent[i].site.slice(0, 28), `site:pin:${recent[i].site}`)];
+            if (recent[i + 1]) row.push(Markup.button.callback(recent[i + 1].site.slice(0, 28), `site:pin:${recent[i + 1].site}`));
+            rows.push(row);
+        }
+        rows.push([Markup.button.callback("\u274C Cancel", "site:list")]);
+        const keyboard = createInlineKeyboard(rows);
         if (msg) await safeEdit(ctx, msg.message_id, text, keyboard);
         else await safeReply(ctx, text, keyboard);
     });
@@ -621,6 +639,48 @@ function createBot(token, meta = {}) {
         const card = await renderSiteCard(ctx.chat.id, pinned);
         const msg = ctx.callbackQuery && ctx.callbackQuery.message;
         if (msg) await safeEdit(ctx, msg.message_id, card.text, card.keyboard);
+    });
+
+    bot.action("site:last", async (ctx) => {
+        const sites = siteVault.listSites(ctx.chat.id, siteSaveRoot());
+        const last = sites.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
+        if (!last) {
+            await ctx.answerCbQuery("No site saved yet").catch(() => {});
+            await safeReply(ctx, "No site saved yet. Pin one first.", homeKeyboard(ctx.chat.id));
+            return;
+        }
+        siteVault.setActive(ctx.chat.id, last.site, siteSaveRoot());
+        await ctx.answerCbQuery(`Pinned ${last.site}`).catch(() => {});
+        const card = await renderSiteCard(ctx.chat.id, last.site);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) await safeEdit(ctx, msg.message_id, card.text, card.keyboard);
+        else await safeReply(ctx, card.text, card.keyboard);
+    });
+
+    bot.action("link", async (ctx) => {
+        await ctx.answerCbQuery("Building link\u2026").catch(() => {});
+        const lines = store.getLines(ctx.chat.id);
+        const lastCombined = store.getLastCombined(ctx.chat.id);
+        if ((!lines || lines.length === 0) && !lastCombined) {
+            await safeReply(ctx, "Nothing to link yet. Send a file or pin a site first.", homeKeyboard(ctx.chat.id));
+            return;
+        }
+        const source = lastCombined && lastCombined.filePath
+            ? { filename: lastCombined.filename, filePath: lastCombined.filePath, size: lastCombined.linesCount }
+            : null;
+        const dl = downloads.registerDownload(source || {
+            filename: "batch.txt",
+            buffer: Buffer.from((lines || []).join("\n") + "\n", "utf8"),
+            chatId: ctx.chat.id,
+        });
+        await safeReply(
+            ctx,
+            `\uD83D\uDD17 ${B("Direct link")}\n${dl.url}`,
+            createInlineKeyboard([
+                [Markup.button.url("\uD83D\uDCE5 Open link", dl.url)],
+                [Markup.button.callback("\uD83C\uDFE0 Home", "help")],
+            ]),
+        );
     });
 
     bot.action("site:unpin", async (ctx) => {
@@ -6511,6 +6571,23 @@ function createBot(token, meta = {}) {
         if (lower === "menu" || lower === "help" || lower === "start" || lower === "home") {
             const batch = store.getStats(ctx.chat.id);
             await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), homeKeyboard(ctx.chat.id, batch));
+            return;
+        }
+
+        if (lower === "undo" || lower === "unpin") {
+            siteVault.clearActive(ctx.chat.id, siteSaveRoot());
+            await safeReply(ctx, "Stopped pinning. New files go to the batch only.", homeKeyboard(ctx.chat.id, store.getStats(ctx.chat.id)));
+            return;
+        }
+
+        if (lower === "again" || lower === "last") {
+            const last = siteVault.listSites(ctx.chat.id, siteSaveRoot()).slice().sort((a, b) => b.updatedAt - a.updatedAt)[0];
+            if (!last) {
+                await safeReply(ctx, "No site saved yet. Pin one with the button below.", homeKeyboard(ctx.chat.id));
+                return;
+            }
+            siteVault.setActive(ctx.chat.id, last.site, siteSaveRoot());
+            await safeReply(ctx, `Pinned ${CODE(escapeHtml(last.site))} again. Send the next file.`, homeKeyboard(ctx.chat.id, store.getStats(ctx.chat.id)));
             return;
         }
 

@@ -981,8 +981,12 @@ function mainKeyboard(batch = null) {
             Markup.button.callback("💎 Biggest File", "lsearch:prompt:biggest"),
         ],
         [
-            Markup.button.callback("💾 Site Saves", "site:list"),
-            Markup.button.callback("📌 Pin a site", "site:ask"),
+            Markup.button.callback("\uD83D\uDCBE Site Saves", "site:list"),
+            Markup.button.callback("\uD83D\uDCCC Pin a site", "site:ask"),
+        ],
+        [
+            Markup.button.callback("\uD83D\uDD01 Last site", "site:last"),
+            Markup.button.callback("\uD83D\uDD17 Link", "link"),
         ],
         [
             Markup.button.callback("📁 Vault", "server_files"),

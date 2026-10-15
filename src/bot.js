@@ -510,10 +510,13 @@ function createBot(token, meta = {}) {
         const rows = [];
         if (dl) rows.push([Markup.button.url("\uD83D\uDCE5 Download this save", dl.url)]);
         rows.push([
-            Markup.button.callback(active ? "\uD83D\uDCCC Pinned" : "\uD83D\uDCCC Pin this site", `site:pin:${record.site}`),
+            Markup.button.callback(active ? "\u2705 Pinned" : "\uD83D\uDCCC Pin this site", `site:pin:${record.site}`),
             Markup.button.callback("\uD83D\uDCCB All saves", "site:list"),
         ]);
-        rows.push([Markup.button.callback("\uD83C\uDFE0 Home", "help")]);
+        rows.push([
+            Markup.button.callback("\uD83D\uDCCC Pin a different site", "site:ask"),
+            Markup.button.callback("\uD83C\uDFE0 Home", "help"),
+        ]);
         return { text, keyboard: createInlineKeyboard(rows) };
     }
 
@@ -536,9 +539,11 @@ function createBot(token, meta = {}) {
                 lines.push(`${i === 0 && site.lines ? "\uD83E\uDD47" : "\u2022"} ${CODE(escapeHtml(site.site))} \u00B7 ${num(site.lines)} lines${site.active ? " \u00B7 pinned" : ""}`);
             });
         }
-        const rows = sites.slice(0, 8).map((site) => [
-            Markup.button.callback(topLabel(site), `site:view:${site.site}`),
-        ]);
+        const rows = [];
+        rows.push([Markup.button.callback("\uD83D\uDCCC Pin a site", "site:ask")]);
+        sites.slice(0, 8).forEach((site) => {
+            rows.push([Markup.button.callback(topLabel(site), `site:view:${site.site}`)]);
+        });
         rows.push([Markup.button.callback("\u274C Stop pinning", "site:unpin"), Markup.button.callback("\uD83C\uDFE0 Home", "help")]);
         return { text: lines.join("\n"), keyboard: createInlineKeyboard(rows) };
     }
@@ -573,6 +578,25 @@ function createBot(token, meta = {}) {
             ].join("\n"),
             homeKeyboard(ctx.chat.id),
         );
+    });
+
+    bot.action("site:ask", async (ctx) => {
+        userPromptState.set(ctx.chat.id, { action: "site:pin", createdAt: Date.now() });
+        await ctx.answerCbQuery().catch(() => {});
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        const text = [
+            `\uD83D\uDCCC  ${B("PIN A SITE")}`,
+            RULE,
+            "Send the website. Every file you send after this is merged into that one save.",
+            "",
+            `Example: ${CODE("htzone.co.il")}`,
+            I("Send cancel to go back."),
+        ].join("\n");
+        const keyboard = createInlineKeyboard([
+            [Markup.button.callback("\u274C Cancel", "site:list")],
+        ]);
+        if (msg) await safeEdit(ctx, msg.message_id, text, keyboard);
+        else await safeReply(ctx, text, keyboard);
     });
 
     bot.action("site:list", async (ctx) => {
@@ -5861,6 +5885,32 @@ function createBot(token, meta = {}) {
                     await safeReply(ctx, `🚫 Action cancelled.`, mainKeyboard());
                     return;
                 }
+
+            if (prompt.action === "site:pin") {
+                userPromptState.delete(ctx.chat.id);
+                const pinned = siteVault.setActive(ctx.chat.id, input, siteSaveRoot());
+                if (!pinned) {
+                    await safeReply(
+                        ctx,
+                        `\u26A0\uFE0F ${CODE(escapeHtml(input))} is not a website. Try ${CODE("htzone.co.il")}.`,
+                        createInlineKeyboard([[Markup.button.callback("\uD83D\uDCCC Try again", "site:ask"), Markup.button.callback("\uD83D\uDCCB Site saves", "site:list")]]),
+                    );
+                    return;
+                }
+                const card = await renderSiteCard(ctx.chat.id, pinned);
+                await safeReply(
+                    ctx,
+                    [
+                        `\uD83D\uDCCC  ${B("PINNED")}  ${CODE(escapeHtml(pinned))}`,
+                        RULE,
+                        "Send files now. Only this site is kept, and lines already saved are skipped.",
+                        "",
+                        card.text,
+                    ].join("\n"),
+                    card.keyboard,
+                );
+                return;
+            }
 
             if (prompt.action === "batch:search:query") {
                 userPromptState.delete(ctx.chat.id);

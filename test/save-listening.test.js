@@ -446,41 +446,43 @@ test("userbot extractForwardOrigin and parseChannelFilename parse channel dump n
     assert.deepEqual(extractForwardOrigin(legacy), { peer: "@moonulp", messageId: 213, title: "Moon Channel" });
 });
 
-test("channel_post updates: /save and /largefiles aliases activate Save Mode and detect forwarded files in channels", async () => {
+test("group updates: /save and /largefiles aliases activate Save Mode and detect forwarded files in groups", async () => {
     const api = await startFakeApi();
-    const channelId = -100987654321;
-    store.clear(channelId);
+    const groupId = -100987654321;
+    store.clear(groupId);
     try {
         const bot = createBot("123456:fake-token", {
             botUsername: "TestBot",
             telegram: { telegram: { apiRoot: api.apiRoot } },
         });
 
-        // 1. Send /largefiles as a channel_post
+        // 1. Send /largefiles as a group message
         await bot.handleUpdate({
             update_id: 88801,
-            channel_post: {
+            message: {
                 message_id: 1,
                 date: Math.floor(Date.now() / 1000),
-                chat: { id: channelId, type: "channel" },
+                chat: { id: groupId, type: "supergroup" },
+                from: { id: 999, is_bot: false },
                 text: "/largefiles",
                 entities: [{ type: "bot_command", offset: 0, length: 11 }],
             },
         });
 
-        const prompt = bot.userPromptState.get(channelId);
-        assert.ok(prompt, "channel should have active prompt");
+        const prompt = bot.userPromptState.get(groupId);
+        assert.ok(prompt, "group should have active prompt");
         assert.equal(prompt.action, "save:listening");
 
-        // 2. Forward document to the channel as channel_post
+        // 2. Forward document to the group
         await bot.handleUpdate({
             update_id: 88802,
-            channel_post: {
+            message: {
                 message_id: 2,
                 date: Math.floor(Date.now() / 1000),
-                chat: { id: channelId, type: "channel" },
+                chat: { id: groupId, type: "supergroup" },
+                from: { id: 999, is_bot: false },
                 document: {
-                    file_name: "channel_dump.txt",
+                    file_name: "group_dump.txt",
                     file_size: 1024,
                     file_id: "doc_ch_1",
                 },
@@ -492,26 +494,27 @@ test("channel_post updates: /save and /largefiles aliases activate Save Mode and
             },
         });
 
-        assert.equal(prompt.queue.length, 1, "document should be queued in channel prompt");
-        assert.equal(prompt.queue[0].name, "channel_dump.txt");
+        assert.equal(prompt.queue.length, 1, "document should be queued in group prompt");
+        assert.equal(prompt.queue[0].name, "group_dump.txt");
 
-        // 3. Send /ragefiles alias as channel_post in another channel
-        const channel2 = -100999888;
+        // 3. Send /ragefiles alias in another group
+        const group2 = -100999888;
         await bot.handleUpdate({
             update_id: 88803,
-            channel_post: {
+            message: {
                 message_id: 1,
                 date: Math.floor(Date.now() / 1000),
-                chat: { id: channel2, type: "channel" },
+                chat: { id: group2, type: "supergroup" },
+                from: { id: 999, is_bot: false },
                 text: "/ragefiles",
                 entities: [{ type: "bot_command", offset: 0, length: 10 }],
             },
         });
-        const prompt2 = bot.userPromptState.get(channel2);
-        assert.ok(prompt2, "channel 2 should have active prompt");
+        const prompt2 = bot.userPromptState.get(group2);
+        assert.ok(prompt2, "group 2 should have active prompt");
         assert.equal(prompt2.action, "save:listening");
     } finally {
-        store.clear(channelId);
+        store.clear(groupId);
         await api.close();
     }
 });

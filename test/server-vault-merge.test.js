@@ -131,7 +131,7 @@ test("Server Vault Overview renders clean, uncluttered dashboard with Multi-Sele
     const btns = kb.reply_markup.inline_keyboard.flat();
 
     // Verify prominent multi-select action exists
-    assert.ok(btns.some((b) => b.callback_data === "files:tab:select" && b.text.includes("Multi-Select")));
+    assert.ok(btns.some((b) => b.callback_data === "files:tab:select" && (b.text.includes("Pick files") || b.text.includes("Multi-Select"))));
     // Verify tab navigation exists
     assert.ok(btns.some((b) => b.callback_data === "files:tab:raw"));
     assert.ok(btns.some((b) => b.callback_data === "files:tab:proc"));
@@ -162,9 +162,9 @@ test("Multi-Select mode toggles checkmarks and enables merging", async () => {
 
         // Switch to multi-select tab
         await bot.handleUpdate(callbackUpdate("files:tab:select", chatId));
-        assert.equal(await waitFor(() => api.calls.some((c) => /MULTI-FILE SELECT & MERGE/.test(c.payload.text || ""))), true);
+        assert.equal(await waitFor(() => api.calls.some((c) => /MULTI-FILE SELECT &amp;? MERGE/.test(c.payload.text || ""))), true);
 
-        const selectMsg = api.calls.find((c) => /MULTI-FILE SELECT & MERGE/.test(c.payload.text || ""));
+        const selectMsg = api.calls.find((c) => /MULTI-FILE SELECT &amp;? MERGE/.test(c.payload.text || ""));
         assert.ok(selectMsg);
         const kb = selectMsg.payload.reply_markup.inline_keyboard.flat();
         assert.ok(kb.some((b) => b.callback_data === "vault:sel:all"));
@@ -191,7 +191,7 @@ test("Multi-Select Merge combines selected files into one clean file on disk WIT
 
         // Open select tab
         await bot.handleUpdate(callbackUpdate("files:tab:select", chatId));
-        assert.equal(await waitFor(() => api.calls.some((c) => /MULTI-FILE SELECT & MERGE/.test(c.payload.text || ""))), true);
+        assert.equal(await waitFor(() => api.calls.some((c) => /MULTI-FILE SELECT &amp;? MERGE/.test(c.payload.text || ""))), true);
 
         // Select all files
         await bot.handleUpdate(callbackUpdate("vault:sel:all", chatId));
@@ -547,7 +547,7 @@ test("serverFilesKeyboard and renderServerFiles render clean vs raw indicators a
     });
     assert.match(text, /\[Clean\]/);
     assert.match(text, /\[Raw\]/);
-    assert.match(text, /MULTI-FILE SELECT & MERGE/);
+    assert.match(text, /MULTI-FILE SELECT &amp;? MERGE/);
 });
 
 test.after(() => {

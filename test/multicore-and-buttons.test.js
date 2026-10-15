@@ -726,13 +726,16 @@ test("bot storage manager handles interactive file deletion and bulk wipe", asyn
         assert.ok(storageMsg, "expected /storage reply message with SERVER STORAGE dashboard");
 
         // 2. Ask to delete single raw file
+        const { scanDirFiles } = require("../src/bot");
+        const rawFiles = scanDirFiles(rawDir);
+        const rawIdx = Math.max(0, rawFiles.findIndex((f) => f.path === rawTestFile));
         await bot.handleUpdate({
             update_id: 11,
             callback_query: {
                 id: "cb_del_raw_ask",
                 from: { id: 999, is_bot: false },
                 message: { message_id: 502, chat: { id: testChatId, type: "private" }, text: "Storage" },
-                data: "file:del:raw:ask:0",
+                data: `file:del:raw:ask:${rawIdx}`,
             },
         });
 
@@ -746,7 +749,7 @@ test("bot storage manager handles interactive file deletion and bulk wipe", asyn
                 id: "cb_del_raw_confirm",
                 from: { id: 999, is_bot: false },
                 message: { message_id: 502, chat: { id: testChatId, type: "private" }, text: "Confirm" },
-                data: "file:del:confirm:raw:0",
+                data: `file:del:confirm:raw:${rawIdx}`,
             },
         });
 

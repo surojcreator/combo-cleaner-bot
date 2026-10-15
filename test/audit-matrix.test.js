@@ -341,7 +341,7 @@ describe("Mega Prompt 2: Exhaustive Audit & System Verification Matrix", () => {
 
             // Tab: tools
             const toolsView = messages.renderServerFiles({ rawFiles, processedFiles: procFiles, tab: "tools", page: 0 });
-            assert.match(toolsView, /STORAGE & PURGE MANAGER|DISK TOOLS/);
+            assert.match(toolsView, /STORAGE &amp;? PURGE MANAGER|DISK TOOLS/);
 
             // Keyboards for each tab
             const rawKb = messages.serverFilesKeyboard(rawFiles, procFiles, "raw", 0);

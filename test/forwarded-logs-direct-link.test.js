@@ -509,7 +509,7 @@ describe("Forwarded Logs Combiner & Direct Download Links Pipeline", () => {
             assert.ok(doc.extra.caption.includes("http://127.0.0.1:9099/download/"));
 
             const buttons = doc.extra.reply_markup.inline_keyboard.flat();
-            assert.ok(buttons.some((b) => b.text.includes("Direct Download Link") && b.url.includes("/download/")));
+            assert.ok(buttons.some((b) => /direct download/i.test(b.text) && b.url.includes("/download/")));
         });
     });
 

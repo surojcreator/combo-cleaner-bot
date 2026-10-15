@@ -47,7 +47,7 @@ const WEBHOOK_PATH_LEGACY_ENC = TOKEN ? `/telegraf/${encodeURIComponent(TOKEN)}`
 // ULP search relay settings: which searcher bot to drive, how long to wait
 // before every try (7s by default) and how many retries are allowed.
 // botMeta is mutated after getMe() so renderers can mention this bot.
-const botMeta = { search: searchbot.loadOptions() };
+const botMeta = { search: searchbot.loadOptions(), asyncUlp: true };
 
 // Account bypass for sealed search bots: logged in once via MTProto and then
 // handed to the relay (see `npm run userbot:login` + README). Missing or dead

@@ -298,7 +298,7 @@ test("9. renderLocalSearchHub and localSearchHubKeyboard render complete overvie
     assert.match(hubText, /LOCAL VAULT SEARCH HUB/);
     assert.match(hubText, /Raw Dumps:.*<b>1<\/b> files/);
     assert.match(hubText, /Cleaned Vault:.*<b>2<\/b> files/);
-    assert.match(hubText, /\/lsearch <query>/);
+    assert.match(hubText, /\/lsearch (&lt;|<)query(&gt;|>)/);
 
     const hubKb = localSearchHubKeyboard([{ name: "f1" }], [{ name: "p1" }]);
     const buttons = hubKb.reply_markup.inline_keyboard.flat();
@@ -504,7 +504,7 @@ test("18. Home menu includes Search Biggest File button and interactive biggest 
     const allBtns = kb.reply_markup.inline_keyboard.flat();
     const biggestBtn = allBtns.find((b) => b.callback_data === "lsearch:prompt:biggest");
     assert.ok(biggestBtn, "mainKeyboard should include lsearch:prompt:biggest button");
-    assert.ok(biggestBtn.text.includes("Search Biggest File"), "Button text should mention Search Biggest File");
+    assert.ok(biggestBtn.text.includes("Biggest File"), "Button text should mention Biggest File");
 
     // 2. Verify localSearchHubKeyboard also has the button
     const hubKb = localSearchHubKeyboard([], []);

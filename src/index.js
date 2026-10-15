@@ -99,6 +99,8 @@ async function registerCommands() {
             { command: "storage", description: "💾 Manage server storage & delete files" },
             { command: "files", description: "📂 Browse server vault files" },
             { command: "stats", description: "\uD83D\uDCCA Batch dashboard" },
+            { command: "sitesave", description: "\uD83D\uDCBE Saved site combos" },
+            { command: "site", description: "\uD83D\uDCCC Pin a site and keep saving into it" },
             { command: "sites", description: "\uD83C\uDF10 Per-site breakdown" },
             { command: "preview", description: "\uD83D\uDC41 Peek at sample lines" },
             { command: "name", description: "\uD83C\uDFF7\uFE0F Force a custom filename" },

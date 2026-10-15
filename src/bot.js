@@ -37,6 +37,7 @@ const searchbot = require("./searchbot");
 const store = require("./store");
 const userbot = require("./userbot");
 const downloads = require("./downloads");
+const siteVault = require("./site-vault");
 const {
     renderStats,
     renderSites,
@@ -419,9 +420,49 @@ function createBot(token, meta = {}) {
         // Prepending the long Premium wall added entities and made Telegram more
         // likely to reject the whole card (while short /emojistatus still worked).
         const help = renderHelp(meta.botUsername, batch, searchOptions.botUsername);
-        await safeReply(ctx, help, mainKeyboard(batch));
+        await safeReply(ctx, help, homeKeyboard(ctx.chat.id, batch));
     };
 
+    function siteSaveRoot() {
+        return localProcessedRoot();
+    }
+
+    function topLabel(site) {
+        const count = Number(site.lines || 0).toLocaleString("en-US");
+        const text = `\uD83D\uDCBE ${site.site} \u00B7 ${count}`;
+        return text.length > 60 ? `${text.slice(0, 57)}\u2026` : text;
+    }
+
+    function homeKeyboard(chatId, batch) {
+        const keyboard = mainKeyboard(batch);
+        const rows = keyboard.reply_markup && keyboard.reply_markup.inline_keyboard;
+        if (!rows) return keyboard;
+        const root = siteSaveRoot();
+        const top = siteVault.largest(chatId, root);
+        const active = siteVault.getActive(chatId, root);
+        if (active && (!top || top.site !== active)) {
+            rows.unshift([Markup.button.callback(`\uD83D\uDCCC Saving ${active}`.slice(0, 60), "site:list")]);
+        }
+        if (top) {
+            rows.unshift([Markup.button.callback(topLabel(top), `site:view:${top.site}`)]);
+        }
+        return keyboard;
+    }
+
+    async function saveLinesToSite(chatId, lines, site) {
+        const key = siteVault.normalizeSite(site);
+        if (!key) return null;
+        const matching = (lines || []).filter((line) => siteVault.lineBelongsToSite(line, key));
+        if (matching.length === 0) return null;
+        return siteVault.appendLines(chatId, key, matching, siteSaveRoot());
+    }
+
+    async function absorbCleanedLines(chatId, lines, detectedSite) {
+        const active = siteVault.getActive(chatId, siteSaveRoot());
+        const target = active || siteVault.normalizeSite(detectedSite);
+        if (!target) return null;
+        return saveLinesToSite(chatId, lines, target);
+    }
 
     bot.start(handleStartHelp);
     bot.help(handleStartHelp);
@@ -432,6 +473,139 @@ function createBot(token, meta = {}) {
         await safeChatAction(ctx, "typing");
         const stats = store.getStats(ctx.chat.id);
         await safeReply(ctx, renderStats(stats), statsKeyboard(stats && stats.size > 0));
+    });
+
+    function siteSaveNote(saved) {
+        if (!saved) return "";
+        return [
+            "",
+            `\uD83D\uDCBE  ${B("SITE SAVE")}  ${CODE(escapeHtml(saved.site))}`,
+            `Added ${B(num(saved.added))} new \u00B7 skipped ${B(num(saved.duplicates))} dupes`,
+            `This site file now holds ${B(num(saved.size))} unique lines.`,
+        ].join("\n");
+    }
+
+    async function renderSiteCard(chatId, siteName) {
+        const record = siteVault.getSite(chatId, siteName, siteSaveRoot());
+        if (!record) return { text: "No save for that site yet.", keyboard: homeKeyboard(chatId) };
+        const sample = siteVault.peekLines(record.file, 8);
+        const active = siteVault.getActive(chatId, siteSaveRoot()) === record.site;
+        const dl = record.lines
+            ? downloads.registerDownload({
+                filename: `${record.site}.txt`,
+                filePath: record.file,
+                size: record.bytes,
+                chatId,
+                stats: { site: record.site, lines: record.lines },
+            })
+            : null;
+        const text = [
+            `\uD83D\uDCBE  ${B(escapeHtml(record.site))}`,
+            RULE,
+            `${B(num(record.lines))} unique lines \u00B7 ${humanSize(record.bytes)}`,
+            active ? "\uD83D\uDCCC Pinned \u2014 new files keep merging into this save." : "Not pinned. Pin it to keep adding files.",
+            "",
+            sample.length ? sample.map((line) => CODE(escapeHtml(line))).join("\n") : I("Empty so far."),
+        ].join("\n");
+        const rows = [];
+        if (dl) rows.push([Markup.button.url("\uD83D\uDCE5 Download this save", dl.url)]);
+        rows.push([
+            Markup.button.callback(active ? "\uD83D\uDCCC Pinned" : "\uD83D\uDCCC Pin this site", `site:pin:${record.site}`),
+            Markup.button.callback("\uD83D\uDCCB All saves", "site:list"),
+        ]);
+        rows.push([Markup.button.callback("\uD83C\uDFE0 Home", "help")]);
+        return { text, keyboard: createInlineKeyboard(rows) };
+    }
+
+    async function renderSiteList(chatId) {
+        const root = siteSaveRoot();
+        const sites = siteVault.listSites(chatId, root);
+        const active = siteVault.getActive(chatId, root);
+        const lines = [
+            `\uD83D\uDCBE  ${B("SITE SAVES")}`,
+            RULE,
+            active
+                ? `Pinned: ${CODE(escapeHtml(active))}. Keep sending files \u2014 only this site is added, and duplicates are skipped.`
+                : `No site pinned. Send ${CODE("/site htzone.co.il")} then keep forwarding files.`,
+            "",
+        ];
+        if (sites.length === 0) {
+            lines.push(I("Nothing saved yet."));
+        } else {
+            sites.slice(0, 12).forEach((site, i) => {
+                lines.push(`${i === 0 && site.lines ? "\uD83E\uDD47" : "\u2022"} ${CODE(escapeHtml(site.site))} \u00B7 ${num(site.lines)} lines${site.active ? " \u00B7 pinned" : ""}`);
+            });
+        }
+        const rows = sites.slice(0, 8).map((site) => [
+            Markup.button.callback(topLabel(site), `site:view:${site.site}`),
+        ]);
+        rows.push([Markup.button.callback("\u274C Stop pinning", "site:unpin"), Markup.button.callback("\uD83C\uDFE0 Home", "help")]);
+        return { text: lines.join("\n"), keyboard: createInlineKeyboard(rows) };
+    }
+
+    bot.command(["sitesave", "saved", "saves"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const card = await renderSiteList(ctx.chat.id);
+        await safeReply(ctx, card.text, card.keyboard);
+    });
+
+    bot.command(["site", "pinsite", "setsite"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const raw = (ctx.message && ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
+        if (!raw || /^off|clear|stop|none$/i.test(raw)) {
+            if (/^off|clear|stop|none$/i.test(raw)) siteVault.clearActive(ctx.chat.id, siteSaveRoot());
+            const card = await renderSiteList(ctx.chat.id);
+            await safeReply(ctx, card.text, card.keyboard);
+            return;
+        }
+        const pinned = siteVault.setActive(ctx.chat.id, raw, siteSaveRoot());
+        if (!pinned) {
+            await safeReply(ctx, `\u26A0\uFE0F ${CODE(escapeHtml(raw))} is not a website. Try ${CODE("/site htzone.co.il")}.`, homeKeyboard(ctx.chat.id));
+            return;
+        }
+        await safeReply(
+            ctx,
+            [
+                `\uD83D\uDCCC  ${B("PINNED")}  ${CODE(escapeHtml(pinned))}`,
+                RULE,
+                "Keep sending files. Lines for this site are merged into one save and duplicates are dropped.",
+                "The biggest save stays as a button on Home.",
+            ].join("\n"),
+            homeKeyboard(ctx.chat.id),
+        );
+    });
+
+    bot.action("site:list", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => {});
+        const card = await renderSiteList(ctx.chat.id);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) await safeEdit(ctx, msg.message_id, card.text, card.keyboard);
+        else await safeReply(ctx, card.text, card.keyboard);
+    });
+
+    bot.action(/^site:view:(.+)$/, async (ctx) => {
+        await ctx.answerCbQuery().catch(() => {});
+        const card = await renderSiteCard(ctx.chat.id, ctx.match[1]);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) await safeEdit(ctx, msg.message_id, card.text, card.keyboard);
+        else await safeReply(ctx, card.text, card.keyboard);
+    });
+
+    bot.action(/^site:pin:(.+)$/, async (ctx) => {
+        const pinned = siteVault.setActive(ctx.chat.id, ctx.match[1], siteSaveRoot());
+        await ctx.answerCbQuery(pinned ? `Pinned ${pinned}` : "Not a site").catch(() => {});
+        if (!pinned) return;
+        const card = await renderSiteCard(ctx.chat.id, pinned);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) await safeEdit(ctx, msg.message_id, card.text, card.keyboard);
+    });
+
+    bot.action("site:unpin", async (ctx) => {
+        siteVault.clearActive(ctx.chat.id, siteSaveRoot());
+        await ctx.answerCbQuery("Stopped pinning").catch(() => {});
+        const card = await renderSiteList(ctx.chat.id);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) await safeEdit(ctx, msg.message_id, card.text, card.keyboard);
     });
 
     bot.command(["sites", "domains"], async (ctx) => {
@@ -6893,12 +7067,19 @@ async function ingestDocument(ctx, doc, options = {}) {
         : (result.lines || []);
     const added = store.addLines(ctx.chat.id, cleanLines, site);
     const chatStats = store.getStats(ctx.chat.id);
+    const saved = await absorbCleanedLines(ctx.chat.id, cleanLines, site).catch((err) => {
+        console.error("site vault save failed:", err && err.message ? err.message : err);
+        return null;
+    });
 
     // Stage 4: done — full report.
     await safeEdit(
         ctx,
         progress.message_id,
-        renderFileReport(name, result.stats, added, chatStats, site),
+        [
+            renderFileReport(name, result.stats, added, chatStats, site),
+            saved ? siteSaveNote(saved) : "",
+        ].filter(Boolean).join("\n"),
         fileReportKeyboard(),
     );
 
@@ -9320,6 +9501,10 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
         : (result.lines || []);
     const added = store.addLines(ctx.chat.id, cleanLines, site);
     const chatStats = store.getStats(ctx.chat.id);
+    const saved = await absorbCleanedLines(ctx.chat.id, cleanLines, site).catch((err) => {
+        console.error("site vault save failed:", err && err.message ? err.message : err);
+        return null;
+    });
     const outputPath = processedOutputPath(name, ctx.chat.id);
     await fs.promises.writeFile(outputPath, buildOutput(cleanLines), "utf8");
 
@@ -9328,8 +9513,8 @@ async function processZipFile(ctx, progress, fullPath, name, size, options = {})
         progress.message_id,
         [
             renderFileReport(name, result.stats, added, chatStats, site),
-            "",
-            `💾  ${B("Full disk output")}`,
+            saved ? siteSaveNote(saved) : "",
+            `\uD83D\uDCBE  ${B("Full disk output")}`,
             `${CODE(escapeHtml(outputPath))}`,
             `${I("Search it with /lsearch your-query.")}`,
         ].join("\n"),

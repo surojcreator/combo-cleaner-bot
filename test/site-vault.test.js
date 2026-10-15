@@ -41,6 +41,19 @@ test("appendLines keeps one file per site and skips duplicates", async () => {
     fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("a pinned site keeps cleaned lines even after the domain is stripped", async () => {
+    const root = tmp();
+    const saved = await vault.appendLines(9, "htzone.co.il", [
+        "user@mail.com:pass1",
+        "adam99:pass2",
+        "user@mail.com:pass1",
+    ], root, { pinned: true });
+    assert.equal(saved.added, 2);
+    assert.equal(saved.duplicates, 1);
+    assert.equal(saved.size, 2);
+    fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("largest site is the one with the most unique lines", async () => {
     const root = tmp();
     const chat = 7;

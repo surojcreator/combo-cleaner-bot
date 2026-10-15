@@ -449,19 +449,18 @@ function createBot(token, meta = {}) {
         return keyboard;
     }
 
-    async function saveLinesToSite(chatId, lines, site) {
+    async function saveLinesToSite(chatId, lines, site, pinned) {
         const key = siteVault.normalizeSite(site);
-        if (!key) return null;
-        const matching = (lines || []).filter((line) => siteVault.lineBelongsToSite(line, key));
-        if (matching.length === 0) return null;
-        return siteVault.appendLines(chatId, key, matching, siteSaveRoot());
+        if (!key || !lines || lines.length === 0) return null;
+        return siteVault.appendLines(chatId, key, lines, siteSaveRoot(), { pinned: Boolean(pinned) });
     }
 
     async function absorbCleanedLines(chatId, lines, detectedSite) {
         const active = siteVault.getActive(chatId, siteSaveRoot());
-        const target = active || siteVault.normalizeSite(detectedSite);
+        if (active) return saveLinesToSite(chatId, lines, active, true);
+        const target = siteVault.normalizeSite(detectedSite);
         if (!target) return null;
-        return saveLinesToSite(chatId, lines, target);
+        return saveLinesToSite(chatId, lines, target, false);
     }
 
     bot.start(handleStartHelp);

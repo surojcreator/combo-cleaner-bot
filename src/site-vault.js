@@ -142,7 +142,7 @@ async function loadSeen(file) {
  * @param {string} [root]
  * @returns {Promise<{ site: string, added: number, duplicates: number, size: number, file: string }>}
  */
-async function appendLines(chatId, site, lines, root) {
+async function appendLines(chatId, site, lines, root, options = {}) {
     const key = normalizeSite(site);
     if (!key) throw new Error("Not a website");
     const file = siteFile(chatId, key, root);
@@ -151,11 +151,14 @@ async function appendLines(chatId, site, lines, root) {
     const fresh = [];
     let duplicates = 0;
     const incoming = Array.isArray(lines) ? lines : [];
+    // A pinned save already knows the site. Cleaned lines no longer contain it,
+    // so requiring the domain here dropped every line of a real dump.
+    const requireMention = !(options && options.pinned);
     for (let i = 0; i < incoming.length; i++) {
         const raw = incoming[i];
         const cleaned = cleanUserPassOnly(raw);
-        // The cleaner strips the domain, so the raw line is what says which site it came from.
-        if (!cleaned || !lineBelongsToSite(raw, key)) continue;
+        if (!cleaned) continue;
+        if (requireMention && !lineBelongsToSite(raw, key) && !lineBelongsToSite(cleaned, key)) continue;
         if (seen.has(cleaned)) {
             duplicates++;
             continue;

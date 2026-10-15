@@ -2003,14 +2003,14 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
         `${tgEmoji("🤖")}  ULP target: ${CODE(`@${escapeHtml(searcherBot || "DumpNews14Bot")}`)}`,
         RULE,
         `${tgEmoji("⚡️")}  ${B("What you can do")}`,
-        `  ${tgEmoji("1️⃣")} ${B("ULP Search")} — day-by-day dumps, auto-clean`,
-        `  ${tgEmoji("2️⃣")} ${B("Clean files")} — forward .zip/.txt or Save Files`,
-        `  ${tgEmoji("3️⃣")} ${B("Vault")} — browse, merge, search on disk`,
-        `  ${tgEmoji("4️⃣")} ${B("Combine")} — one deduped master download`,
+        `  ${tgEmoji("1️⃣")} ${B("Send a file")} — .zip or .txt, cleaned into the batch`,
+        `  ${tgEmoji("2️⃣")} ${B("Pin a site")} — keep sending files, one deduped save per site`,
+        `  ${tgEmoji("3️⃣")} ${B("Combine")} — download the current batch`,
+        `  ${tgEmoji("4️⃣")} ${B("ULP Search")} — ask the searcher bot, results cleaned in`,
         RULE,
         `${tgEmoji("⌨️")}  ${B("Shortcuts")}`,
-        `  ${CODE("/ulp domain 7")}  ${CODE("/combine")}  ${CODE("/save")}`,
-        `  ${CODE("/search x")}  ${CODE("/lsearch x")}  ${CODE("/files")}`,
+        `  ${CODE("/site htzone.co.il")}  ${CODE("/combine")}  ${CODE("/save")}`,
+        `  ${CODE("/ulp domain 7")}  ${CODE("/search x")}  ${CODE("/files")}`,
         RULE,
         nextStep,
         `${tgEmoji("👇")}  ${I("Use the buttons below — no commands required.")}`,
@@ -3607,7 +3607,7 @@ function sitesKeyboard(siteCounts = [], page = 0) {
         const s = typeof item.site === "string" ? item.site : (typeof item.site === "symbol" ? "" : String(item.site || ""));
         const sName = s.length > 18 ? s.slice(0, 16) + "…" : s;
         rows.push([
-            Markup.button.callback(`🌐 ${sName} (${compact(item.count)})`, registerCallbackPayload("site:view:", s)),
+            Markup.button.callback(`🌐 ${sName} (${compact(item.count)})`, registerCallbackPayload("batch:site:", s)),
             Markup.button.callback(`🗑 Del ${sName}`, registerCallbackPayload("site:del:ask:", s)),
         ]);
     }

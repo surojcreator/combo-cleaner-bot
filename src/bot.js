@@ -5274,9 +5274,10 @@ function createBot(token, meta = {}) {
         }
     });
 
-    // Inline button: site:view:<site>
-    bot.action(/^site:view:(.+)$/, async (ctx) => {
+    // Batch domain tap. Kept off site:view, which opens a saved site file.
+    bot.action(/^batch:site:(.+)$/, async (ctx) => {
         const domain = resolveCallbackPayload(ctx.match[1]);
+        await ctx.answerCbQuery(`Searching ${domain}`).catch(() => {});
         store.addCustomQuery(ctx.chat.id, domain);
         const t0 = Date.now();
         const res = store.searchLines(ctx.chat.id, domain, 20);
@@ -5300,10 +5301,11 @@ function createBot(token, meta = {}) {
         const batch = store.getStats(ctx.chat.id);
         const msgId = ctx.callbackQuery?.message?.message_id;
         const text = renderHelp(meta.botUsername, batch, searchOptions.botUsername);
+        const keyboard = homeKeyboard(ctx.chat.id, batch);
         if (msgId) {
-            await safeEdit(ctx, msgId, text, mainKeyboard());
+            await safeEdit(ctx, msgId, text, keyboard);
         } else {
-            await safeReply(ctx, text, mainKeyboard());
+            await safeReply(ctx, text, keyboard);
         }
     });
 
@@ -6502,7 +6504,13 @@ function createBot(token, meta = {}) {
         // 1. Natural language single-word command shortcuts
         if (lower === "menu" || lower === "help" || lower === "start" || lower === "home") {
             const batch = store.getStats(ctx.chat.id);
-            await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), mainKeyboard());
+            await safeReply(ctx, renderHelp(meta.botUsername, batch, searchOptions.botUsername), homeKeyboard(ctx.chat.id, batch));
+            return;
+        }
+
+        if (lower === "saves" || lower === "saved" || lower === "sitesave") {
+            const card = await renderSiteList(ctx.chat.id);
+            await safeReply(ctx, card.text, card.keyboard);
             return;
         }
 

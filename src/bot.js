@@ -1354,8 +1354,46 @@ function createBot(token, meta = {}) {
             }
             return;
         }
+        if (arg === "all" || arg === "everything" || arg === "vault") {
+            await mergeEntireVault(ctx);
+            return;
+        }
         await showVaultSelect(ctx);
     });
+
+    async function mergeEntireVault(ctx) {
+        userPromptState.delete(ctx.chat.id);
+        const allFiles = getVaultFiles();
+        if (allFiles.length < 2) {
+            await safeReply(
+                ctx,
+                `\u26A0\uFE0F Found ${allFiles.length} vault file(s). Need at least 2 to merge.\nForward files or use /save to add more.`,
+                mainKeyboard(),
+            );
+            return;
+        }
+        const statusMsg = await safeReply(
+            ctx,
+            `\u23F3 Merging all ${num(allFiles.length)} vault files into one deduped file\u2026`,
+        );
+        try {
+            const stats = await mergeFilesOnServer(ctx, allFiles, {
+                statusMsgId: statusMsg ? statusMsg.message_id : null,
+            });
+            const report = renderMergeComplete(stats);
+            const kb = mergeCompleteKeyboard(stats.outName, stats.downloadUrl);
+            if (statusMsg && statusMsg.message_id) {
+                await safeEdit(ctx, statusMsg.message_id, report, kb);
+            } else {
+                await safeReply(ctx, report, kb);
+            }
+        } catch (err) {
+            console.error("Vault merge-all error:", err);
+            await safeReply(ctx, `\u274C Failed to merge vault: ${err.message}`);
+        }
+    }
+
+    bot.command(["mergeall", "mergeeverything"], mergeEntireVault);
 
     bot.command(["mergeulp", "ulpmerge", "mergelogs", "combomerge"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);
@@ -1757,6 +1795,11 @@ function createBot(token, meta = {}) {
             console.error("Raw vault merge error:", err);
             await safeReply(ctx, `❌ Failed to merge raw files: ${err.message}`);
         }
+    });
+
+    bot.action("files:merge:all", async (ctx) => {
+        await ctx.answerCbQuery("Merging the whole vault\u2026").catch(() => {});
+        await mergeEntireVault(ctx);
     });
 
     bot.action("files:merge:ulp:all", async (ctx) => {
@@ -3109,8 +3152,8 @@ function createBot(token, meta = {}) {
         }
         const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
         await safeAnswerCbQuery(ctx, `🚀 Launching ${query} (${activeDays}d)…`);
-        // Fire-and-forget: multi-day ULP can run for hours; do not block webhook.
-        void beginUlpRun(ctx, {
+        // Fire-and-forget: multi-day ULP can run for hours; do not block webhook in production.
+        const ulpPromise = beginUlpRun(ctx, {
             query,
             scope: "day",
             daysCount: activeDays,
@@ -3122,6 +3165,9 @@ function createBot(token, meta = {}) {
         }).catch((err) => {
             console.error("beginUlpRun (quick) background error:", err && err.message ? err.message : err);
         });
+        if (!meta || !meta.asyncUlp) {
+            await ulpPromise;
+        }
     });
 
     bot.action("ulp:custom:prompt", async (ctx) => {
@@ -5156,8 +5202,8 @@ function createBot(token, meta = {}) {
         if (parsed.query && store && store.addCustomDomain) {
             store.addCustomDomain(ctx.chat.id, parsed.query);
         }
-        // Fire-and-forget so webhook returns immediately (Telegram ~60s timeout).
-        void beginUlpRun(ctx, {
+        // Fire-and-forget so webhook returns immediately (Telegram ~60s timeout); await in tests.
+        const ulpPromise = beginUlpRun(ctx, {
             query: parsed.query,
             scope: parsed.scope,
             startDate: parsed.startDate || null,
@@ -5169,6 +5215,9 @@ function createBot(token, meta = {}) {
         }).catch((err) => {
             console.error("beginUlpRun (/ulp) background error:", err && err.message ? err.message : err);
         });
+        if (!meta || !meta.asyncUlp) {
+            await ulpPromise;
+        }
     };
 
     bot.command(["ulp", "searchbot", "ulpsearch", "searchulp", "findulp"], ulpCommand);
@@ -5191,7 +5240,7 @@ function createBot(token, meta = {}) {
         await ctx.answerCbQuery(`Scope · ${scope}`).catch(() => { });
         const message = ctx.callbackQuery && ctx.callbackQuery.message;
         const activeDays = (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
-        void beginUlpRun(ctx, {
+        const ulpPromise = beginUlpRun(ctx, {
             query: run.query,
             scope,
             daysCount: activeDays,
@@ -5203,6 +5252,9 @@ function createBot(token, meta = {}) {
         }).catch((err) => {
             console.error("beginUlpRun (rerun) background error:", err && err.message ? err.message : err);
         });
+        if (!meta || !meta.asyncUlp) {
+            await ulpPromise;
+        }
     };
 
     bot.action(/^ulp:(day|month|year)$/, async (ctx) => {
@@ -5694,7 +5746,7 @@ function createBot(token, meta = {}) {
                 }
                 const activeDays = parsed.daysCount || (store && store.getUlpDays && store.getUlpDays(ctx.chat.id)) || userUlpDays.get(ctx.chat.id) || searchOptions.daysCount || 5;
                 await safeReply(ctx, `🚀 ${B("Starting search for")} ${CODE(escapeHtml(query))} (${activeDays} days)…\n💾 ${I("Saved to your custom target domains.")}`);
-                void beginUlpRun(ctx, {
+                const ulpPromise = beginUlpRun(ctx, {
                     query,
                     scope: parsed.scope || "day",
                     startDate: parsed.startDate || null,
@@ -5706,6 +5758,9 @@ function createBot(token, meta = {}) {
                 }).catch((err) => {
                     console.error("beginUlpRun (prompt) background error:", err && err.message ? err.message : err);
                 });
+                if (!meta || !meta.asyncUlp) {
+                    await ulpPromise;
+                }
                 return;
             }
 
@@ -6616,11 +6671,15 @@ async function safeReply(ctx, text, extra = {}) {
         }
         console.warn("safeReply stage-A failed:", msg.slice(0, 180));
 
-        // Stage B: keep animated *message* tags, strip button icons only
-        try {
-            return await attempt(sendText, stripButtonEmojis(extra));
-        } catch (errB) {
-            console.warn("safeReply stage-B failed:", String((errB && errB.message) || errB).slice(0, 180));
+        if (isCustomEmojiError) {
+            setBotApiCustomEmojiRejected(true, msg);
+        } else {
+            // Stage B: keep animated *message* tags, strip button icons only
+            try {
+                return await attempt(sendText, stripButtonEmojis(extra));
+            } catch (errB) {
+                console.warn("safeReply stage-B failed:", String((errB && errB.message) || errB).slice(0, 180));
+            }
         }
 
         // Stage C: plain unicode message + plain buttons
@@ -6629,8 +6688,6 @@ async function safeReply(ctx, text, extra = {}) {
             fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");
         }
         const fallbackExtra = stripButtonEmojis(extra);
-        // Do NOT globally kill animated emoji for one bad payload.
-        if (isCustomEmojiError) botApiCustomEmojiRejectReason = msg.slice(0, 240);
         try {
             return await attempt(fallbackText, fallbackExtra);
         } catch (fallbackErr) {
@@ -6692,7 +6749,7 @@ async function safeEdit(ctx, messageId, text, extra = {}) {
         }
         const isCustomEmojiError = CUSTOM_EMOJI_REJECTED_RE.test(msg);
         if (isCustomEmojiError || PARSE_ENTITY_ERROR_RE.test(msg)) {
-            if (isCustomEmojiError) { botApiCustomEmojiRejectReason = msg.slice(0, 240); /* per-send only — no process-wide kill */ }
+            if (isCustomEmojiError) { setBotApiCustomEmojiRejected(true, msg); }
             let fallbackText = editText;
             if (fallbackText && fallbackText.includes("<tg-emoji")) {
                 fallbackText = fallbackText.replace(/<tg-emoji[^>]*>(.*?)<\/tg-emoji>/gi, "$1");

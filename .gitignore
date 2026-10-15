@@ -4,6 +4,7 @@ node_modules/
 .DS_Store
 test_search_slice.txt
 scratch/
+.railway/
 data/
 # Ship validated animated emoji document IDs
 !data/

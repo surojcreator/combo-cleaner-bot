@@ -1290,9 +1290,13 @@ function serverFilesKeyboard(rawFiles = [], processedFiles = [], options = {}, p
         ]);
     } else if (hasExplicitTab && tab === "overview") {
         // Streamlined, clean, and elegant overview keyboard
+        const vaultTotal = rawCount + procCount;
         rows.push([
-            Markup.button.callback("🔀 Multi-Select & Merge Files", "files:tab:select"),
-            Markup.button.callback("⚡️ Merge All ULP Files", "files:merge:ulp:all"),
+            Markup.button.callback(`\uD83D\uDD00 Merge everything (${vaultTotal})`, "files:merge:all"),
+        ]);
+        rows.push([
+            Markup.button.callback("\uD83D\uDD00 Pick files", "files:tab:select"),
+            Markup.button.callback("\u26A1\uFE0F Merge ULP only", "files:merge:ulp:all"),
         ]);
         rows.push([
             Markup.button.callback(`📥 Raw Dumps (${rawCount})`, "files:tab:raw"),

@@ -6,6 +6,8 @@ test_search_slice.txt
 scratch/
 .railway/
 data/
+# Turnstile / Cloudflare solver (B00H0O/cloudflare-solver reference clone)
+solver-upstream/
 # Ship validated animated emoji document IDs
 !data/
 !data/emoji-registry.json

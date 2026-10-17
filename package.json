@@ -10,7 +10,8 @@
         "userbot:login": "node scripts/userbot-login.js",
         "userbot:login:qr": "node scripts/userbot-login-qr.js",
         "userbot:login:noninteractive": "node scripts/userbot-login-noninteractive.js",
-        "push": "git push origin main"
+        "push": "git push origin main",
+        "solver": "node scripts/solve-turnstile.js"
     },
     "engines": {
         "node": ">=18"

@@ -4,14 +4,14 @@
     repo from GitHub and hands off to scripts/deploy-rdp.ps1.
 
 .DESCRIPTION
-    Use this when the target box only exposes RDP (3389) — no SMB, no WinRM —
+    Use this when the target box only exposes RDP (3389) - no SMB, no WinRM -
     so nothing can be copied to it from the outside.
 
     Paste this INSIDE the RDP session (PowerShell, one line):
 
         $u='https://raw.githubusercontent.com/surojcreator/combo-cleaner-bot/main/scripts/bootstrap-rdp.ps1'; $f="$env:TEMP\bootstrap.ps1"; irm $u -OutFile $f; & $f -Start
 
-    With secrets, add -EnvBase64 (a base64 of your .env — generated for you):
+    With secrets, add -EnvBase64 (a base64 of your .env - generated for you):
 
         & $f -Start -EnvBase64 "<paste>"
 
@@ -63,7 +63,7 @@ function Warn ([string]$m) { Write-Host "  [warn] $m" -ForegroundColor Yellow }
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
 ) -or ([Security.Principal.WindowsIdentity]::GetCurrent().Name -match "Administrator$")
-if (-not $isAdmin) { Warn "not running as Administrator — the scheduled task may fail to register" }
+if (-not $isAdmin) { Warn "not running as Administrator - the scheduled task may fail to register" }
 
 Step "Downloading $Repo@$Branch"
 $zip = Join-Path $env:TEMP "combo-cleaner-$Branch.zip"
@@ -78,7 +78,7 @@ Expand-Archive -Path $zip -DestinationPath $stage -Force
 $root = Get-ChildItem $stage -Directory | Select-Object -First 1
 if (-not $root) { throw "extracted archive has no root folder" }
 if (-not (Test-Path (Join-Path $root.FullName "src\index.js"))) {
-    throw "src\index.js missing from the archive — wrong repo/branch?"
+    throw "src\index.js missing from the archive - wrong repo/branch?"
 }
 if (-not $KeepDownload) { Remove-Item $zip -Force }
 
@@ -98,9 +98,9 @@ if ($EnvBase64) {
     Invoke-WebRequest -Uri $EnvFileUrl -OutFile $envFile -UseBasicParsing
     Good "wrote .env from $EnvFileUrl"
 } elseif (Test-Path $envFile) {
-    Good ".env already present — keeping it"
+    Good ".env already present - keeping it"
 } else {
-    Warn "no .env — the bot will run in standby until BOT_TOKEN and TELEGRAM_* are set"
+    Warn "no .env - the bot will run in standby until BOT_TOKEN and TELEGRAM_* are set"
     Say  "fix later: notepad `"$envFile`", then: npm run doctor -- --ping"
 }
 

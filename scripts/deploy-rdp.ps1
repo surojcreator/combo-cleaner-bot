@@ -82,6 +82,41 @@ function Get-EnvValue([string]$File, [string]$Key) {
     return $line.Matches[0].Groups[1].Value.Trim()
 }
 
+function Set-EnvValue([string]$File, [string]$Key, [string]$Value) {
+    if (-not (Test-Path $File)) { return }
+    for ($i = 1; $i -le 6; $i++) {
+        try {
+            $text = [IO.File]::ReadAllText($File)
+            $pattern = "(?m)^$Key=.*$"
+            if ($text -match $pattern) {
+                $text = [regex]::Replace($text, $pattern, [System.Text.RegularExpressions.MatchEvaluator]{
+                    param($m) "$Key=$Value"
+                })
+            } else {
+                $text = $text.TrimEnd() + "`r`n$Key=$Value`r`n"
+            }
+            [IO.File]::WriteAllText($File, $text)
+            return
+        } catch {
+            # Defender / AV can hold a fresh handle for a moment after a copy.
+            if ($i -eq 6) { Warn "could not update $Key in .env: $($_.Exception.Message)"; return }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
+# .env.example ships POSIX roots for the Linux hosts; a POSIX path on Windows
+# silently turns into C:\var\data, so those get replaced with a real folder.
+function Resolve-StorageRoot([string]$Value, [string]$Fallback) {
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $Fallback }
+    if ($Value.StartsWith("/")) { return $Fallback }
+    if ($Value -notmatch "^[A-Za-z]:\\" -and -not $Value.StartsWith("\\")) { return $Fallback }
+    # A Windows path copied from another machine (or from a .env blob) usually
+    # does not exist here - fall back to a folder this host actually owns.
+    if (-not (Test-Path $Value)) { return $Fallback }
+    return $Value
+}
+
 function Resolve-Node {
     param([string]$InstallDir = "C:\nodejs")
 
@@ -213,10 +248,13 @@ if (-not $SkipDeps) {
 }
 
 Step "Preparing storage folders"
-$rootDir = Get-EnvValue $envFile "LOCAL_PROCESS_ROOT"
-$procDir = Get-EnvValue $envFile "LOCAL_PROCESSED_ROOT"
-if (-not $rootDir) { $rootDir = Join-Path $env:HOMEDRIVE "$($env:HOMEPATH)\combo-cleaner-data\inbox" }
-if (-not $procDir) { $procDir = Join-Path $env:HOMEDRIVE "$($env:HOMEPATH)\combo-cleaner-data\processed" }
+$baseDir = Join-Path $TargetPath "data\var-data"
+$rootDir = Resolve-StorageRoot (Get-EnvValue $envFile "LOCAL_PROCESS_ROOT") $baseDir
+$procDir = Resolve-StorageRoot (Get-EnvValue $envFile "LOCAL_PROCESSED_ROOT") (Join-Path $baseDir "processed")
+if (Test-Path $envFile) {
+    Set-EnvValue $envFile "LOCAL_PROCESS_ROOT" $rootDir
+    Set-EnvValue $envFile "LOCAL_PROCESSED_ROOT" $procDir
+}
 New-Item -ItemType Directory -Force -Path $rootDir | Out-Null
 New-Item -ItemType Directory -Force -Path $procDir | Out-Null
 Good $rootDir

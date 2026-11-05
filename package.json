@@ -10,6 +10,8 @@
         "userbot:login": "node scripts/userbot-login.js",
         "userbot:login:qr": "node scripts/userbot-login-qr.js",
         "userbot:login:noninteractive": "node scripts/userbot-login-noninteractive.js",
+        "doctor": "node scripts/userbot-doctor.js",
+        "deploy:rdp": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-rdp.ps1",
         "push": "git push origin main",
         "solver": "node scripts/solve-turnstile.js"
     },

@@ -226,6 +226,49 @@ a marked `#ulp` copy instead.
 > (the relay does: 7 s between tries, capped retries) and consider a **secondary
 > account** just for the relay instead of your main one.
 
+### 🩺 Prove it works before trusting it
+
+`npm run doctor` is the single answer to "will `/ulp` actually reach the
+searcher right now?". It checks the three secrets, logs in with the session,
+resolves `@DumpNews14Bot` from that account, and probes the storage folders:
+
+```bash
+npm run doctor              # config + login + searcher + storage
+npm run doctor -- --ping    # also sends /start and waits for an answer
+npm run doctor -- --json    # machine-readable (for scripts/monitoring)
+```
+
+Exit codes: `0` ready · `2` bad config · `3` dead session / no route ·
+`4` searcher unreachable · `5` storage not writable. Every failure prints the
+exact next action instead of a stack trace.
+
+`npm run userbot:login:qr` also prints a ready-to-paste `TELEGRAM_*` block when
+it finishes, so a session created on your laptop can be dropped straight into
+the RDP's `.env`.
+
+### 🖥️ Deploy to a Windows RDP
+
+```powershell
+# copy + install + register a logon task + start (run ON the box)
+.\scripts\deploy-rdp.ps1 -Start
+
+# or push this folder to another Windows host first, then run it there
+.\scripts\deploy-rdp.ps1 -RdpHost 1.2.3.4 -RdpUser Administrator
+
+# same, one shot, over WinRM (target must have WinRM enabled)
+.\scripts\deploy-rdp.ps1 -RdpHost srv -RdpUser Administrator -UseWinRM -Start
+```
+
+What it does: robocopies the project (skipping `node_modules`, `.git`,
+`data/var-data`), installs portable Node 22 if `node.exe` is missing, runs
+`npm ci --omit=dev`, creates the storage folders, registers the scheduled task
+`ComboCleanerBot` (starts at logon, hidden, restarts every minute on crash),
+starts it, and polls `/healthz` for 90 s. Then run `npm run doctor -- --ping`
+on the RDP to confirm the account transport, not just the HTTP port.
+
+Useful switches: `-TargetPath C:\bots\cleaner`, `-SkipDeps`, `-NoTask`,
+`-Force` (replace an existing task without asking).
+
 ### Relay settings
 
 | Env var | Default | Meaning |
@@ -263,6 +306,9 @@ a marked `#ulp` copy instead.
 
 5. In Telegram, open your bot and either `/start`, or **forward it a `.zip`**.
    Send a few, then tap **📦 Get combined file** (or `/combine`).
+
+6. Before trusting `/ulp`, run `npm run doctor -- --ping` — it proves the
+   account transport can actually reach the searcher bot.
 
 > Local runs default to **long-polling**, so you don't need a public URL.
 

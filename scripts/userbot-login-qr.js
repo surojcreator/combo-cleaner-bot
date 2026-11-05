@@ -15,6 +15,7 @@
 require("dotenv").config();
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
 const qrcode = require("qrcode-terminal");
@@ -28,6 +29,23 @@ function setEnvValue(filePath, key, value) {
     if (pattern.test(text)) text = text.replace(pattern, line);
     else text += `${text && !text.endsWith("\n") ? "\n" : ""}${line}\n`;
     fs.writeFileSync(filePath, text, { encoding: "utf8", mode: 0o600 });
+}
+
+/** Storage roots that make sense on this OS (Linux hosts use /var/data). */
+function defaultRoots(platform = process.platform) {
+    if (platform === "win32") {
+        const base = path.join(os.homedir(), "combo-cleaner-data");
+        return {
+            root: path.join(base, "inbox"),
+            processed: path.join(base, "processed"),
+        };
+    }
+    return { root: "/var/data", processed: "/var/data/processed" };
+}
+
+function hasEnvKey(filePath, key) {
+    if (!fs.existsSync(filePath)) return false;
+    return new RegExp(`^${key}=`, "m").test(fs.readFileSync(filePath, "utf8"));
 }
 
 function formatExpires(expires) {
@@ -144,8 +162,14 @@ async function main() {
         const envPath = path.resolve(".env");
         setEnvValue(envPath, "TELEGRAM_SESSION", session);
         setEnvValue(envPath, "SEARCH_TRANSPORT", "auto");
-        setEnvValue(envPath, "LOCAL_PROCESS_ROOT", "/var/data");
-        setEnvValue(envPath, "LOCAL_PROCESSED_ROOT", "/var/data/processed");
+        // Never clobber storage roots that were already configured for this host.
+        const roots = defaultRoots();
+        if (!hasEnvKey(envPath, "LOCAL_PROCESS_ROOT")) {
+            setEnvValue(envPath, "LOCAL_PROCESS_ROOT", roots.root);
+        }
+        if (!hasEnvKey(envPath, "LOCAL_PROCESSED_ROOT")) {
+            setEnvValue(envPath, "LOCAL_PROCESSED_ROOT", roots.processed);
+        }
 
         console.log("\n✅ QR login successful.");
         console.log(
@@ -153,9 +177,27 @@ async function main() {
             me.username ? `@${me.username} (id ${me.id})` : `id ${me.id}`,
         );
         console.log(`Saved TELEGRAM_SESSION securely to ${envPath} (gitignored).`);
-        console.log("\nSession is ready for Railway. Do not commit it to Git.");
-        // Print a short prefix only — full session is in .env
         console.log(`TELEGRAM_SESSION length: ${session.length} chars (stored in .env)`);
+
+        // Prove the account can actually reach the searcher before declaring victory.
+        const searcher = String(process.env.SEARCH_BOT_USERNAME || "DumpNews14Bot").replace(/^@+/, "");
+        try {
+            const peer = await client.getEntity(searcher);
+            console.log(`\n✓ Can reach @${searcher}${peer && peer.bot ? " (bot)" : ""}`);
+        } catch (err) {
+            console.log(`\n⚠️  Could not resolve @${searcher}: ${(err && err.message) || err}`);
+            console.log(`   Open @${searcher} once from this account and press START, then re-run doctor.`);
+        }
+
+        // Ready-to-paste block for the RDP / server deployment.
+        console.log("\n=== COPY TO THE RDP / SERVER ===");
+        console.log(`TELEGRAM_API_ID=${apiId}`);
+        console.log(`TELEGRAM_API_HASH=${apiHash}`);
+        console.log(`TELEGRAM_SESSION=${session}`);
+        console.log("SEARCH_TRANSPORT=auto");
+        console.log(`SEARCH_BOT_USERNAME=${searcher}`);
+        console.log("=== END ===");
+        console.log("\nNext: npm run doctor      (verifies login + searcher reachability)");
     } finally {
         if (rl) {
             try {

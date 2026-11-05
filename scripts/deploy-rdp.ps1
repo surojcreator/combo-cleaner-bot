@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Deploy the combo-cleaner-bot to a Windows host (RDP) and run it as a
     scheduled task that starts at logon, hidden, and restarts on crash.
@@ -60,10 +60,13 @@ param(
     [switch]$SkipDeps,
     [switch]$NoTask,
     [switch]$Start,
-    [switch]$Force
+    [switch]$Force,
+    [string]$EnvBase64 = ""
 )
 
 $ErrorActionPreference = "Stop"
+$ScriptVersion = "2026-11-05.3"
+Write-Host "deploy v$ScriptVersion | PS $($PSVersionTable.PSVersion) | user=$env:USERNAME | script=$PSCommandPath"
 $TaskName = "ComboCleanerBot"
 $NodeVersion = "22.14.0"
 $Source = Split-Path -Parent $PSScriptRoot
@@ -218,7 +221,11 @@ if ((Resolve-Path $Source).Path -ne (Resolve-Path $TargetPath).Path) {
 $nodeExe = Resolve-Node
 
 $envFile = Join-Path $TargetPath ".env"
-if (-not (Test-Path $envFile)) {
+if ($EnvBase64) {
+    $bytes = [Convert]::FromBase64String($EnvBase64)
+    [IO.File]::WriteAllBytes($envFile, $bytes)
+    Good "wrote .env from -EnvBase64 ($($bytes.Length) bytes)"
+} elseif (-not (Test-Path $envFile)) {
     $example = Join-Path $TargetPath ".env.example"
     if (Test-Path $example) {
         Copy-Item $example $envFile

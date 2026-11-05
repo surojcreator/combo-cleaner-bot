@@ -28,7 +28,7 @@ test("every .ps1 script is ASCII-only (PS 5.1 ANSI parse safety)", () => {
     assert.ok(files.length >= 2, "expected the deploy scripts to exist");
     const offenders = [];
     for (const file of files) {
-        const text = fs.readFileSync(file, "utf8");
+        const text = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "");
         text.split(/\r?\n/).forEach((line, i) => {
             const nonAscii = [...line].filter((ch) => ch.codePointAt(0) > 0x7e);
             if (nonAscii.length) {

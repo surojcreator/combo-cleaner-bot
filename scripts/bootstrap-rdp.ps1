@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     One-paste installer for a blank/fresh Windows host (RDP) that pulls this
     repo from GitHub and hands off to scripts/deploy-rdp.ps1.
@@ -53,7 +53,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ScriptVersion = "2026-11-05.3"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Printed before anything that can fail, so a broken or stale parse is obvious.
+Write-Host "bootstrap v$ScriptVersion | PS $($PSVersionTable.PSVersion) | TEMP=[$env:TEMP] | user=$env:USERNAME | script=$PSCommandPath"
 
 function Say  ([string]$m) { Write-Host "  $m" }
 function Step ([string]$m) { Write-Host ""; Write-Host "== $m ==" -ForegroundColor Cyan }
@@ -66,6 +70,7 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIde
 if (-not $isAdmin) { Warn "not running as Administrator - the scheduled task may fail to register" }
 
 Step "Downloading $Repo@$Branch"
+if ([string]::IsNullOrWhiteSpace($env:TEMP)) { throw "TEMP is empty in this session - set it: `$env:TEMP = 'C:\Windows\Temp'" }
 $zip = Join-Path $env:TEMP "combo-cleaner-$Branch.zip"
 $url = "https://codeload.github.com/$Repo/zip/refs/heads/$Branch"
 Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing

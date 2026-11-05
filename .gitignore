@@ -12,3 +12,4 @@ solver-upstream/
 !data/
 !data/emoji-registry.json
 data/custom-*.json
+.tmp/

@@ -19,6 +19,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline/promises");
 const qrcode = require("qrcode-terminal");
+const QRCode = require("qrcode");
 const { TelegramClient } = require("teleproto");
 const { StringSession } = require("teleproto/sessions");
 
@@ -71,6 +72,8 @@ async function main() {
     fs.mkdirSync(tmpDir, { recursive: true });
     const urlPath = path.join(tmpDir, "telegram-qr-login.url");
     const txtPath = path.join(tmpDir, "telegram-qr-login.txt");
+    // A real image is what phones scan reliably — ASCII is just the fallback.
+    const pngPath = path.join(tmpDir, "telegram-qr-login.png");
 
     let rl = null;
     let fatalError = null;
@@ -91,7 +94,7 @@ async function main() {
     try {
         console.log("Connecting to Telegram for QR login...");
         console.log("On your phone: Telegram → Settings → Devices → Link Desktop Device");
-        console.log(`QR will also be written to:\n  ${txtPath}\n  ${urlPath}\n`);
+        console.log(`QR will also be written to:\n  ${pngPath}\n  ${txtPath}\n  ${urlPath}\n`);
 
         await client.connect();
 
@@ -107,6 +110,15 @@ async function main() {
                     qrShows += 1;
 
                     fs.writeFileSync(urlPath, `${url}\n`, { encoding: "utf8", mode: 0o600 });
+                    try {
+                        await QRCode.toFile(pngPath, url, {
+                            width: 720,
+                            margin: 2,
+                            errorCorrectionLevel: "M",
+                        });
+                    } catch (err) {
+                        console.error("PNG QR failed:", (err && err.message) || err);
+                    }
                     // Capture terminal QR into a text file for IDE viewing
                     let ascii = "";
                     try {
@@ -121,7 +133,8 @@ async function main() {
                     console.log(`Show #${qrShows} · expires in about ${formatExpires(expires)}`);
                     console.log("Scan with: Settings → Devices → Link Desktop Device\n");
                     qrcode.generate(url, { small: true });
-                    console.log(`\nDeep link (if QR is hard to scan):\n${url}`);
+                    console.log(`Deep link (if QR is hard to scan):\n${url}`);
+                    console.log(`Image: ${pngPath}`);
                     console.log(`Also saved: ${urlPath}`);
                     console.log("──────────────────────────────────────────\n");
                     if (ascii) fs.writeFileSync(txtPath, `${ascii}\n${url}\n`, { encoding: "utf8", mode: 0o600 });

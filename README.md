@@ -269,6 +269,32 @@ on the RDP to confirm the account transport, not just the HTTP port.
 Useful switches: `-TargetPath C:\bots\cleaner`, `-SkipDeps`, `-NoTask`,
 `-Force` (replace an existing task without asking).
 
+#### When the box only exposes RDP (3389)
+
+No SMB, no WinRM — nothing can be copied in from outside. Paste this **inside
+the RDP session** instead; it pulls the public repo, installs Node and registers
+the task:
+
+```powershell
+$u='https://raw.githubusercontent.com/surojcreator/combo-cleaner-bot/main/scripts/bootstrap-rdp.ps1'
+$f="$env:TEMP\bootstrap.ps1"; irm $u -OutFile $f; & $f -Start -Force
+```
+
+To carry the secrets over in the same paste, generate a base64 blob of `.env`
+on the machine that already has it:
+
+```bash
+npm run env:blob      # prints one line; `npm run env:blob -- --verify <blob>` lists keys
+```
+
+```powershell
+& $f -Start -Force -EnvBase64 "<paste the blob>"
+```
+
+One session per host: `AUTH_KEY_DUPLICATED` means the same string is live in two
+places — log in again for the second host (`npm run userbot:login:qr`) instead of
+copying `.env` around.
+
 ### Relay settings
 
 | Env var | Default | Meaning |

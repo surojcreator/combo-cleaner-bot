@@ -267,7 +267,36 @@ starts it, and polls `/healthz` for 90 s. Then run `npm run doctor -- --ping`
 on the RDP to confirm the account transport, not just the HTTP port.
 
 Useful switches: `-TargetPath C:\bots\cleaner`, `-SkipDeps`, `-NoTask`,
-`-Force` (replace an existing task without asking).
+`-Force` (replace an existing task without asking), `-NoAutoUpdate`.
+
+#### Updates land by themselves, and never eat your data
+
+The installer registers **two** tasks:
+
+| Task | What it does |
+| --- | --- |
+| `ComboCleanerBot` | runs the bot at logon, restarts it on crash |
+| `ComboCleanerBotUpdate` | every 10 min: pulls the newest commit, restarts the bot **only if something changed** |
+
+`scripts\update-rdp.ps1` overlays code and deliberately skips:
+
+- `.env`
+- `data\var-data\*` — raw dumps, cleaned output, every pinned site save
+- `data\custom-domains.json`, `data\custom-queries.json`
+- `node_modules` — unless `package-lock.json` changed, then `npm ci`
+
+So a push to `main` reaches the RDP within ten minutes and your vault survives.
+
+```powershell
+.\scripts\update-rdp.ps1                  # one pass now
+.\scripts\update-rdp.ps1 -Force           # re-copy even if the commit matches
+.\scripts\update-rdp.ps1 -InstallAutoUpdate
+.\scripts\update-rdp.ps1 -NoRestart -Quiet
+Get-Content C:\htzone\combo-cleaner-bot\update.log -Tail 40 -Wait
+```
+
+It records the deployed commit in `.deployed-commit`, so an idle run does nothing
+at all. If GitHub's API is rate-limited it skips the pass instead of failing.
 
 #### When the box only exposes RDP (3389)
 
@@ -294,6 +323,21 @@ npm run env:blob      # prints one line; `npm run env:blob -- --verify <blob>` l
 One session per host: `AUTH_KEY_DUPLICATED` means the same string is live in two
 places — log in again for the second host (`npm run userbot:login:qr`) instead of
 copying `.env` around.
+
+### 📤 Send your pinned sites anywhere
+
+`/exportsites` (aliases `/mysites`, `/sendsites`) drops the whole vault into
+Telegram as a document — no server access needed:
+
+- **Send all as .zip** — one `.txt` per site plus `index.txt` (line count, size, last update, which one is pinned)
+- **Send index only** — the manifest alone, tiny and readable
+- **Send \<site\>** — just that one file
+
+Direct command: `/sitesend htzone.co.il`. The same button sits on every site card
+(*Send this file here*), so you can pull a save out mid-conversation and forward
+it to a client, a second account, or your own storage.
+
+Zips are written to the OS temp folder and pruned after an hour.
 
 ### Relay settings
 

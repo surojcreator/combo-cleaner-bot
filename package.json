@@ -13,6 +13,7 @@
         "doctor": "node scripts/userbot-doctor.js",
         "env:blob": "node scripts/env-blob.js",
         "deploy:rdp": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-rdp.ps1",
+        "update:rdp": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/update-rdp.ps1",
         "bootstrap:rdp": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-rdp.ps1",
         "push": "git push origin main",
         "solver": "node scripts/solve-turnstile.js"

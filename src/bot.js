@@ -38,6 +38,7 @@ const store = require("./store");
 const userbot = require("./userbot");
 const downloads = require("./downloads");
 const siteVault = require("./site-vault");
+const sitesExport = require("./sites-export");
 const {
     renderStats,
     renderSites,
@@ -446,6 +447,10 @@ function createBot(token, meta = {}) {
         if (top) {
             rows.unshift([Markup.button.callback(topLabel(top), `site:view:${top.site}`)]);
         }
+        // One tap from Home to get the saves out of the bot.
+        if (siteVault.listSites(chatId, root).length > 0) {
+            rows.unshift([Markup.button.callback("\uD83D\uDCE4 Send my sites", "site:export:menu")]);
+        }
         return keyboard;
     }
 
@@ -508,6 +513,9 @@ function createBot(token, meta = {}) {
         ].join("\n");
         const rows = [];
         if (dl) rows.push([Markup.button.url("\uD83D\uDCE5 Download this save", dl.url)]);
+        if (record.lines) {
+            rows.push([Markup.button.callback("\uD83D\uDCE4 Send this file here", `site:export:one:${record.site}`)]);
+        }
         rows.push([
             Markup.button.callback(active ? "\u2705 Pinned" : "\uD83D\uDCCC Pin this site", `site:pin:${record.site}`),
             Markup.button.callback("\uD83D\uDCCB All saves", "site:list"),
@@ -551,6 +559,7 @@ function createBot(token, meta = {}) {
         sites.slice(0, 8).forEach((site) => {
             rows.push([Markup.button.callback(topLabel(site), `site:view:${site.site}`)]);
         });
+        rows.push([Markup.button.callback("\uD83D\uDCE4 Send my sites", "site:export:menu")]);
         rows.push([
             Markup.button.callback("\uD83D\uDD00 Merge everything", "files:merge:all"),
             Markup.button.callback("\uD83D\uDD0D Search biggest", "lsearch:prompt:biggest"),
@@ -558,6 +567,141 @@ function createBot(token, meta = {}) {
         rows.push([Markup.button.callback("\u274C Stop pinning", "site:unpin"), Markup.button.callback("\uD83C\uDFE0 Home", "help")]);
         return { text: lines.join("\n"), keyboard: createInlineKeyboard(rows) };
     }
+
+    /**
+     * "Send my sites" card: totals + one-tap export of every save.
+     * @param {number|string} chatId
+     */
+    function renderExportCard(chatId) {
+        const data = sitesExport.readSaves(chatId, siteSaveRoot());
+        const lines = [
+            `\uD83D\uDCE4  ${B("SEND MY SITES")}`,
+            RULE,
+            data.sites.length === 0
+                ? I("Nothing saved yet. Pin a site with /site, then forward files into it.")
+                : `${B(num(data.sites.length))} site saves \u00B7 ${B(num(data.totalLines))} unique lines \u00B7 ${humanSize(data.totalBytes)}`,
+        ];
+        if (data.active) lines.push(`\uD83D\uDCCC Pinned now: ${CODE(escapeHtml(data.active))}`);
+        if (data.sites.length) {
+            lines.push("");
+            data.sites.slice(0, 10).forEach((site) => {
+                lines.push(`${site.active ? "\uD83D\uDCCC" : "\u2022"} ${CODE(escapeHtml(site.site))} \u00B7 ${num(site.lines)} \u00B7 ${humanSize(site.bytes)}`);
+            });
+            if (data.sites.length > 10) lines.push(I(`\u2026+${data.sites.length - 10} more`));
+            lines.push("", I("The zip holds one .txt per site plus index.txt. Send it to yourself, or forward it anywhere."));
+        }
+        return { text: lines.join("\n"), data };
+    }
+
+    function exportKeyboard(data) {
+        const rows = [];
+        if (data.sites.length) {
+            rows.push([Markup.button.callback("\uD83D\uDCE6 Send all as .zip", "site:export:zip")]);
+            rows.push([Markup.button.callback("\uD83D\uDCC4 Send index only", "site:export:index")]);
+            const sendable = data.sites.filter((s) => s.lines > 0).slice(0, 6);
+            for (let i = 0; i < sendable.length; i += 2) {
+                const row = [Markup.button.callback(`\uD83D\uDCE4 ${sendable[i].site}`.slice(0, 32), `site:export:one:${sendable[i].site}`)];
+                if (sendable[i + 1]) {
+                    row.push(Markup.button.callback(`\uD83D\uDCE4 ${sendable[i + 1].site}`.slice(0, 32), `site:export:one:${sendable[i + 1].site}`));
+                }
+                rows.push(row);
+            }
+        }
+        rows.push([
+            Markup.button.callback("\uD83D\uDCCB Site saves", "site:list"),
+            Markup.button.callback("\uD83C\uDFE0 Home", "help"),
+        ]);
+        return createInlineKeyboard(rows);
+    }
+
+    bot.action("site:export:menu", async (ctx) => {
+        await ctx.answerCbQuery().catch(() => {});
+        const card = renderExportCard(ctx.chat.id);
+        const msg = ctx.callbackQuery && ctx.callbackQuery.message;
+        if (msg) await safeEdit(ctx, msg.message_id, card.text, exportKeyboard(card.data));
+        else await safeReply(ctx, card.text, exportKeyboard(card.data));
+    });
+
+    bot.command(["exportsites", "mysites", "siteexport", "sendsites"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const card = renderExportCard(ctx.chat.id);
+        await safeReply(ctx, card.text, exportKeyboard(card.data));
+    });
+
+    // Send one site's file without opening the menu first.
+    bot.command(["sitesend", "sendsite", "sitefile"], async (ctx) => {
+        userPromptState.delete(ctx.chat.id);
+        const raw = (ctx.message && ctx.message.text || "").replace(/^\/\S+\s*/, "").trim();
+        if (!raw) {
+            const card = renderExportCard(ctx.chat.id);
+            await safeReply(ctx, card.text, exportKeyboard(card.data));
+            return;
+        }
+        const info = sitesExport.siteFileInfo(ctx.chat.id, raw, siteSaveRoot());
+        if (!info) {
+            await safeReply(
+                ctx,
+                `\u26A0\uFE0F No save for ${CODE(escapeHtml(raw))}. Try ${CODE("/exportsites")} to see what exists.`,
+                homeKeyboard(ctx.chat.id),
+            );
+            return;
+        }
+        await safeSendDocument(ctx, ctx.chat.id, info.file, {
+            caption: `\uD83D\uDCE4 ${info.site} \u00B7 ${num(info.lines)} lines \u00B7 ${humanSize(info.bytes)}`,
+        });
+    });
+
+    bot.action("site:export:zip", async (ctx) => {
+        await ctx.answerCbQuery("Packaging\u2026").catch(() => {});
+        let bundle;
+        try {
+            bundle = sitesExport.writeZip(ctx.chat.id, siteSaveRoot());
+        } catch (err) {
+            if (err && err.code === "NO_SITE_SAVES") {
+                await safeReply(ctx, `${tgEmoji("\uD83D\uDCED")} Nothing to export yet \u2014 pin a site and send files first.`, homeKeyboard(ctx.chat.id));
+                return;
+            }
+            throw err;
+        }
+        await safeSendDocument(ctx, ctx.chat.id, bundle.zipPath, {
+            caption: [
+                `\uD83D\uDCE6 ${B("PINNED SITES")}`,
+                `${B(num(bundle.count))} site file(s) \u00B7 ${B(num(bundle.totalLines))} unique lines \u00B7 ${humanSize(bundle.totalBytes)}`,
+                bundle.skipped.length ? I(`Empty and left out: ${bundle.skipped.join(", ")}`) : "",
+                I("index.txt lists every site with its line count."),
+            ].filter(Boolean).join("\n"),
+        });
+    });
+
+    bot.action("site:export:index", async (ctx) => {
+        await ctx.answerCbQuery("Building index\u2026").catch(() => {});
+        let file;
+        try {
+            file = sitesExport.writeIndexFile(ctx.chat.id, siteSaveRoot());
+        } catch (err) {
+            if (err && err.code === "NO_SITE_SAVES") {
+                await safeReply(ctx, `${tgEmoji("\uD83D\uDCED")} Nothing to list yet.`, homeKeyboard(ctx.chat.id));
+                return;
+            }
+            throw err;
+        }
+        await safeSendDocument(ctx, ctx.chat.id, file.indexPath, {
+            caption: `\uD83D\uDCC4 ${num(file.count)} site(s) \u00B7 ${num(file.totalLines)} lines`,
+        });
+    });
+
+    bot.action(/^site:export:one:(.+)$/, async (ctx) => {
+        const wanted = resolveCallbackPayload(ctx.match[1]);
+        const info = sitesExport.siteFileInfo(ctx.chat.id, wanted, siteSaveRoot());
+        if (!info) {
+            await ctx.answerCbQuery("No save for that site").catch(() => {});
+            return;
+        }
+        await ctx.answerCbQuery("Sending\u2026").catch(() => {});
+        await safeSendDocument(ctx, ctx.chat.id, info.file, {
+            caption: `\uD83D\uDCE4 ${info.site} \u00B7 ${num(info.lines)} lines \u00B7 ${humanSize(info.bytes)}`,
+        });
+    });
 
     bot.command(["sitesave", "saved", "saves"], async (ctx) => {
         userPromptState.delete(ctx.chat.id);

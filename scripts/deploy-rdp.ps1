@@ -61,6 +61,7 @@ param(
     [switch]$NoTask,
     [switch]$Start,
     [switch]$Force,
+    [switch]$NoAutoUpdate,
     [string]$EnvBase64 = ""
 )
 
@@ -324,6 +325,18 @@ Step "Done"
 Say "path      $TargetPath"
 Say "node      $nodeExe"
 Say "task      $(if ($NoTask) { '(skipped)' } else { $TaskName })"
+
+if (-not $NoAutoUpdate) {
+    $updater = Join-Path $TargetPath "scripts\update-rdp.ps1"
+    if (Test-Path $updater) {
+        Step "Auto-update"
+        & $updater -TargetPath $TargetPath -InstallAutoUpdate -NoRestart
+        Say "ComboCleanerBotUpdate pulls from GitHub every 10 min and restarts the bot on change."
+        Say "Your data is never touched: .env, data\var-data and data\custom-*.json are skipped."
+    } else {
+        Warn "scripts\update-rdp.ps1 missing - auto-update not installed"
+    }
+}
 Say ""
 Say "Next: verify the account transport before trusting /ulp:"
 Say "  cd `"$TargetPath`"; npm run doctor -- --ping"

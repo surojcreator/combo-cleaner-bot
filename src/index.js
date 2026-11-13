@@ -100,6 +100,8 @@ async function registerCommands() {
             { command: "files", description: "📂 Browse server vault files" },
             { command: "stats", description: "\uD83D\uDCCA Batch dashboard" },
             { command: "sitesave", description: "\uD83D\uDCBE Saved site combos" },
+            { command: "exportsites", description: "\uD83D\uDCE4 Send my pinned sites (zip/index/one)" },
+            { command: "sitesend", description: "\uD83D\uDCE4 Send one pinned site file" },
             { command: "site", description: "\uD83D\uDCCC Pin a site and keep saving into it" },
             { command: "sites", description: "\uD83C\uDF10 Per-site breakdown" },
             { command: "preview", description: "\uD83D\uDC41 Peek at sample lines" },

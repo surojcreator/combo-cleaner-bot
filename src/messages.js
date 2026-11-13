@@ -2015,6 +2015,7 @@ function renderHelp(botUsername, batch = null, searcherBot = null) {
         `${tgEmoji("⌨️")}  ${B("Shortcuts")}`,
         `  ${CODE("/site htzone.co.il")}  ${CODE("/combine")}  ${CODE("/save")}`,
         `  ${CODE("/ulp domain 7")}  ${CODE("/search x")}  ${CODE("/files")}`,
+        `  ${CODE("/exportsites")}  ${CODE("/sitesend htzone.co.il")}`,
         RULE,
         nextStep,
         `${tgEmoji("👇")}  ${I("Use the buttons below — no commands required.")}`,
